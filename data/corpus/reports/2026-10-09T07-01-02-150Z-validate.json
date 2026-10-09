@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "2026-10-09.3",
+  "startedAt": "2026-10-09T07:01:02.151Z",
+  "mode": "validate",
+  "sources": [
+    {
+      "id": "resource-spec-clean",
+      "status": "manifest-only"
+    },
+    {
+      "id": "layout-en-1080x225",
+      "status": "referenced"
+    },
+    {
+      "id": "layout-zh-1080x225",
+      "status": "referenced"
+    },
+    {
+      "id": "cta-styles",
+      "status": "manifest-only"
+    },
+    {
+      "id": "badge-styles",
+      "status": "manifest-only"
+    },
+    {
+      "id": "visual-reference",
+      "status": "manifest-only"
+    }
+  ],
+  "errors": [],
+  "finishedAt": "2026-10-09T07:01:02.152Z",
+  "ok": true
+}

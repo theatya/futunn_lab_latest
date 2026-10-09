@@ -28,6 +28,15 @@ type FigmaNode = {
   styleOverrideTable?: Record<string, FigmaTextStyle>;
   layoutMode?: "NONE" | "HORIZONTAL" | "VERTICAL";
   itemSpacing?: number;
+  paddingTop?: number;
+  paddingRight?: number;
+  paddingBottom?: number;
+  paddingLeft?: number;
+  primaryAxisAlignItems?: "MIN" | "CENTER" | "MAX" | "SPACE_BETWEEN";
+  counterAxisAlignItems?: "MIN" | "CENTER" | "MAX" | "BASELINE";
+  primaryAxisSizingMode?: "FIXED" | "AUTO";
+  counterAxisSizingMode?: "FIXED" | "AUTO";
+  clipsContent?: boolean;
   visible?: boolean;
   fills?: Array<{
     type?: string;
@@ -103,6 +112,7 @@ function textNodesOf(node: FigmaNode, root: FigmaNode): FigmaRecognizedLayer["te
   const result: FigmaRecognizedLayer["textNodes"] = [];
   let order = 0;
   const visit = (current: FigmaNode, parent?: FigmaNode) => {
+    if (current.visible === false) return;
     const text = current.characters?.trim();
     if (current.type === "TEXT" && text) {
       const sourceText = current.characters ?? text;
@@ -165,6 +175,7 @@ function textNodesOf(node: FigmaNode, root: FigmaNode): FigmaRecognizedLayer["te
 
 function roleFromName(name: string): { role: LayerRole; reason: string; confidence: number } {
   const normalized = name.toLowerCase().replace(/[\s_-]+/g, "");
+  if (/主视觉|keyvisual|^kv$|kv组件|visualcomponent/.test(normalized)) return { role: "kv", reason: "第一层名称命中主视觉组件", confidence: 0.99 };
   if (/logo|品牌标识|品牌logo|moomoo|futu|富途|牛牛/.test(normalized)) return { role: "logo", reason: "第一层名称命中 Logo", confidence: 0.99 };
   if (/免责|免责声明|disctext|disclaimer|legal|terms/.test(normalized)) return { role: "disc", reason: "第一层名称命中免责", confidence: 0.99 };
   if (/cta|button|btn|按钮/.test(normalized)) return { role: "cta", reason: "第一层名称命中按钮", confidence: 0.99 };
@@ -198,6 +209,15 @@ function recognizedNodeTree(node: FigmaNode, root: FigmaNode, order = 0): FigmaR
     bounds: normalizedBounds(node, root),
     layoutMode: node.layoutMode,
     itemSpacing: node.itemSpacing,
+    paddingTop: node.paddingTop,
+    paddingRight: node.paddingRight,
+    paddingBottom: node.paddingBottom,
+    paddingLeft: node.paddingLeft,
+    primaryAxisAlignItems: node.primaryAxisAlignItems,
+    counterAxisAlignItems: node.counterAxisAlignItems,
+    primaryAxisSizingMode: node.primaryAxisSizingMode,
+    counterAxisSizingMode: node.counterAxisSizingMode,
+    clipsContent: node.clipsContent,
     children: (node.children ?? [])
       .filter((child) => child.visible !== false)
       .map((child, index) => recognizedNodeTree(child, root, index)),

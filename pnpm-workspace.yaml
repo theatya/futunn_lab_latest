@@ -4,6 +4,9 @@ packages:
 
 # 版本集中在这里管，各包引用 "catalog:"。
 # 升级只改一处，避免 monorepo 里同一个依赖出现多版本。
+allowBuilds:
+  esbuild: set this to true or false
+
 catalog:
   react: ^19.2.8
   react-dom: ^19.2.8

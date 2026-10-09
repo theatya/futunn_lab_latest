@@ -6,6 +6,8 @@
  * 渲染层只负责乘以自己的显示尺寸。求解结果与显示大小完全无关。
  */
 
+import type { QualityReport, RecipeLayer, RecipeTrace } from "./layout-recipe";
+
 /** 归一化矩形，x/y/w/h 都是 0..1，相对于画板 */
 export interface Rect {
   x: number;
@@ -198,4 +200,9 @@ export interface Solution {
   extra: Rect | null;
 
   notes: SolveNote[];
+  /** 命中训练配方时回带完整追溯；没有时表示走通用启发式。 */
+  recipeTrace?: RecipeTrace;
+  /** 写回端消费的结构与样式；Web 预览和 Figma 写回必须共用。 */
+  resolvedLayers?: RecipeLayer[];
+  quality?: QualityReport;
 }

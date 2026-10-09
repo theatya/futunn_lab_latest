@@ -1,22 +1,29 @@
 "use client";
 
 import { Lock } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CTA_STYLE_PRESETS,
   ELEMENT_LABEL,
+  LANGS,
   TOGGLE_ORDER,
   badgeStyleOf,
   ctaStyleOf,
+  disclaimerText,
   frameLogoOf,
   presetLogo,
+  resolvedLayoutRecipe,
   resolvedTitleBreaks,
   sizeKey,
   sourceFrameOf,
+  tokenizeTitle,
   type FrameStyleOverride,
   type LibraryLogoPreset,
+  type RecipeOverride,
+  type RecipeRole,
 } from "@futu/domain";
-import { buildSolveContent, solve } from "@futu/solver";
+import { BADGE_STYLE_PRESETS as CORPUS_BADGE_PRESETS, breaksForLineCount, recipeById } from "@futu/corpus";
+import { buildSolveContent, CanvasMeasurer, solve } from "@futu/solver";
 import { RATIO_PRESETS, SIZE_GROUPS, specOf } from "@futu/specs";
 import { useFitBoard } from "@/lib/use-fit-board";
 import { useStudio } from "@/lib/studio-store";
@@ -42,19 +49,18 @@ export function StepFrames({
   const {
     project,
     lang,
+    setLang,
     setStep,
+    updateCopy,
     updateContent,
     focusKey,
     setFocusKey,
     setTargets,
     patchFocus,
     applySharedToAll,
-    applyDraftToFocus,
     applyDraftToTargets,
-    discardDraft,
     focusCfg,
     focusOverridden,
-    hasDraft,
   } = useStudio();
 
   const selected = new Set(project.targets.map((t) => t.key));
@@ -76,6 +82,20 @@ export function StepFrames({
     && layoutPresets.some((preset) => preset.id === storedLayoutAssignment)
     ? storedLayoutAssignment
     : "master";
+  const selectedLayoutPreset = layoutPresets.find((preset) => preset.id === layoutAssignment);
+  const recipeTrace = focus ? resolvedLayoutRecipe(project.content, lang, focus.key) : undefined;
+  const activeRecipe = recipeTrace ? recipeById(recipeTrace.recipeId) : undefined;
+  const recipeFont = activeRecipe?.layers.find((layer) => layer.role === "title")?.typography?.fontFamily
+    ?? (lang === "en" ? "BR Hendrix" : "PingFang SC");
+  const measurer = useMemo(() => new CanvasMeasurer(`"${recipeFont}"`), [recipeFont]);
+  const [fontRevision, setFontRevision] = useState(0);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    void document.fonts.ready.then(() => {
+      measurer.reset();
+      setFontRevision((value) => value + 1);
+    });
+  }, [measurer]);
   const frameOverride = focus ? project.content.frameStyleOverrides?.[lang]?.[focus.key] : undefined;
   const activeCtaStyle = focus ? ctaStyleOf(project.content, lang, focus.key) : undefined;
   const activeBadgeStyle = focus ? badgeStyleOf(project.content, lang, focus.key) : undefined;
@@ -97,6 +117,20 @@ export function StepFrames({
       },
     });
   };
+
+  const patchRecipeOverride = (role: RecipeRole, patch: Partial<RecipeOverride>) => {
+    if (!selectedLayoutPreset?.recipeId || !focus) return;
+    patchFrameStyle({
+      layoutOverrides: {
+        ...frameOverride?.layoutOverrides,
+        [role]: {
+          ...recipeTrace?.overrides?.[role],
+          ...patch,
+        },
+      },
+    });
+  };
+  const roleOverride = (role: RecipeRole) => recipeTrace?.overrides?.[role];
 
   const applyFocusSettingsToFamily = () => {
     if (!focus || !familyKeys?.length) return;
@@ -128,8 +162,12 @@ export function StepFrames({
       margin: focusCfg.margin,
       extra: focusCfg.extra,
       spec: lookup?.spec ?? null,
+      recipe: activeRecipe,
+      recipeTrace,
+      typographyOverrides: project.content.masterTextStyles?.[lang],
+      measurer,
     });
-  }, [focus, copy, lang, focusCfg, lookup, titleBreaks]);
+  }, [activeRecipe, copy, focus, focusCfg, fontRevision, lang, lookup, measurer, project.content.masterTextStyles, recipeTrace, titleBreaks]);
 
   const fit = useFitBoard(focus?.w ?? 1, focus?.h ?? 1);
 
@@ -221,6 +259,18 @@ export function StepFrames({
       <Band className="space-y-5 lg:min-h-0 lg:overflow-y-auto">
         <div>
           <SectionTitle>编辑图层</SectionTitle>
+          <div className="mb-2 flex flex-wrap gap-1">
+            {LANGS.filter((item) => project.content.langs.includes(item.id)).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setLang(item.id)}
+                className={cn("h-7 rounded-[4px] px-2 text-[9px]", lang === item.id ? "choice-on" : "choice-idle")}
+              >
+                {item.name}
+              </button>
+            ))}
+          </div>
           <div className="grid grid-cols-4 gap-1">
             {([
               ["kv", "主视觉"],
@@ -241,7 +291,22 @@ export function StepFrames({
               </button>
             ))}
           </div>
-          <p className="mt-2 text-[9px] text-[var(--app-text-4)]">当前修改默认只作用于代表画幅，确认后可同步整个布局族。</p>
+          <div className="mt-2 flex items-center justify-between">
+            <p className="text-[9px] text-[var(--app-text-4)]">内容、显隐和比例均在当前画幅完成。</p>
+            {selectedElement !== "background" ? (
+              <Switch
+                checked={selectedElement === "title" ? focusCfg.show.title : focusCfg.show[selectedElement]}
+                label="显示"
+                onChange={(visible) => {
+                  if (selectedElement === "title") {
+                    patchFocus({ show: { ...focusCfg.show, title: visible, sub: visible } });
+                  } else {
+                    patchFocus({ show: { ...focusCfg.show, [selectedElement]: visible } as typeof focusCfg.show });
+                  }
+                }}
+              />
+            ) : null}
+          </div>
         </div>
 
         {lookup?.spec ? (
@@ -258,7 +323,8 @@ export function StepFrames({
                 <div className="flex justify-between">
                   <span>按钮</span>
                   <Chip tone="lock">
-                    {lookup.spec.cta.w}×{lookup.spec.cta.h} · 距右 {lookup.spec.cta.gapRight}
+                    宽 {lookup.spec.cta.minWidth}–{lookup.spec.cta.maxWidth} × 高 {lookup.spec.cta.height}
+                    {" · "}{lookup.spec.cta.fontPx}px · {lookup.spec.cta.anchor === "center" ? "居中" : lookup.spec.cta.anchor === "right" ? "右锚定" : "左锚定"}
                   </Chip>
                 </div>
               ) : null}
@@ -284,7 +350,45 @@ export function StepFrames({
         ) : null}
 
         {selectedElement === "title" ? <Panel>
-          <SectionTitle>排版方案</SectionTitle>
+          <SectionTitle>标题内容与排版</SectionTitle>
+          <div className="mb-3 space-y-2">
+            <label className="block">
+              <span className="mb-1 block text-[9px] text-[var(--app-text-4)]">主标题</span>
+              <textarea
+                aria-label="当前语言主标题"
+                value={copy.title}
+                rows={2}
+                onChange={(event) => updateCopy(lang, { title: event.target.value })}
+                className="w-full resize-none rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 py-1.5 text-[11px] outline-none focus:border-[var(--color-brand)]"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[9px] text-[var(--app-text-4)]">副标题／小标题</span>
+              <input
+                aria-label="当前语言副标题或小标题"
+                value={copy.sub}
+                onChange={(event) => updateCopy(lang, { sub: event.target.value })}
+                className="h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 text-[11px] outline-none focus:border-[var(--color-brand)]"
+              />
+            </label>
+            <div>
+              <span className="mb-1 block text-[9px] text-[var(--app-text-4)]">主标题行数</span>
+              <div className="grid grid-cols-3 gap-1">
+                {[1, 2, 3].map((lineCount) => (
+                  <button
+                    key={lineCount}
+                    type="button"
+                    onClick={() => updateCopy(lang, {
+                      titleBreaks: breaksForLineCount(tokenizeTitle(copy.title, lang), lineCount, copy.titleBreaks),
+                    })}
+                    className={cn("h-7 rounded-[4px] text-[9px]", copy.titleBreaks.length === lineCount - 1 ? "choice-on" : "choice-idle")}
+                  >
+                    {lineCount} 行
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
           <select
             aria-label="当前画幅的排版方案"
             value={layoutAssignment}
@@ -309,8 +413,31 @@ export function StepFrames({
             ))}
           </select>
           <p className="mt-2 text-[10px] leading-relaxed text-[var(--app-text-4)]">
-            选择全局内容中保存的标题组方案；位置与 CTA 间距在下方按当前画幅调整。
+            {selectedLayoutPreset?.recommendationReason
+              ? `自动匹配：${selectedLayoutPreset.recommendationReason}`
+              : "选择全局内容中保存的标题组方案；位置与 CTA 间距在下方按当前画幅调整。"}
           </p>
+          {solution?.recipeTrace ? (
+            <div className="mt-2 rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-2)] p-2 text-[9px] leading-relaxed text-[var(--app-text-3)]">
+              <div>训练值：{solution.recipeTrace.recipeId} · {solution.recipeTrace.corpusVersion}</div>
+              <div className="mt-0.5">当前质量：{solution.quality?.score ?? 0} / 100 · {solution.quality?.status === "pass" ? "可交付" : solution.quality?.status === "blocked" ? "阻塞" : "需检查"}</div>
+            </div>
+          ) : (
+            <div className="mt-2 rounded-[5px] border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/5 p-2 text-[9px] text-[var(--color-warn)]">
+              {focus?.w === 1080 && focus?.h === 225 ? "尚未应用训练方案，当前仍跟随母版。" : "该尺寸尚未训练，不会标记为训练结果。"}
+            </div>
+          )}
+          {selectedLayoutPreset?.recipeId ? (
+            <div className="mt-3 space-y-2 border-t border-[var(--app-line)] pt-3">
+              <Slider label="标题字号" value={(roleOverride("title")?.fontScale ?? 1) * 100} min={85} max={120} step={1} suffix="%" onChange={(value) => patchRecipeOverride("title", { fontScale: value / 100 })} />
+              <Slider label="标题左右" value={(roleOverride("title")?.dx ?? 0) * 100} min={-8} max={8} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("title", { dx: value / 100 })} />
+              <Slider label="标题上下" value={(roleOverride("title")?.dy ?? 0) * 100} min={-8} max={8} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("title", { dy: value / 100 })} />
+              {activeRecipe?.layers.some((item) => item.role === "sub" || item.role === "kicker") ? (
+                <Slider label="副标题比例" value={(roleOverride(activeRecipe.structure.startsWith("kicker") ? "kicker" : "sub")?.scale ?? 1) * 100} min={70} max={140} step={1} suffix="%" onChange={(value) => patchRecipeOverride(activeRecipe.structure.startsWith("kicker") ? "kicker" : "sub", { scale: value / 100 })} />
+              ) : null}
+              <button type="button" className="text-[9px] text-[var(--app-text-4)] hover:text-[var(--app-text)]" onClick={() => patchRecipeOverride("title", { fontScale: 1, dx: 0, dy: 0 })}>恢复训练值</button>
+            </div>
+          ) : null}
         </Panel> : null}
 
         {selectedElement === "cta" || selectedElement === "logo" || selectedElement === "badge" ? <Panel>
@@ -318,6 +445,12 @@ export function StepFrames({
           <div className="space-y-3">
             {selectedElement === "cta" ? <label className="block">
               <span className="mb-1 block text-[10px] text-[var(--app-text-3)]">CTA</span>
+              <input
+                aria-label="当前语言 CTA 文案"
+                value={copy.ctaLong}
+                onChange={(event) => updateCopy(lang, { ctaLong: event.target.value, ctaShort: event.target.value })}
+                className="mb-2 h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 text-[11px] outline-none focus:border-[var(--color-brand)]"
+              />
               <select
                 aria-label="当前画幅 CTA 样式"
                 value={frameOverride?.ctaStyle?.presetId ?? "inherit"}
@@ -341,6 +474,13 @@ export function StepFrames({
                 <option value="inherit">跟随全局默认</option>
                 {CTA_STYLE_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
               </select>
+              {selectedLayoutPreset?.recipeId ? (
+                <div className="mt-3">
+                  <Slider label="CTA 缩放" value={(roleOverride("cta")?.scale ?? 1) * 100} min={60} max={150} step={1} suffix="%" onChange={(value) => patchRecipeOverride("cta", { scale: value / 100 })} />
+                  <Slider label="CTA 左右" value={(roleOverride("cta")?.dx ?? 0) * 100} min={-12} max={12} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("cta", { dx: value / 100 })} />
+                  <Slider label="CTA 上下" value={(roleOverride("cta")?.dy ?? 0) * 100} min={-12} max={12} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("cta", { dy: value / 100 })} />
+                </div>
+              ) : null}
             </label> : null}
 
             {selectedElement === "logo" ? <label className="block">
@@ -362,6 +502,13 @@ export function StepFrames({
                 {LOGO_PRESET_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
               </select>
               <LogoPresetPreview asset={activeLogo} className="mt-2 h-8 justify-start rounded-[4px] bg-[#444] px-2" />
+              {selectedLayoutPreset?.recipeId ? (
+                <div className="mt-3 space-y-2">
+                  <Slider label="Logo 缩放" value={(roleOverride("logo")?.scale ?? 1) * 100} min={50} max={160} step={1} suffix="%" onChange={(value) => patchRecipeOverride("logo", { scale: value / 100 })} />
+                  <Slider label="Logo 左右" value={(roleOverride("logo")?.dx ?? 0) * 100} min={-12} max={12} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("logo", { dx: value / 100 })} />
+                  <Slider label="Logo 上下" value={(roleOverride("logo")?.dy ?? 0) * 100} min={-12} max={12} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("logo", { dy: value / 100 })} />
+                </div>
+              ) : null}
             </label> : null}
 
             {selectedElement === "badge" ? <div>
@@ -371,6 +518,33 @@ export function StepFrames({
                   <button type="button" onClick={() => patchFrameStyle({ badgeStyle: undefined })} className="text-[9px] text-[var(--app-text-4)] hover:text-[var(--app-text)]">恢复默认</button>
                 ) : null}
               </div>
+              <input
+                aria-label="当前语言角标文案"
+                value={copy.badge}
+                onChange={(event) => updateCopy(lang, { badge: event.target.value })}
+                className="mb-2 h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 text-[11px] outline-none focus:border-[var(--color-brand)]"
+              />
+              <select
+                aria-label="当前画幅角标训练样式"
+                value={activeBadgeStyle?.presetId ?? ""}
+                onChange={(event) => {
+                  const preset = CORPUS_BADGE_PRESETS.find((item) => item.id === event.target.value);
+                  if (preset) patchFrameStyle({
+                    badgeStyle: {
+                      ...activeBadgeStyle!,
+                      presetId: preset.id,
+                      sizing: preset.sizing,
+                      alignment: preset.alignment,
+                    },
+                  });
+                }}
+                className="mb-2 h-8 w-full rounded-[var(--radius-md)] border border-[var(--app-line)] bg-[var(--app-surface-2)] px-2 text-[10px]"
+              >
+                <option value="">跟随母版角标</option>
+                {CORPUS_BADGE_PRESETS
+                  .filter((preset) => !preset.validationOnly && preset.language === (lang === "en" ? "en" : "zh-common"))
+                  .map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+              </select>
               <div className="grid grid-cols-3 gap-1">
                 {(["left", "center", "right"] as const).map((alignment) => (
                   <button
@@ -394,6 +568,13 @@ export function StepFrames({
                   文字
                 </label>
               </div>
+              {selectedLayoutPreset?.recipeId ? (
+                <div className="mt-3 space-y-2">
+                  <Slider label="角标缩放" value={(roleOverride("badge")?.scale ?? 1) * 100} min={60} max={160} step={1} suffix="%" onChange={(value) => patchRecipeOverride("badge", { scale: value / 100 })} />
+                  <Slider label="角标左右" value={(roleOverride("badge")?.dx ?? 0) * 100} min={-12} max={12} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("badge", { dx: value / 100 })} />
+                  <Slider label="角标上下" value={(roleOverride("badge")?.dy ?? 0) * 100} min={-12} max={12} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("badge", { dy: value / 100 })} />
+                </div>
+              ) : null}
             </div> : null}
           </div>
         </Panel> : null}
@@ -433,6 +614,13 @@ export function StepFrames({
               );
             })}
           </div>
+          {selectedElement === "kv" && selectedLayoutPreset?.recipeId ? (
+            <div className="mb-4 space-y-2 rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-2)] p-2">
+              <Slider label="主视觉左右" value={(roleOverride("kv")?.dx ?? 0) * 100} min={-20} max={20} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("kv", { dx: value / 100 })} />
+              <Slider label="主视觉上下" value={(roleOverride("kv")?.dy ?? 0) * 100} min={-20} max={20} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("kv", { dy: value / 100 })} />
+              <Slider label="主视觉缩放" value={(roleOverride("kv")?.scale ?? 1) * 100} min={50} max={180} step={1} suffix="%" onChange={(value) => patchRecipeOverride("kv", { scale: value / 100 })} />
+            </div>
+          ) : null}
           <Slider
             label="左右"
             value={focusCfg.margin.x}
@@ -464,7 +652,22 @@ export function StepFrames({
         </Panel> : null}
 
         {selectedElement === "disc" ? <Panel>
-          <SectionTitle>画板元素</SectionTitle>
+          <SectionTitle>免责文案与元素</SectionTitle>
+          <textarea
+            aria-label="当前语言免责文案"
+            value={disclaimerText(copy.disclaimer)}
+            rows={3}
+            onChange={(event) => updateCopy(lang, { disclaimer: event.target.value ? [event.target.value] : [] })}
+            className="mb-3 w-full resize-none rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 py-1.5 text-[10px] outline-none focus:border-[var(--color-brand)]"
+          />
+          {selectedLayoutPreset?.recipeId ? (
+            <div className="mb-3 space-y-2">
+              <Slider label="免责缩放" value={(roleOverride("disc")?.scale ?? 1) * 100} min={60} max={160} step={1} suffix="%" onChange={(value) => patchRecipeOverride("disc", { scale: value / 100 })} />
+              <Slider label="免责左右" value={(roleOverride("disc")?.dx ?? 0) * 100} min={-12} max={12} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("disc", { dx: value / 100 })} />
+              <Slider label="免责上下" value={(roleOverride("disc")?.dy ?? 0) * 100} min={-12} max={12} step={0.5} suffix="%" onChange={(value) => patchRecipeOverride("disc", { dy: value / 100 })} />
+            </div>
+          ) : null}
+          <SectionTitle>全部元素显隐</SectionTitle>
           <div className="space-y-0.5">
             {TOGGLE_ORDER.map((k) => (
               <Switch
@@ -486,33 +689,27 @@ export function StepFrames({
         <Panel>
           <SectionTitle>排版依据</SectionTitle>
           <NoteList notes={solution.notes} />
-          {hasDraft ? (
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button variant="ghost" size="sm" onClick={discardDraft}>
-                放弃
+          <p className="mt-3 text-[11px] text-[var(--app-text-4)]">
+            调整会即时保存到 {focusKey}，预览与最终写入使用同一份配置。
+            {focusOverridden ? " 当前画幅已单独调整。" : ""}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {familyKeys?.length ? (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  applyDraftToTargets(familyKeys);
+                  applyFocusSettingsToFamily();
+                }}
+              >
+                同步到{familyLabel ?? "当前布局族"}（{familyKeys.length} 块）
               </Button>
-              <Button size="sm" onClick={applyDraftToFocus}>
-                只改 {focusKey} 这一块
-              </Button>
-              {familyKeys?.length ? (
-                <Button variant="primary" size="sm" onClick={() => applyDraftToTargets(familyKeys)}>
-                  应用到{familyLabel ?? "当前布局族"}（{familyKeys.length} 块）
-                </Button>
-              ) : null}
-              <Button variant="primary" size="sm" onClick={applySharedToAll}>
-                一键应用到全部（{project.targets.length} 块）
-              </Button>
-            </div>
-          ) : (
-            <p className="mt-3 text-[11px] text-[var(--app-text-4)]">
-              {focusOverridden ? `${focusKey} 单独调过` : `${focusKey} 跟随共用`}
-            </p>
-          )}
-          {familyKeys?.length ? (
-            <button type="button" onClick={applyFocusSettingsToFamily} className="mt-3 text-[10px] text-[var(--color-brand)] hover:text-[var(--color-brand-hover)]">
-              将当前排版方案与元素样式同步到{familyLabel ?? "当前布局族"}
-            </button>
-          ) : null}
+            ) : null}
+            <Button variant="primary" size="sm" onClick={applySharedToAll}>
+              设为全部画幅共用设置
+            </Button>
+          </div>
         </Panel>
 
         {!embedded ? (

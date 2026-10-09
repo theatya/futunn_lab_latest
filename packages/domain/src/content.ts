@@ -5,6 +5,8 @@
  * 求解器只读这里，不改这里。
  */
 
+import type { MasterLayoutFingerprint, RecipeOverride, RecipeRole, RecipeTrace, RecipeTypography } from "./layout-recipe";
+
 export type Lang = "sc" | "tc" | "en" | "ja" | "th";
 
 export const LANGS: ReadonlyArray<{ id: Lang; name: string }> = [
@@ -45,6 +47,17 @@ export interface CopyLayoutPreset {
   name: string;
   /** 方案继承的母版 Frame，避免静默套到另一块母版。 */
   sourceFrameId?: string;
+  /** 来自版本化语料库时，保存稳定方案 ID 以便追溯和刷新。 */
+  corpusPresetId?: string;
+  /** 推荐给用户看的简短原因；不参与求解。 */
+  recommendationReason?: string;
+  /** 机器推荐方案按分数排序，用户自建方案不写。 */
+  recommendationScore?: number;
+  corpusVersion?: string;
+  recipeId?: string;
+  fingerprintHash?: string;
+  applicationState?: "recommended" | "applied" | "modified" | "blocked";
+  overrides?: Partial<Record<RecipeRole, RecipeOverride>>;
   titleBreaks: number[];
   titleStack: TitleStack;
   titleGap?: number;
@@ -52,8 +65,8 @@ export interface CopyLayoutPreset {
   actionGap?: number;
 }
 
-/** 第二步设定、后续画幅默认继承的 CTA 视觉样式。 */
-export type CtaPresetId = "orange-gradient" | "brand-orange" | "champagne" | "black" | "navy-gradient";
+/** 第二步设定、后续画幅默认继承的四种 CTA 视觉样式。 */
+export type CtaPresetId = "orange-gradient" | "brand-orange" | "champagne" | "black";
 
 export interface CtaStyle {
   presetId?: CtaPresetId;
@@ -72,31 +85,26 @@ export const CTA_STYLE_PRESETS: ReadonlyArray<{
   {
     id: "orange-gradient",
     name: "橙色渐变",
-    backgroundColor: "#f68412",
-    backgroundImage: "linear-gradient(270deg, #e04c08 1.538%, #f68412 110.77%)",
+    backgroundColor: "#f06400",
+    backgroundImage: "linear-gradient(90deg,#ff6626 0%,#f04700 100%)",
     defaultTextColor: "#ffffff",
   },
-  { id: "brand-orange", name: "品牌橙", backgroundColor: "#ff6900", defaultTextColor: "#14100c" },
+  { id: "brand-orange", name: "橙色实底", backgroundColor: "#ff6900", defaultTextColor: "#ffffff" },
   {
     id: "champagne",
     name: "香槟金",
-    backgroundColor: "#ffd08a",
-    backgroundImage: "linear-gradient(83.574deg, rgba(255,255,255,0) 53.886%, rgba(255,251,232,.4) 100%), linear-gradient(65.718deg, #ffd08a 2.249%, #ffe5c0 99.71%)",
-    defaultTextColor: "#6a421c",
+    backgroundColor: "#ffe5c0",
+    backgroundImage: "linear-gradient(90deg,#fff9ea 0%,#ffcf83 100%)",
+    defaultTextColor: "#391a00",
   },
-  { id: "black", name: "纯黑", backgroundColor: "#121212", defaultTextColor: "#ffffff" },
-  {
-    id: "navy-gradient",
-    name: "深蓝渐变",
-    backgroundColor: "#25282b",
-    backgroundImage: "linear-gradient(359.706deg, #25282b .718%, #2b3744 98.308%)",
-    defaultTextColor: "#ffffff",
-  },
+  { id: "black", name: "黑色实底", backgroundColor: "#121212", defaultTextColor: "#ffffff" },
 ];
 
 export type BadgeAlignment = "left" | "center" | "right";
 
 export interface BadgeStyle {
+  presetId?: string;
+  sizing?: "hug" | "fixed-short" | "fixed-long";
   alignment: BadgeAlignment;
   backgroundColor: string;
   textColor: string;
@@ -206,6 +214,8 @@ export interface FrameStyleOverride {
   logo?: AssetRef;
   logoPreset?: LogoPreset;
   badgeStyle?: BadgeStyle;
+  /** 当前目标画幅对训练配方的受约束调整；不污染同一配方在其他画幅的训练值。 */
+  layoutOverrides?: Partial<Record<RecipeRole, RecipeOverride>>;
 }
 
 export interface Content {
@@ -237,6 +247,12 @@ export interface Content {
   copyLayoutSelections?: Partial<Record<Lang, "master" | "draft" | string>>;
   /** 第三步为每个目标画幅指定第二步保存的排版方案；未指定即跟随母版。 */
   copyLayoutAssignments?: Partial<Record<Lang, Record<string, "master" | string>>>;
+  /** 第一步确认后冻结的结构指纹；第二步不得重新猜测。 */
+  masterLayoutFingerprints?: Partial<Record<Lang, MasterLayoutFingerprint>>;
+  /** 第一阶段冻结的真实字体与富文本范围，写回时优先于语料示例文字样式。 */
+  masterTextStyles?: Partial<Record<Lang, Partial<Record<"title" | "sub" | "cta" | "disc", RecipeTypography>>>>;
+  /** 项目最后确认使用的语料版本，用于刷新和旧项目迁移。 */
+  corpusVersion?: string;
   /** 各语言 CTA 的全局默认颜色；位置与间距仍由第三步按画幅处理。 */
   ctaStyles?: Partial<Record<Lang, CtaStyle>>;
   /** 各语言角标的全局默认样式。 */
@@ -249,6 +265,27 @@ export interface Content {
   sourceFrames?: Partial<Record<Lang, AssetRef>>;
   /** 每种语言 × 每个画幅的主标题断行覆盖。没有记录即系统自动推荐。 */
   titleBreakChoices?: Partial<Record<Lang, Record<string, TitleBreakChoice>>>;
+}
+
+export function resolvedLayoutRecipe(
+  content: Content,
+  lang: Lang,
+  targetKey: string,
+): RecipeTrace | undefined {
+  const presetId = content.copyLayoutAssignments?.[lang]?.[targetKey];
+  if (!presetId || presetId === "master") return undefined;
+  const preset = content.copyLayoutPresets?.[lang]?.find((item) => item.id === presetId);
+  if (!preset?.recipeId || !preset.corpusVersion) return undefined;
+  const frameOverrides = content.frameStyleOverrides?.[lang]?.[targetKey]?.layoutOverrides;
+  return {
+    corpusVersion: preset.corpusVersion,
+    recipeId: preset.recipeId,
+    fingerprintHash: preset.fingerprintHash,
+    overrides: {
+      ...preset.overrides,
+      ...frameOverrides,
+    },
+  };
 }
 
 export function titleBreakChoiceOf(content: Content, lang: Lang, targetKey: string): TitleBreakChoice {

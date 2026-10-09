@@ -450,33 +450,39 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   };
 
   const patchShared: StudioContext["patchShared"] = (patch) => {
-    setDraft((d) => ({
-      ...(d ?? boardConfigOf(project, focusKey)),
-      ...patch,
-      margin: { ...(d ?? boardConfigOf(project, focusKey)).margin, ...patch.margin },
-      show: { ...(d ?? boardConfigOf(project, focusKey)).show, ...patch.show },
-      extra: { ...(d ?? boardConfigOf(project, focusKey)).extra, ...patch.extra },
-    }));
+    update((p) => {
+      const current = boardConfigOf(p, focusKey);
+      const next = {
+        ...current,
+        ...patch,
+        margin: { ...current.margin, ...patch.margin },
+        show: { ...current.show, ...patch.show },
+        extra: { ...current.extra, ...patch.extra },
+      };
+      return { ...p, overrides: { ...p.overrides, [focusKey]: next } };
+    });
+    setDraft(null);
   };
 
   const applySharedToAll = () => {
-    if (!draft) return;
-    update((p) => ({ ...p, shared: clone(draft), overrides: {} }));
+    const source = draft ?? boardConfigOf(project, focusKey);
+    update((p) => ({ ...p, shared: clone(source), overrides: {} }));
     setDraft(null);
   };
 
   const applyDraftToFocus = () => {
-    if (!draft) return;
-    update((p) => ({ ...p, overrides: { ...p.overrides, [focusKey]: clone(draft) } }));
+    const source = draft ?? boardConfigOf(project, focusKey);
+    update((p) => ({ ...p, overrides: { ...p.overrides, [focusKey]: clone(source) } }));
     setDraft(null);
   };
 
   const applyDraftToTargets: StudioContext["applyDraftToTargets"] = (keys) => {
-    if (!draft || !keys.length) return;
+    if (!keys.length) return;
+    const source = draft ?? boardConfigOf(project, focusKey);
     update((p) => {
       const overrides = { ...p.overrides };
       keys.forEach((key) => {
-        overrides[key] = clone(draft);
+        overrides[key] = clone(source);
       });
       return { ...p, overrides };
     });

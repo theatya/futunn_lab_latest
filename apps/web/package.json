@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@futu/adapters-web": "workspace:*",
+    "@futu/corpus": "workspace:*",
     "@futu/domain": "workspace:*",
     "@futu/orchestrator": "workspace:*",
     "@futu/ports": "workspace:*",

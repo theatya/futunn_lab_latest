@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "2026-10-09.3",
+  "runtimeModule": "../../../packages/corpus/src/generated.ts",
+  "counts": {
+    "layoutPresets": 34,
+    "ctaStyles": 4,
+    "badgePresets": 20,
+    "verifiedResourceSlots": 1
+  },
+  "status": {
+    "layout1080x225English": "ready",
+    "layout1080x225Chinese": "ready",
+    "cta": "ready",
+    "badge": "ready",
+    "visualReference": "reference-only",
+    "resourceSpecAllPages": "manifested; importer refresh required for remaining verified geometry"
+  }
+}

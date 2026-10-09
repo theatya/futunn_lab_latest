@@ -15,3 +15,4 @@ export {
   shift,
 } from "./geometry";
 export { buildSolveContent } from "./adapt";
+export { solveRecipe, type SolveRecipeInput } from "./solve-recipe";

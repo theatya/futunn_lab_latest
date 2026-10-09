@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@futu/corpus": "workspace:*",
     "@futu/domain": "workspace:*",
     "@futu/ports": "workspace:*",
     "@futu/solver": "workspace:*",

@@ -103,7 +103,7 @@ export interface FigmaWriteOptions {
 export interface FigmaWriteResult {
   ok: boolean;
   /** 成功写入的节点 */
-  nodes: Array<{ key: string; lang: string; nodeId: string }>;
+  nodes: Array<{ key: string; lang: string; nodeId: string; recipeId?: string; validated?: boolean }>;
   /** 失败的板，带原因 */
   failures: Array<{ key: string; lang: string; error: string }>;
 }

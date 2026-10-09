@@ -1,0 +1,19 @@
+{
+  "name": "@futu/corpus",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "版本化广告语料、方案库与确定性匹配器。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@futu/domain": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

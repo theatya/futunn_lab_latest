@@ -43,6 +43,7 @@ import {
   type CopyLayoutPreset,
   type Lang,
   type LogoSourceMode,
+  type RecipeTypography,
   type TargetBoard,
 } from "@futu/domain";
 import { ALL_SIZES, SIZE_GROUPS } from "@futu/specs";
@@ -65,6 +66,8 @@ import { TextArea, TextField } from "@/components/ui/field";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { useFitBoard } from "@/lib/use-fit-board";
+import { buildRecommendedCopyPresets } from "@/lib/corpus-recommendation";
+import { buildMasterLayoutFingerprint } from "@/lib/layout-fingerprint";
 import type { FigmaRecognitionResult, FigmaRecognizedLayer } from "@/lib/figma-recognition";
 import type { LayerRole } from "@/lib/recognize";
 
@@ -280,6 +283,70 @@ function titleGroupParts(layer: FigmaRecognizedLayer | undefined) {
     sub: layerFromTextNodes(layer, subNodes),
   };
 }
+
+function frozenTypography(
+  layer: FigmaRecognizedLayer | undefined,
+  boardHeight: number,
+): RecipeTypography | undefined {
+  const node = layer?.textNodes[0];
+  if (!node?.fontSize) return undefined;
+  const weight = node.fontWeight ?? 400;
+  const lineHeight = node.lineHeightPx ?? node.fontSize * 1.2;
+  return {
+    fontFamily: node.fontFamily ?? "Inter",
+    fontStyle: weight >= 700 ? "Bold" : weight >= 500 ? "Medium" : "Regular",
+    fontWeight: weight,
+    fontSizePx: node.fontSize,
+    fontSizeToBoardHeight: node.fontSize / boardHeight,
+    lineHeightPx: lineHeight,
+    lineHeightToFontSize: lineHeight / node.fontSize,
+    letterSpacing: node.letterSpacing,
+    alignHorizontal: node.textAlignHorizontal === "CENTER" ? "center" : "left",
+    alignVertical: node.textAlignVertical === "TOP" ? "top" : node.textAlignVertical === "BOTTOM" ? "bottom" : "center",
+    autoResize: "height",
+    color: node.color,
+    runs: (node.styleRuns ?? []).map((run) => ({
+      start: run.start,
+      end: run.end,
+      fontFamily: run.fontFamily,
+      fontStyle: (run.fontWeight ?? weight) >= 700 ? "Bold" : (run.fontWeight ?? weight) >= 500 ? "Medium" : "Regular",
+      fontWeight: run.fontWeight,
+      fontSizeRatio: run.fontSize ? run.fontSize / node.fontSize : undefined,
+      color: run.color,
+      fillCss: run.fillCss,
+      italic: run.italic,
+    })),
+  };
+}
+
+function corpusPresetsForRecognition(
+  result: FigmaRecognitionResult,
+  lang: Lang,
+  sourceFrameId: string,
+): CopyLayoutPreset[] {
+  if (result.frame.width !== 1080 || result.frame.height !== 225) return [];
+  const layer = (role: LayerRole) => result.layers.find((item) => item.role === role);
+  const titleGroup = layer("titleGroup");
+  const groupParts = titleGroupParts(titleGroup);
+  const titleSource = layer("title") ?? groupParts.title ?? titleGroup;
+  const fingerprint = buildMasterLayoutFingerprint(result, lang);
+  const titleTokens = tokenizeTitle(recognizedText(titleSource, lang), lang);
+
+  return buildRecommendedCopyPresets({
+    lang,
+    board: { width: result.frame.width, height: result.frame.height },
+    structure: fingerprint.structure,
+    mainTitleLines: fingerprint.mainTitleLines,
+    subTitleLines: fingerprint.subTitleLines,
+    alignment: fingerprint.alignment,
+    modules: fingerprint.modules,
+    fingerprint,
+    titleTokens,
+    masterBreaks: recognizedBreaks(titleSource, lang),
+    sourceFrameId,
+  });
+}
+
 const MASTER_LANGS = [
   { id: "en" as const, label: "英文" },
   { id: "sc" as const, label: "简体" },
@@ -1115,11 +1182,19 @@ function RecognizeMaster({ onNext }: { onNext: () => void }) {
   const source = sources[activeLang] ?? emptyMasterRecognitionSource();
   const visualComponent = source.visualComponent ?? emptyMasterRecognitionSource().visualComponent;
   const visualComponentId = visualComponent.result?.frame.componentId ?? visualComponent.result?.frame.id;
-  const visualInstanceLayer = source.result?.layers.find((layer) =>
+  const explicitlyBoundVisualLayer = source.result?.layers.find((layer) =>
     Boolean(visualComponentId) && (
       layer.componentId === visualComponentId
       || (layer.nodeType === "COMPONENT" && layer.id === visualComponentId)
       || layer.id === visualComponent.result?.frame.id
+    ),
+  );
+  const visualInstanceLayer = explicitlyBoundVisualLayer ?? source.result?.layers.find((layer) =>
+    layer.role === "kv"
+    || layer.suggestedRole === "kv"
+    || (
+      (layer.nodeType === "INSTANCE" || layer.nodeType === "COMPONENT")
+      && /主视觉|key\s*visual|(^|[\s_-])kv($|[\s_-])/i.test(layer.name)
     ),
   );
 
@@ -1260,12 +1335,18 @@ function RecognizeMaster({ onNext }: { onNext: () => void }) {
 
   const mappedRoles = new Set(source.result?.layers.filter((layer) => layer.role !== "skip").map((layer) => layer.role));
   const hasTitle = mappedRoles.has("title") || mappedRoles.has("titleGroup");
-  const canConfirm = Boolean(source.result && !source.busy && hasTitle && visualComponent.result && !visualComponent.busy);
+  const canConfirm = Boolean(
+    source.result
+    && !source.busy
+    && hasTitle
+    && (visualComponent.result || visualInstanceLayer)
+    && !visualComponent.busy,
+  );
 
   const confirmMapping = () => {
     const result = source.result;
     const visualResult = visualComponent.result;
-    if (!result || !visualResult) return;
+    if (!result || (!visualResult && !visualInstanceLayer)) return;
     const layer = (role: LayerRole) => result.layers.find((item) => item.role === role);
     const title = layer("title");
     const sub = layer("sub");
@@ -1286,10 +1367,22 @@ function RecognizeMaster({ onNext }: { onNext: () => void }) {
     const masterTitleStack = titleSource?.bounds && subSource?.bounds && subSource.bounds.y < titleSource.bounds.y
       ? "sub-first"
       : "title-first";
+    const sourceFrameKey = `${result.fileKey ?? "legacy"}:${result.frame.id}`;
+    const recommendedPresets = corpusPresetsForRecognition(result, activeLang, sourceFrameKey);
+    const autoPreset = recommendedPresets[0];
+    const storedRecommendedPresets = recommendedPresets.map((preset, index) =>
+      index === 0 ? { ...preset, applicationState: "applied" as const } : preset);
+    const retainedPresets = (project.content.copyLayoutPresets?.[activeLang] ?? [])
+      .filter((preset) => !preset.id.startsWith("corpus:"));
     const nextAdjustments = { ...project.content.copyLayoutAdjustments };
     const nextAssignments = { ...project.content.copyLayoutAssignments };
     delete nextAdjustments[activeLang];
     delete nextAssignments[activeLang];
+    if (autoPreset && result.frame.width === 1080 && result.frame.height === 225) {
+      nextAssignments[activeLang] = {
+        [sizeKey(result.frame.width, result.frame.height)]: autoPreset.id,
+      };
+    }
 
     updateCopy(activeLang, {
       ...(titleText ? { title: titleText, titleBreaks, titleStack: masterTitleStack } : {}),
@@ -1301,12 +1394,30 @@ function RecognizeMaster({ onNext }: { onNext: () => void }) {
       badge: badge ? recognizedText(badge, activeLang) : "",
     });
     updateContent({
+      masterLayoutFingerprints: {
+        ...project.content.masterLayoutFingerprints,
+        [activeLang]: buildMasterLayoutFingerprint(result, activeLang),
+      },
+      masterTextStyles: {
+        ...project.content.masterTextStyles,
+        [activeLang]: {
+          title: frozenTypography(titleSource, result.frame.height),
+          sub: frozenTypography(subSource, result.frame.height),
+          cta: frozenTypography(cta, result.frame.height),
+          disc: frozenTypography(disc, result.frame.height),
+        },
+      },
+      corpusVersion: recommendedPresets[0]?.corpusVersion ?? project.content.corpusVersion,
       copyLayoutAdjustments: nextAdjustments,
       copyLayoutSelections: {
         ...project.content.copyLayoutSelections,
-        [activeLang]: "master",
+        [activeLang]: autoPreset?.id ?? "master",
       },
       copyLayoutAssignments: nextAssignments,
+      copyLayoutPresets: {
+        ...project.content.copyLayoutPresets,
+        [activeLang]: [...storedRecommendedPresets, ...retainedPresets],
+      },
       ...(cta ? {
         ctaStyles: {
           ...project.content.ctaStyles,
@@ -1360,12 +1471,12 @@ function RecognizeMaster({ onNext }: { onNext: () => void }) {
       ...logoPatch,
       ...(!logo ? { logo: undefined, logoPreset: undefined } : {}),
       kv: {
-        id: visualResult.frame.id,
-        name: visualResult.frame.name,
+        id: visualResult?.frame.componentId ?? visualResult?.frame.id ?? visualInstanceLayer!.componentId ?? visualInstanceLayer!.id,
+        name: visualResult?.frame.name ?? visualInstanceLayer!.name,
         source: "figma" as const,
         kind: "component" as const,
-        figmaUrl: visualComponent.url,
-        previewUrl: visualResult.previewUrl,
+        figmaUrl: visualResult ? visualComponent.url : source.url,
+        previewUrl: visualResult?.previewUrl ?? visualInstanceLayer!.previewUrl,
       },
       ...(qrcode ? {
         qrCode: project.content.qrCode ?? { id: qrcode.id, name: qrcode.name, source: "figma" as const, kind: "component" as const, figmaUrl: source.url },
@@ -1503,10 +1614,55 @@ function RecognizeMaster({ onNext }: { onNext: () => void }) {
               {Object.values(sources).filter((item) => item?.confirmed).length} / {Object.keys(sources).length}
             </span>
           </div>
-          <div className="grid grid-cols-2 gap-5 rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-2)] p-3">
+          <div className="grid grid-cols-1 gap-3 rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-2)] p-3">
             <div className="flex min-w-0 items-center gap-2">
-              <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-medium">
-                主视觉组件链接
+              <div className="flex shrink-0 items-center gap-0.5">
+                <h2 className="text-[10px] font-medium">母版画板链接</h2>
+                <button
+                  type="button"
+                  aria-label="查看识别画板规则"
+                  onClick={() => setGuideKind("master")}
+                  className="grid size-4 place-items-center rounded-full text-[var(--app-text-3)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]"
+                >
+                  <Info size={11} />
+                </button>
+              </div>
+              <label className="relative block min-w-0 flex-1">
+                <Link2 size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-3)]" />
+                <input
+                  value={source.url}
+                  onChange={(event) => {
+                    if (source.busy || masterQueued) cancelRecognition("master");
+                    recognizeRequestRef.current[activeLang] = (recognizeRequestRef.current[activeLang] ?? 0) + 1;
+                    setSelectedLayerId(null);
+                    patchSource(activeLang, { url: event.target.value, result: null, busy: false, error: null, confirmed: false });
+                  }}
+                  onKeyDown={(event) => event.key === "Enter" && !source.busy && recognize()}
+                  placeholder={`粘贴 ${MASTER_LANGS.find((item) => item.id === activeLang)?.label} 母版链接`}
+                  className="h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] pl-8 pr-2.5 text-[10px] outline-none focus:border-[var(--color-brand)]"
+                />
+              </label>
+              <Button
+                size="sm"
+                disabled={!source.busy && !masterQueued && !source.url.trim()}
+                onClick={() => source.busy || masterQueued ? cancelRecognition("master") : recognize()}
+              >
+                {masterQueued
+                  ? "取消排队"
+                  : source.busy
+                    ? <><X size={12} />取消识别</>
+                    : source.result ? "重新识别" : "识别画板"}
+              </Button>
+            </div>
+            {source.result && visualInstanceLayer ? (
+              <div className="flex items-center justify-between rounded-[4px] border border-[var(--color-ok)]/30 bg-[var(--color-ok)]/5 px-3 py-2 text-[10px]">
+                <span>已从母版自动关联主视觉组件：{visualInstanceLayer.name}</span>
+                <span className="text-[var(--app-text-4)]">无需重复粘贴组件链接</span>
+              </div>
+            ) : source.result ? (
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-medium">
+                  主视觉组件链接（识别不到时补充）
                 <button
                   type="button"
                   aria-label="查看主视觉组件要求"
@@ -1533,57 +1689,11 @@ function RecognizeMaster({ onNext }: { onNext: () => void }) {
                   className="h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] pl-8 pr-2.5 text-[10px] outline-none focus:border-[var(--color-brand)]"
                 />
               </label>
-              <Button
-                size="sm"
-                disabled={!visualComponent.busy && !visualQueued && !visualComponent.url.trim()}
-                onClick={() => visualComponent.busy || visualQueued ? cancelRecognition("visual") : recognizeVisualComponent()}
-              >
-                {visualQueued
-                  ? "取消排队"
-                  : visualComponent.busy
-                    ? <><X size={12} />取消识别</>
-                    : visualComponent.result ? "重新识别" : "识别组件"}
+              <Button size="sm" disabled={!visualComponent.busy && !visualQueued && !visualComponent.url.trim()} onClick={() => visualComponent.busy || visualQueued ? cancelRecognition("visual") : recognizeVisualComponent()}>
+                {visualQueued ? "取消排队" : visualComponent.busy ? <><X size={12} />取消识别</> : visualComponent.result ? "重新识别" : "识别组件"}
               </Button>
-            </div>
-            <div className="flex min-w-0 items-center gap-2">
-              <div className="flex shrink-0 items-center gap-0.5">
-                <h2 className="text-[10px] font-medium">母版画板链接</h2>
-                <button
-                  type="button"
-                  aria-label="查看识别画板规则"
-                  onClick={() => setGuideKind("master")}
-                  className="grid size-4 place-items-center rounded-full text-[var(--app-text-3)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]"
-                >
-                  <Info size={11} />
-                </button>
               </div>
-                <label className="relative block min-w-0 flex-1">
-                  <Link2 size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-3)]" />
-                  <input
-                    value={source.url}
-                    onChange={(event) => {
-                      if (source.busy || masterQueued) cancelRecognition("master");
-                      recognizeRequestRef.current[activeLang] = (recognizeRequestRef.current[activeLang] ?? 0) + 1;
-                      setSelectedLayerId(null);
-                      patchSource(activeLang, { url: event.target.value, result: null, busy: false, error: null, confirmed: false });
-                    }}
-                    onKeyDown={(event) => event.key === "Enter" && !source.busy && recognize()}
-                    placeholder={`粘贴 ${MASTER_LANGS.find((item) => item.id === activeLang)?.label} 母版链接`}
-                    className="h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] pl-8 pr-2.5 text-[10px] outline-none focus:border-[var(--color-brand)]"
-                  />
-                </label>
-                <Button
-                  size="sm"
-                  disabled={!source.busy && !masterQueued && !source.url.trim()}
-                  onClick={() => source.busy || masterQueued ? cancelRecognition("master") : recognize()}
-                >
-                  {masterQueued
-                    ? "取消排队"
-                    : source.busy
-                      ? <><X size={12} />取消识别</>
-                      : source.result ? "重新识别" : "识别画板"}
-                </Button>
-            </div>
+            ) : null}
           </div>
           {visualComponent.error || source.error ? (
             <div className="mt-1.5 flex justify-between gap-4 px-1 text-[9px] text-[var(--color-up)]">
@@ -1591,12 +1701,8 @@ function RecognizeMaster({ onNext }: { onNext: () => void }) {
               <span>{source.error}</span>
             </div>
           ) : null}
-          <div className="mt-4 min-h-0 flex-1 grid grid-cols-[minmax(180px,0.72fr)_minmax(280px,1.15fr)_minmax(360px,1.35fr)] gap-3">
-            <VisualComponentPreview
-              result={visualComponent.result}
-              busy={visualComponent.busy}
-              queued={visualQueued}
-            />
+          <div className={cn("mt-4 min-h-0 flex-1 grid gap-3", visualInstanceLayer ? "grid-cols-[minmax(280px,1fr)_minmax(360px,1.2fr)]" : "grid-cols-[minmax(180px,0.72fr)_minmax(280px,1.15fr)_minmax(360px,1.35fr)]")}>
+            {!visualInstanceLayer ? <VisualComponentPreview result={visualComponent.result} busy={visualComponent.busy} queued={visualQueued} /> : null}
             <MasterBoard
               result={source.result}
               selectedId={selectedLayerId}
@@ -1656,7 +1762,6 @@ function groupedTargets(targets: TargetBoard[]) {
 function EditExtendFlow({ onNext }: { onNext: () => void }) {
   const { project, masterSources, setStep, setTargets, focusKey, setFocusKey } = useStudio();
   const [phase, setPhase] = useState<"select" | "group" | "edit">("select");
-  const [editor, setEditor] = useState<"content" | "frames">("frames");
   const [sizeGroupId, setSizeGroupId] = useState("inapp");
   const [customName, setCustomName] = useState("");
   const [customWidth, setCustomWidth] = useState("");
@@ -1676,7 +1781,7 @@ function EditExtendFlow({ onNext }: { onNext: () => void }) {
     project.content.kv?.source === "figma"
     && project.content.langs.every((language) => {
       const source = masterSources[language];
-      return source?.confirmed && source.result && source.visualComponent?.result;
+      return source?.confirmed && source.result;
     }),
   );
 
@@ -1762,31 +1867,23 @@ function EditExtendFlow({ onNext }: { onNext: () => void }) {
               </button>
             ))}
           </div>
-          <div className="absolute right-0 flex rounded-[5px] bg-[var(--app-surface-2)] p-0.5">
-            <button type="button" onClick={() => setEditor("content")} className={cn("h-7 rounded-[4px] px-3 text-[10px]", editor === "content" ? "bg-[var(--app-surface-3)] text-[var(--app-text)]" : "text-[var(--app-text-3)]")}>全局内容与样式</button>
-            <button type="button" onClick={() => setEditor("frames")} className={cn("h-7 rounded-[4px] px-3 text-[10px]", editor === "frames" ? "bg-[var(--app-surface-3)] text-[var(--app-text)]" : "text-[var(--app-text-3)]")}>布局族与画幅</button>
-          </div>
         </div>
-        {editor === "frames" ? (
-          <div className="mb-3 flex shrink-0 items-center gap-2">
-            <span className="text-[9px] text-[var(--app-text-4)]">布局族</span>
-            {families.map((family) => (
-              <button
-                key={family.id}
-                type="button"
-                onClick={() => family.representative && setFocusKey(family.representative.key)}
-                className={cn("h-7 rounded-[4px] px-3 text-[10px]", activeFamily?.id === family.id ? "bg-[var(--color-brand-soft)] text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)]")}
-              >
-                {family.label} · {family.items.length}
-              </button>
-            ))}
-            <span className="ml-auto text-[9px] text-[var(--app-text-4)]">当前代表画幅 {activeFamily?.representative?.key}</span>
-          </div>
-        ) : null}
+        <div className="mb-3 flex shrink-0 items-center gap-2">
+          <span className="text-[9px] text-[var(--app-text-4)]">布局族</span>
+          {families.map((family) => (
+            <button
+              key={family.id}
+              type="button"
+              onClick={() => family.representative && setFocusKey(family.representative.key)}
+              className={cn("h-7 rounded-[4px] px-3 text-[10px]", activeFamily?.id === family.id ? "bg-[var(--color-brand-soft)] text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)]")}
+            >
+              {family.label} · {family.items.length}
+            </button>
+          ))}
+          <span className="ml-auto text-[9px] text-[var(--app-text-4)]">当前代表画幅 {activeFamily?.representative?.key}</span>
+        </div>
         <div className="min-h-0 flex-1">
-          {editor === "content"
-            ? <ContentLayout embedded onNext={() => setEditor("frames")} />
-            : <StepFrames embedded familyKeys={activeFamily?.items.map((item) => item.key)} familyLabel={activeFamily?.label} />}
+          <StepFrames embedded familyKeys={activeFamily?.items.map((item) => item.key)} familyLabel={activeFamily?.label} />
         </div>
         <div className="mt-3 flex shrink-0 items-center justify-between">
           <div className="text-[10px] text-[var(--app-text-4)]">
@@ -1794,11 +1891,7 @@ function EditExtendFlow({ onNext }: { onNext: () => void }) {
           </div>
           <div className="flex gap-2">
             <Button size="lg" onClick={() => setPhase("group")}>上一步</Button>
-            {editor === "content" ? (
-              <Button variant="workflow" size="lg" onClick={() => setEditor("frames")}>进入画幅布局</Button>
-            ) : (
-              <Button variant="workflow" size="lg" icon={<WorkflowSparkle />} onClick={onNext}>预览并写入</Button>
-            )}
+            <Button variant="workflow" size="lg" icon={<WorkflowSparkle />} onClick={onNext}>预览并写入</Button>
           </div>
         </div>
       </div>
@@ -2338,6 +2431,13 @@ function LayerMappingTable({
   onBackgroundColorChange: (value: string) => void;
 }) {
   const selectedLayer = result?.layers.find((layer) => layer.id === selectedId && layer.id !== excludedLayerId);
+  const visibleLayers = result?.layers.filter((layer) => layer.id !== excludedLayerId) ?? [];
+  // “自定义识别”是用户追加的映射，始终放在已识别图层之后，
+  // 避免看起来像是替换了原列表中的某一行。
+  const orderedLayers = [
+    ...visibleLayers.filter((layer) => layer.role !== "custom"),
+    ...visibleLayers.filter((layer) => layer.role === "custom"),
+  ];
   return (
     <div className="min-h-0 overflow-hidden rounded-[5px] border border-[var(--app-line)] bg-[#0b0c0e] flex flex-col">
       <div className="grid grid-cols-[minmax(0,1fr)_160px_minmax(0,1.1fr)_24px] gap-3 border-b border-[var(--app-line)] bg-[var(--app-surface-2)] px-3 py-2 text-[9px] text-[var(--app-text-3)]">
@@ -2347,7 +2447,7 @@ function LayerMappingTable({
         <span />
       </div>
       <div className="mapping-scrollbar min-h-0 flex-1 overflow-y-scroll overscroll-contain">
-        {result?.layers.filter((layer) => layer.id !== excludedLayerId).map((layer) => (
+        {orderedLayers.map((layer) => (
           <div
             key={layer.id}
             onClick={() => onSelect(layer.id)}
@@ -2494,6 +2594,70 @@ function ContentLayout({ onNext, embedded = false }: { onNext: () => void; embed
     () => allPresets.filter((preset) => preset.sourceFrameId === sourceFrameKey),
     [allPresets, sourceFrameKey],
   );
+  const corpusRecommendations = useMemo(
+    () => recognition && sourceFrameKey
+      ? corpusPresetsForRecognition(recognition, activeLang, sourceFrameKey)
+      : [],
+    [activeLang, recognition, sourceFrameKey],
+  );
+  const recommendationVersion = corpusRecommendations[0]?.corpusVersion;
+  const hasCurrentCorpusRecommendations = presets.some((preset) =>
+    preset.recipeId && preset.corpusVersion === recommendationVersion);
+  useEffect(() => {
+    if (!sourceFrameKey || hasCurrentCorpusRecommendations || corpusRecommendations.length === 0) return;
+    const staleAssignments = Object.fromEntries(
+      Object.entries(project.content.copyLayoutAssignments?.[activeLang] ?? {})
+        .filter(([, presetId]) => !presetId.startsWith("corpus:")),
+    );
+    updateContent({
+      ...(recognition ? {
+        masterLayoutFingerprints: {
+          ...project.content.masterLayoutFingerprints,
+          [activeLang]: buildMasterLayoutFingerprint(recognition, activeLang),
+        },
+        masterTextStyles: {
+          ...project.content.masterTextStyles,
+          [activeLang]: {
+            title: frozenTypography(effectiveTitle, recognition.frame.height),
+            sub: frozenTypography(effectiveSub, recognition.frame.height),
+            cta: frozenTypography(mapped("cta"), recognition.frame.height),
+            disc: frozenTypography(mapped("disc"), recognition.frame.height),
+          },
+        },
+      } : {}),
+      corpusVersion: corpusRecommendations[0]?.corpusVersion ?? project.content.corpusVersion,
+      copyLayoutPresets: {
+        ...project.content.copyLayoutPresets,
+        [activeLang]: [
+          ...corpusRecommendations,
+          ...allPresets.filter((preset) =>
+            !preset.id.startsWith("corpus:") || preset.sourceFrameId !== sourceFrameKey),
+        ],
+      },
+      copyLayoutSelections: {
+        ...project.content.copyLayoutSelections,
+        [activeLang]: "master",
+      },
+      copyLayoutAssignments: {
+        ...project.content.copyLayoutAssignments,
+        [activeLang]: staleAssignments,
+      },
+    });
+  }, [
+    activeLang,
+    allPresets,
+    corpusRecommendations,
+    hasCurrentCorpusRecommendations,
+    project.content.corpusVersion,
+    project.content.copyLayoutAssignments,
+    project.content.copyLayoutSelections,
+    project.content.masterLayoutFingerprints,
+    project.content.masterTextStyles,
+    project.content.copyLayoutPresets,
+    recognition,
+    sourceFrameKey,
+    updateContent,
+  ]);
   const layoutSelection = project.content.copyLayoutSelections?.[activeLang] ?? "master";
   const selectedPresetId = layoutSelection !== "master" && layoutSelection !== "draft" ? layoutSelection : null;
   const isFollowingMaster = layoutSelection === "master";
@@ -2632,15 +2796,52 @@ function ContentLayout({ onNext, embedded = false }: { onNext: () => void; embed
     setPresetName(preset.name);
   };
 
+  const recommendedPreset = presets
+    .filter((preset) => preset.recipeId)
+    .sort((left, right) => (right.recommendationScore ?? 0) - (left.recommendationScore ?? 0))[0];
+  const applied1080PresetId = project.content.copyLayoutAssignments?.[activeLang]?.[sizeKey(1080, 225)];
+  const applyTrainingPreset = (preset: CopyLayoutPreset) => {
+    updateCopy(activeLang, { titleBreaks: preset.titleBreaks, titleStack: preset.titleStack });
+    updateContent({
+      copyLayoutAdjustments: {
+        ...project.content.copyLayoutAdjustments,
+        [activeLang]: { titleGap: preset.titleGap },
+      },
+      copyLayoutSelections: {
+        ...project.content.copyLayoutSelections,
+        [activeLang]: preset.id,
+      },
+      copyLayoutAssignments: {
+        ...project.content.copyLayoutAssignments,
+        [activeLang]: {
+          ...(project.content.copyLayoutAssignments?.[activeLang] ?? {}),
+          [sizeKey(1080, 225)]: preset.id,
+        },
+      },
+      copyLayoutPresets: {
+        ...project.content.copyLayoutPresets,
+        [activeLang]: allPresets.map((item) => item.id === preset.id
+          ? { ...item, applicationState: "applied" }
+          : item.recipeId ? { ...item, applicationState: "recommended" } : item),
+      },
+    });
+    setPresetName(preset.name);
+  };
+
   const savePreset = (asNew = false) => {
     const name = presetName.trim() || `${lineCount} 行方案`;
+    const existingPreset = !asNew && selectedPresetId
+      ? presets.find((preset) => preset.id === selectedPresetId)
+      : undefined;
     const current: CopyLayoutPreset = {
+      ...existingPreset,
       id: !asNew && selectedPresetId ? selectedPresetId : `layout-${Date.now()}`,
       name,
       sourceFrameId: sourceFrameKey,
       titleBreaks: [...copy.titleBreaks],
       titleStack: titleStackOf(copy),
       titleGap,
+      ...(existingPreset?.recipeId ? { applicationState: "modified" as const } : {}),
     };
     const next = !asNew && selectedPresetId
       ? presets.map((preset) => preset.id === selectedPresetId ? current : preset)
@@ -2839,12 +3040,38 @@ function ContentLayout({ onNext, embedded = false }: { onNext: () => void; embed
                     <span className="text-[11px] font-medium">排版方案</span>
                     <span className="text-[9px] text-[var(--app-text-4)]">按语言保存</span>
                   </div>
+                  {recommendedPreset ? (
+                    <div className="mb-3 rounded-[6px] border border-[var(--color-brand)]/45 bg-[var(--color-brand)]/5 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-semibold text-[var(--app-text)]">推荐训练方案</div>
+                          <div className="mt-1 truncate text-[11px] text-[var(--app-text-2)]">{recommendedPreset.name.replace(/^推荐｜/, "")}</div>
+                          <p className="mt-1.5 text-[9px] leading-relaxed text-[var(--app-text-4)]">{recommendedPreset.recommendationReason}</p>
+                          <div className="mt-1 text-[9px] text-[var(--app-text-4)]">
+                            Recipe {recommendedPreset.recipeId} · 语料 {recommendedPreset.corpusVersion}
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant={applied1080PresetId === recommendedPreset.id ? "secondary" : "workflow"}
+                          disabled={applied1080PresetId === recommendedPreset.id}
+                          onClick={() => applyTrainingPreset(recommendedPreset)}
+                        >
+                          {applied1080PresetId === recommendedPreset.id ? "已应用" : "应用到 1080×225"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mb-3 rounded-[6px] border border-[var(--app-line)] bg-[var(--app-surface-2)] p-3 text-[10px] text-[var(--app-text-3)]">
+                      当前结构没有可交付训练方案，将保持母版；不会静默套用通用条幅。
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-1.5">
                     <button type="button" onClick={() => applyPreset()} className={cn("h-7 rounded-[4px] px-2.5 text-[9px]", isFollowingMaster ? "choice-on" : "choice-idle")}>跟随母版</button>
                     {presets.map((preset) => (
                       <span key={preset.id} className="group relative">
                         <button type="button" onClick={() => applyPreset(preset)} className={cn("h-7 rounded-[4px] px-2.5 pr-6 text-[9px]", selectedPresetId === preset.id ? "choice-on" : "choice-idle")}>{preset.name}</button>
-                        <button type="button" aria-label={`删除 ${preset.name}`} onClick={() => deletePreset(preset.id)} className="absolute right-1 top-1/2 hidden -translate-y-1/2 text-[var(--app-text-4)] hover:text-[var(--app-text)] group-hover:block"><X size={10} /></button>
+                        {!preset.recipeId ? <button type="button" aria-label={`删除 ${preset.name}`} onClick={() => deletePreset(preset.id)} className="absolute right-1 top-1/2 hidden -translate-y-1/2 text-[var(--app-text-4)] hover:text-[var(--app-text)] group-hover:block"><X size={10} /></button> : null}
                       </span>
                     ))}
                     <button type="button" onClick={() => { setLayoutSelection("draft"); setPresetName(`自定义 ${lineCount} 行`); }} className="h-7 rounded-[4px] border border-dashed border-[var(--app-line-strong)] px-2.5 text-[9px] text-[var(--app-text-3)] hover:text-[var(--app-text)]">+ 新建方案</button>

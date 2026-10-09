@@ -19,18 +19,23 @@ import {
   type ElementKey,
   type ExtraConfig,
   type LayoutKind,
+  type LayoutRecipe,
   type MarginConfig,
   type Rect,
   type ShowConfig,
   type SizeSpec,
   type SolveNote,
   type Solution,
+  type RecipeTrace,
+  type RecipeRole,
+  type RecipeTypography,
   type TitleStack,
 } from "@futu/domain";
 
 import { anchorRect, biasNote, normExtra, normMargin, normShow, nudgeNote, overlaps, shift } from "./geometry";
 import { ApproxMeasurer, type TextMeasurer } from "./measure";
 import { ctaWidth, disclaimerLineCount, pickCta, wrapTitle, type SolveContent } from "./text";
+import { solveRecipe } from "./solve-recipe";
 
 export type { SolveContent };
 
@@ -46,6 +51,10 @@ export interface SolveInput {
   extra?: Partial<ExtraConfig> | null;
   /** 站内规范；没有就是站外位，排版自由 */
   spec?: SizeSpec | null;
+  /** 1080×225 等已训练画幅优先消费完整配方，不再进入比例启发式。 */
+  recipe?: LayoutRecipe;
+  recipeTrace?: RecipeTrace;
+  typographyOverrides?: Partial<Record<RecipeRole, RecipeTypography>>;
   /** 不传则用估算实现。浏览器里应传 CanvasMeasurer。 */
   measurer?: TextMeasurer;
 }
@@ -304,6 +313,18 @@ export function solve(input: SolveInput): Solution {
   const spec = input.spec ?? null;
 
   const show = normShow(input.show);
+  if (input.recipe && input.recipeTrace && w === input.recipe.board.width && h === input.recipe.board.height) {
+    return solveRecipe({
+      board: { w, h },
+      content,
+      show,
+      spec,
+      recipe: input.recipe,
+      trace: input.recipeTrace,
+      typographyOverrides: input.typographyOverrides,
+      measurer,
+    });
+  }
   const ex = normExtra(input.extra);
   const mgWant = normMargin(input.margin);
 
@@ -367,16 +388,23 @@ export function solve(input: SolveInput): Solution {
     let cta: Rect | null = null;
     let ctaLabel = content.ctaLong;
     if (show.cta && spec?.cta) {
-      // 位置和大小都是规范钉死的，求解器不参与，只负责给它让地方
-      const cw = spec.cta.w;
-      const ch = spec.cta.h;
-      const gr = spec.cta.gapRight;
-      ctaLabel = pickCta(cw, spec.cta.fontPx, false, content, measurer, notes);
-      cta = { x: (w - gr - cw) / w, y: (h - ch) / 2 / h, w: cw / w, h: ch / h };
-      right = w - gr - cw - padX;
+      const rule = spec.cta;
+      const maxWidth = Math.min(rule.maxWidth, w - rule.gapX * 2);
+      ctaLabel = pickCta(maxWidth - rule.paddingX * 2, rule.fontPx, false, content, measurer, notes);
+      const measured = measurer.measure(ctaLabel, rule.fontPx, "bold") + rule.paddingX * 2;
+      const cw = Math.max(rule.minWidth, Math.min(maxWidth, measured));
+      const ch = rule.height;
+      const x = rule.anchor === "left"
+        ? rule.gapX
+        : rule.anchor === "center"
+          ? (w - cw) / 2
+          : w - rule.gapX - cw;
+      cta = { x: x / w, y: (h - ch) / 2 / h, w: cw / w, h: ch / h };
+      if (rule.anchor === "left") left = x + cw + padX;
+      if (rule.anchor === "right") right = x - padX;
       notes.push({
         level: "lock",
-        text: `规范钉死：按钮 ${cw}×${ch}px、距右 ${gr}px、字号 ${spec.cta.fontPx}px，求解器不动它`,
+        text: `规范约束：CTA 高 ${ch}px、字号 ${rule.fontPx}px、左右 Padding ${rule.paddingX}px；当前文案自适应为 ${Math.round(cw)}px 宽，${rule.anchor === "left" ? "左" : rule.anchor === "center" ? "居中" : "右"}锚定`,
       });
     } else if (show.cta) {
       ctaLabel = pickCta(w * 0.24, ctaPx, false, content, measurer, notes);

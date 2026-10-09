@@ -14,12 +14,14 @@ import {
   disclaimerText,
   emptyLangCopy,
   frameLogoOf,
+  resolvedLayoutRecipe,
   resolvedTitleBreaks,
   type Lang,
   type Project,
   type Solution,
   type TargetBoard,
 } from "@futu/domain";
+import { recipeById } from "@futu/corpus";
 import type {
   BoardPlan,
   FigmaWriteOptions,
@@ -40,6 +42,8 @@ export function solveBoard(
   const cfg = boardConfigOf(project, target.key);
   const copy = project.content.copy[lang] ?? emptyLangCopy();
   const titleBreaks = resolvedTitleBreaks(project.content, lang, target.key);
+  const recipeTrace = resolvedLayoutRecipe(project.content, lang, target.key);
+  const recipe = recipeTrace ? recipeById(recipeTrace.recipeId) : undefined;
   const lookup = specOf(target.w, target.h);
 
   return solve({
@@ -49,6 +53,9 @@ export function solveBoard(
     margin: cfg.margin,
     extra: cfg.extra,
     spec: lookup?.spec ?? null,
+    recipe,
+    recipeTrace,
+    typographyOverrides: project.content.masterTextStyles?.[lang],
     ...(measurer ? { measurer } : {}),
   });
 }
@@ -98,6 +105,14 @@ export function preflight(plans: BoardPlan[]): PreflightIssue[] {
       if (n.level === "warn" || n.level === "lock") {
         issues.push({ key: p.key, lang: p.lang, level: n.level, text: n.text });
       }
+    }
+    for (const issue of p.solution.quality?.issues ?? []) {
+      issues.push({
+        key: p.key,
+        lang: p.lang,
+        level: issue.level === "block" ? "lock" : "warn",
+        text: issue.text,
+      });
     }
   }
   return issues;

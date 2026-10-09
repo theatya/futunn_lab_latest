@@ -1,6 +1,6 @@
 "use client";
 
-import type { AssetRef, BadgeStyle, Rect, Solution } from "@futu/domain";
+import type { AssetRef, BadgeStyle, RecipeTypography, Rect, Solution } from "@futu/domain";
 import { EXTRA_KIND_META, type ExtraKind } from "@futu/domain";
 import type { SolveContent } from "@futu/solver";
 import { LogoPresetPreview } from "@/components/logo-preset-preview";
@@ -25,6 +25,48 @@ function box(r: Rect | null): React.CSSProperties | null {
     width: `${r.w * 100}%`,
     height: `${r.h * 100}%`,
   };
+}
+
+function StyledText({
+  text,
+  typography,
+  sourceOffset = 0,
+}: {
+  text: string;
+  typography?: RecipeTypography;
+  sourceOffset?: number;
+}) {
+  const runs = typography?.runs ?? [];
+  const boundaries = new Set([0, text.length]);
+  runs.forEach((run) => {
+    boundaries.add(Math.max(0, Math.min(text.length, run.start - sourceOffset)));
+    boundaries.add(Math.max(0, Math.min(text.length, run.end - sourceOffset)));
+  });
+  const points = [...boundaries].sort((a, b) => a - b);
+  return points.slice(0, -1).map((start, index) => {
+    const end = points[index + 1]!;
+    const run = runs.find((candidate) =>
+      candidate.start <= start + sourceOffset && candidate.end >= end + sourceOffset,
+    );
+    const gradient = run?.fillCss?.includes("gradient") ? run.fillCss : undefined;
+    return (
+      <span
+        key={`${start}-${end}`}
+        style={{
+          fontFamily: run?.fontFamily,
+          fontStyle: run?.italic ? "italic" : run?.fontStyle,
+          fontWeight: run?.fontWeight,
+          fontSize: run?.fontSizeRatio ? `${run.fontSizeRatio}em` : undefined,
+          color: gradient ? "transparent" : run?.color,
+          backgroundImage: gradient,
+          backgroundClip: gradient ? "text" : undefined,
+          WebkitBackgroundClip: gradient ? "text" : undefined,
+        }}
+      >
+        {text.slice(start, end)}
+      </span>
+    );
+  });
 }
 
 export function BoardPreview({
@@ -59,6 +101,11 @@ export function BoardPreview({
   const px = (real: number) => real * scale;
   const left = s.align === "left";
   const badgeAlignment = badgeStyle?.alignment ?? (s.badgeSide === "right" ? "right" : "left");
+  const recipeLayer = (role: string) => s.resolvedLayers?.find((layer) => layer.role === role);
+  const titleTypography = recipeLayer("title")?.typography;
+  const subTypography = (recipeLayer("kicker") ?? recipeLayer("sub"))?.typography;
+  const ctaLayer = recipeLayer("cta");
+  const discTypography = recipeLayer("disc")?.typography;
 
   return (
     <div
@@ -83,7 +130,7 @@ export function BoardPreview({
           className="flex items-center justify-center overflow-hidden"
         >
           {kv?.previewUrl ? (
-            <img src={kv.previewUrl} alt={kv.name} className="size-full object-contain" />
+            <img src={kv.previewUrl} alt={kv.name} className="size-full object-cover" />
           ) : (
             <span
               style={{ fontSize: Math.max(7, px(s.board.w * 0.026)) }}
@@ -99,7 +146,7 @@ export function BoardPreview({
       {s.badge ? (
         <div
           style={{
-            ...box({
+            ...box(s.recipeTrace ? s.badge : {
               ...s.badge,
               x: badgeAlignment === "center"
                 ? (1 - s.badge.w) / 2
@@ -137,26 +184,48 @@ export function BoardPreview({
       {/* 副标题 */}
       {s.sub ? (
         <div
-          style={{ ...box(s.sub)!, fontSize: px(s.subPx) }}
+          style={{
+            ...box(s.sub)!,
+            fontSize: px(s.subPx),
+            fontFamily: subTypography?.fontFamily,
+            fontWeight: subTypography?.fontWeight,
+            lineHeight: subTypography?.lineHeightToFontSize,
+            color: subTypography?.color,
+          }}
           className={cn("flex items-center whitespace-nowrap", left ? "justify-start" : "justify-center")}
         >
-          <span style={{ color: "var(--art-muted)" }} className="tracking-[0.04em]">
-            {content.sub}
-          </span>
+          <span><StyledText text={content.sub} typography={subTypography} /></span>
         </div>
       ) : null}
 
       {/* 主标题：逐行渲染，行由求解器决定，不交给 CSS 自动换行 */}
       {s.title ? (
         <div
-          style={{ ...box(s.title)!, fontSize: px(s.titlePx), lineHeight: 1.18 }}
+          style={{
+            ...box(s.title)!,
+            fontSize: px(s.titlePx),
+            lineHeight: titleTypography?.lineHeightToFontSize ?? 1.18,
+            fontFamily: titleTypography?.fontFamily,
+            fontWeight: titleTypography?.fontWeight,
+            color: titleTypography?.color,
+            letterSpacing: titleTypography?.letterSpacing == null
+              ? undefined
+              : px(titleTypography.letterSpacing),
+          }}
           className={cn("flex flex-col justify-start font-bold", left ? "items-start" : "items-center")}
         >
-          {s.titleLines.map((line, i) => (
-            <span key={i} className="whitespace-nowrap">
-              {line}
-            </span>
-          ))}
+          {s.titleLines.map((line, i) => {
+            const sourceOffset = s.titleLines.slice(0, i).reduce((sum, previous) => sum + previous.length + 1, 0);
+            return (
+              <span
+                key={i}
+                className="whitespace-nowrap"
+                style={{ fontSize: `${titleTypography?.lineFontSizeRatios?.[i] ?? 1}em` }}
+              >
+                <StyledText text={line} typography={titleTypography} sourceOffset={sourceOffset} />
+              </span>
+            );
+          })}
         </div>
       ) : null}
 
@@ -167,7 +236,8 @@ export function BoardPreview({
             ...box(s.cta)!,
             backgroundColor: ctaStyle?.backgroundColor ?? "var(--color-brand)",
             backgroundImage: ctaStyle?.backgroundImage,
-            borderRadius: Math.max(2, px(s.ctaPx * 0.42)),
+            borderRadius: ctaLayer?.cornerRadius ? px(ctaLayer.cornerRadius) : Math.max(2, px(s.ctaPx * 0.42)),
+            fontFamily: ctaLayer?.typography?.fontFamily,
           }}
           className="flex items-center justify-center"
         >
@@ -175,7 +245,7 @@ export function BoardPreview({
             style={{ fontSize: px(s.ctaPx), color: ctaStyle?.textColor ?? "#14100c" }}
             className="font-semibold whitespace-nowrap"
           >
-            {s.ctaLabel}
+            <StyledText text={s.ctaLabel} typography={ctaLayer?.typography} />
           </span>
         </div>
       ) : null}
@@ -183,10 +253,16 @@ export function BoardPreview({
       {/* 免责 */}
       {s.disc ? (
         <div
-          style={{ ...box(s.disc)!, fontSize: px(s.discPx), lineHeight: 1.4, color: "var(--art-muted)" }}
+          style={{
+            ...box(s.disc)!,
+            fontSize: px(s.discPx),
+            lineHeight: discTypography?.lineHeightToFontSize ?? 1.4,
+            color: discTypography?.color ?? "var(--art-muted)",
+            fontFamily: discTypography?.fontFamily,
+          }}
           className={cn("overflow-hidden", left ? "text-left" : "text-center")}
         >
-          {content.disclaimer}
+          <StyledText text={content.disclaimer} typography={discTypography} />
         </div>
       ) : null}
 

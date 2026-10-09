@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "2026-10-09.3",
+  "board": { "width": 1080, "height": 225 },
+  "sources": {
+    "pureSpec": {
+      "fileKey": "32DFBT1pwQmDl6gmqdWkXg",
+      "sectionNodeId": "0:1"
+    },
+    "training": {
+      "fileKey": "33G7qGtDpdJXwg3UP0k47O",
+      "englishSectionNodeId": "466:740",
+      "chineseSectionNodeId": "471:671",
+      "ctaSectionNodeId": "446:7442",
+      "badgeSectionNodeId": "451:7556",
+      "visualSectionNodeId": "446:3798"
+    }
+  },
+  "gates": {
+    "geometryTolerancePx": 1,
+    "minimumQualityScore": 100,
+    "allowedBlockingIssues": 0,
+    "requireExactLineCount": true,
+    "requireRecipeTrace": true,
+    "requireStructuredTypography": true,
+    "requireAutoLayout": true
+  },
+  "cases": [
+    {
+      "id": "english-title-sub-left",
+      "recipeId": "en-title-sub-left",
+      "runtimeLanguage": "en",
+      "tokens": ["Transfer", "to", "Earn", "More"],
+      "breaks": [2],
+      "sub": "Welcome offer",
+      "expectedRoles": ["kv", "titleGroup", "title", "sub", "cta"]
+    },
+    {
+      "id": "simplified-title-sub-center",
+      "recipeId": "zh-title-sub-center",
+      "runtimeLanguage": "sc",
+      "tokens": ["入金", "即享", "专属", "奖励"],
+      "breaks": [2],
+      "sub": "限时活动",
+      "expectedRoles": ["kv", "titleGroup", "title", "sub", "cta"]
+    },
+    {
+      "id": "traditional-reuses-common-recipe",
+      "recipeId": "zh-title-sub-center",
+      "runtimeLanguage": "tc",
+      "tokens": ["入金", "即享", "專屬", "獎勵"],
+      "breaks": [2],
+      "sub": "限時活動",
+      "expectedRoles": ["kv", "titleGroup", "title", "sub", "cta"]
+    },
+    {
+      "id": "english-badge",
+      "recipeId": "en-badge",
+      "runtimeLanguage": "en",
+      "tokens": ["Earn", "More"],
+      "breaks": [],
+      "sub": "Welcome offer",
+      "badge": "Limited offer",
+      "expectedRoles": ["kv", "titleGroup", "title", "sub", "cta", "badge"]
+    },
+    {
+      "id": "simplified-disclaimer",
+      "recipeId": "zh-disc",
+      "runtimeLanguage": "sc",
+      "tokens": ["投资", "新机遇", "即刻", "开启"],
+      "breaks": [2],
+      "sub": "限时活动",
+      "disclaimer": "投资有风险，入市需谨慎",
+      "expectedRoles": ["kv", "titleGroup", "title", "kicker", "cta", "disc"]
+    },
+    {
+      "id": "traditional-combined-logo-disclaimer",
+      "recipeId": "zh-title-logo-disc-center",
+      "runtimeLanguage": "tc",
+      "tokens": ["把握", "市場機遇"],
+      "breaks": [],
+      "sub": "限時活動",
+      "disclaimer": "投資有風險，入市需謹慎",
+      "expectedRoles": ["kv", "titleGroup", "title", "sub", "cta", "disc", "logo"]
+    }
+  ]
+}

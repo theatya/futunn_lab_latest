@@ -33,12 +33,15 @@ export interface SizeSpec {
   version: string;
   /** 左右安全边距下限，真实 px */
   minPadX?: number;
-  /** 按钮钉死：位置和大小都不许动 */
+  /** CTA 几何规范。宽度随文案伸缩，高度、字号、Padding 与锚点由资源位决定。 */
   cta?: {
-    w: number;
-    h: number;
-    gapRight: number;
+    height: number;
     fontPx: number;
+    paddingX: number;
+    minWidth: number;
+    maxWidth: number;
+    anchor: "left" | "center" | "right";
+    gapX: number;
   };
   /** 主标题最多几行 */
   maxTitleLines?: number;

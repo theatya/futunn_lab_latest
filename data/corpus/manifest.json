@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "2026-10-09.3",
+  "updatedAt": "2026-10-09T14:45:00+08:00",
+  "sources": [
+    {
+      "id": "resource-spec-clean",
+      "kind": "resource-spec",
+      "fileKey": "32DFBT1pwQmDl6gmqdWkXg",
+      "name": "广告设计规范 -纯净版 (AI语料)",
+      "scope": "all-pages",
+      "excludePageNameIncludes": ["🌟特殊，不训练"]
+    },
+    {
+      "id": "layout-en-1080x225",
+      "kind": "layout",
+      "fileKey": "33G7qGtDpdJXwg3UP0k47O",
+      "nodeId": "466:740",
+      "name": "训练｜1080×225｜英文"
+    },
+    {
+      "id": "layout-zh-1080x225",
+      "kind": "layout",
+      "fileKey": "33G7qGtDpdJXwg3UP0k47O",
+      "nodeId": "471:671",
+      "name": "训练｜1080×225｜简繁通用"
+    },
+    {
+      "id": "cta-styles",
+      "kind": "cta",
+      "fileKey": "33G7qGtDpdJXwg3UP0k47O",
+      "nodeId": "446:7442",
+      "name": "CTA｜样式库｜固定4种"
+    },
+    {
+      "id": "badge-styles",
+      "kind": "badge",
+      "fileKey": "33G7qGtDpdJXwg3UP0k47O",
+      "nodeId": "451:7556",
+      "name": "角标样式"
+    },
+    {
+      "id": "visual-reference",
+      "kind": "visual-reference",
+      "fileKey": "33G7qGtDpdJXwg3UP0k47O",
+      "nodeId": "446:3798",
+      "name": "主视觉组件参考",
+      "training": false
+    }
+  ]
+}

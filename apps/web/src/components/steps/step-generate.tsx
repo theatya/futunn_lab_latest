@@ -13,7 +13,7 @@ import { Button, WorkflowSparkle } from "@/components/ui/button";
 import { Chip } from "@/components/ui/note";
 import { Band, Panel, SectionTitle } from "@/components/ui/panel";
 import { Segmented } from "@/components/ui/segmented";
-import { buildSolveContent } from "@futu/solver";
+import { buildSolveContent, CanvasMeasurer } from "@futu/solver";
 
 const ports = createWebPorts();
 
@@ -25,9 +25,14 @@ export function StepGenerate() {
   const [done, setDone] = useState<Awaited<ReturnType<typeof generate>> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bridgeLabel, setBridgeLabel] = useState("");
+  const measurer = useMemo(() => new CanvasMeasurer('"BR Hendrix","PingFang SC",sans-serif'), []);
 
-  const plans = useMemo(() => planBoards(project), [project]);
+  const plans = useMemo(() => planBoards(project, measurer), [measurer, project]);
   const issues = useMemo(() => preflight(plans), [plans]);
+  const hasBlockingIssues = issues.some((issue) => issue.level === "lock");
+  const recipeTraces = useMemo(() => Array.from(new Map(
+    plans.flatMap((plan) => plan.solution.recipeTrace ? [[plan.solution.recipeTrace.recipeId, plan.solution.recipeTrace] as const] : []),
+  ).values()), [plans]);
   const boards = plans.length;
   const copy = project.content.copy[lang];
   const stagger = useStagger(0.02);
@@ -45,7 +50,7 @@ export function StepGenerate() {
         page,
         pageName: project.name,
         arrange,
-      });
+      }, { measurer });
       setDone(result);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Figma 写入失败");
@@ -126,6 +131,19 @@ export function StepGenerate() {
           </div>
           </Panel>
 
+          <Panel>
+            <SectionTitle>训练方案追溯</SectionTitle>
+            {recipeTraces.length ? (
+              <div className="space-y-1 text-[10px] text-[var(--app-text-3)]">
+                {recipeTraces.map((trace) => (
+                  <div key={trace.recipeId}>{trace.recipeId} · 语料 {trace.corpusVersion}</div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[10px] text-[var(--color-warn)]">当前没有已应用的训练配方，不能宣称为训练集输出。</p>
+            )}
+          </Panel>
+
           {issues.length > 0 ? (
             <Panel>
             <SectionTitle>生成前检查 · {issues.length} 项</SectionTitle>
@@ -178,10 +196,10 @@ export function StepGenerate() {
         </div>
         <div className="-mx-4 -mb-4 mt-3 flex shrink-0 justify-end gap-2 border-t border-[var(--app-line)] bg-[var(--app-band)] p-4">
           <Button size="lg" disabled={busy} onClick={() => setStep(1)}>上一步</Button>
-          <Button variant="workflow" size="lg" icon={busy ? undefined : <WorkflowSparkle />} disabled={busy || boards === 0} onClick={run}>
+          <Button variant="workflow" size="lg" icon={busy ? undefined : <WorkflowSparkle />} disabled={busy || boards === 0 || hasBlockingIssues} onClick={run}>
             {busy ? (
               <><Loader2 size={14} className="animate-spin" />等待写入 {boards} 块…</>
-            ) : `写入 Figma · ${boards} 块画板`}
+            ) : hasBlockingIssues ? "存在阻塞项，暂不可写入" : `写入 Figma · ${boards} 块画板`}
           </Button>
         </div>
       </Band>

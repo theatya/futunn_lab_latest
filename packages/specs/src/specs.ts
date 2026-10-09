@@ -15,14 +15,20 @@ import type { SizeSpec } from "@futu/domain";
 export const SPECS: Record<string, SizeSpec> = {
   s1: {
     source: "广告设计规范 / 我的tab_banner",
-    version: "读取于 2026-09-04",
+    version: "语料库 2026-10-09.1",
     minPadX: 24,
-    cta: { w: 200, h: 80, gapRight: 24, fontPx: 30 },
-    maxTitleLines: 1,
+    cta: {
+      height: 80,
+      fontPx: 30,
+      paddingX: 40,
+      minWidth: 200,
+      maxWidth: 360,
+      anchor: "right",
+      gapX: 24,
+    },
+    maxTitleLines: 3,
     todo: [
-      "标注写「按钮高度 80px」，图上画的标注框是 72px，听哪个要确认",
-      "只标了右边距 24px，左边距没标",
-      "文案区标了 40 / 36 / 30 / 54px 四档字号，分别归主标题还是副标题没写",
+      "其余资源位的 CTA 几何等待导入器从纯净版逐页复核。",
     ],
   },
 };
