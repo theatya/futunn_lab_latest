@@ -1,13 +1,12 @@
 import {
   BOARD_CONFIG_DEFAULT,
   emptyLangCopy,
-  sizeKey,
   type Content,
   type LangCopy,
   type Project,
   type TargetBoard,
 } from "@futu/domain";
-import { ALL_SIZES } from "@futu/specs";
+import { slotByKey, slotTarget } from "@futu/specs";
 
 const EN: LangCopy = {
   sub: "Transfer to Earn",
@@ -79,9 +78,8 @@ const DEFAULT_CONTENT: Content = {
 const DEFAULT_KEYS = ["1200×628", "1080×1080", "1080×225", "1080×1920"];
 
 function targetFromKey(key: string): TargetBoard | null {
-  const item = ALL_SIZES.find((s) => sizeKey(s.w, s.h) === key);
-  if (!item) return null;
-  return { key, w: item.w, h: item.h, sizeId: item.id, use: item.use };
+  const item = slotByKey(key);
+  return item ? slotTarget(item) : null;
 }
 
 export function createDefaultProject(): Project {

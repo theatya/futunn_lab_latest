@@ -103,7 +103,8 @@ export async function POST(request: Request) {
   };
 
   if (body.action === "create") {
-    if (!body.sessionId || !body.boards?.length || !body.options?.visualComponent?.id) {
+    const needsVisual = body.boards?.some((board) => !board.native);
+    if (!body.sessionId || !body.boards?.length || !body.options || (needsVisual && !body.options.visualComponent?.id)) {
       return json({ error: "写入任务缺少配对码、画板或主视觉组件" }, { status: 400 });
     }
     const id = crypto.randomUUID();

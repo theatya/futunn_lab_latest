@@ -6,14 +6,9 @@ from pathlib import Path
 from fontTools.ttLib import TTFont
 
 
-ROOTS = [
-    Path("D:\\\u5b57\u4f53\u5305\\\u82f1\u6587\u5b57\u4f53BR"),
-    Path("D:\\\u5b57\u4f53\u5305\\MiSans\\otf"),
-    Path("D:\\\u5b57\u4f53\u5305\\\u65b9\u6b63\u5170\u4ead-\u54c1\u724c\u8d44\u6e90\\\u65b9\u6b63\u5170\u4ead"),
-    Path("D:\\\u5b57\u4f53\u5305\\M_PLUS_1p"),
-    Path("D:\\\u5b57\u4f53\u5305\\Source Han Serif (2)\\Source Han Serif"),
-    Path("D:\\\u5b57\u4f53\u5305\\\u6c49\u4eea\u96c5\u9177\u9ed1"),
-]
+FONT_PACKAGE = Path(os.environ.get("FUTU_FONT_PACKAGE", "E:\\A\u5bcc\u9014\u5de5\u4f5c\\A-2026\\A-\u5ef6\u5c55\u5de5\u5177\\Fonts"))
+EXCLUDED = {"HYZhuZiZaHuoPuF"}
+ROOTS = sorted(path for path in FONT_PACKAGE.iterdir() if path.is_dir()) if FONT_PACKAGE.exists() else [FONT_PACKAGE]
 
 PROJECT = Path(__file__).resolve().parents[1]
 CSS_FILE = PROJECT / "apps" / "web" / "src" / "app" / "fonts.css"
@@ -67,6 +62,8 @@ ASSET_DIR.mkdir(parents=True, exist_ok=True)
 for root in ROOTS:
     sources = {source.resolve() for source in [*root.rglob("*.otf"), *root.rglob("*.ttf"), *root.rglob("*.TTF")]}
     for source in sorted(sources):
+        if source.stem in EXCLUDED:
+            continue
         font = TTFont(source)
         family = font_name(font, [16, 1]) or source.stem
         style = font_name(font, [17, 2]) or "Regular"
@@ -108,6 +105,18 @@ for face in faces:
                 "",
             ]
         )
+    lines.extend(
+        [
+            "@font-face {",
+            f'  font-family: "face-{face["id"]}";',
+            f'  src: url("/api/fonts/{face["id"]}") format("{face["format"]}");',
+            "  font-weight: 1 1000;",
+            f'  font-style: {face["style"]};',
+            "  font-display: block;",
+            "}",
+            "",
+        ]
+    )
 
 CSS_FILE.write_text("\n".join(lines), encoding="utf-8")
 registry = [

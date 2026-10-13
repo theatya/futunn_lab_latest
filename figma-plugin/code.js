@@ -313,27 +313,519 @@ function validateResolvedFrame(frame, plan) {
   }
 }
 
+const FEATHER_RATIO = [0, 0.08, 0.14, 0.2];
+const VERTICAL_GRADIENT = [[0, 1, 0], [-1, 0, 1]];
+const HORIZONTAL_GRADIENT = [[1, 0, 0], [0, 1, 0]];
+
+async function uploadedComponent(options, page) {
+  const asset = options.visualComponent;
+  const match = /^data:image\/(png|jpeg);base64,(.+)$/.exec(asset.previewUrl || "");
+  if (!match) throw new Error("上传图片数据缺失，请回平台第一步重新上传。");
+  const image = figma.createImage(figma.base64Decode(match[2]));
+  const size = await image.getSizeAsync();
+  const component = figma.createComponent();
+  component.name = `主视觉 / ${asset.name}`;
+  component.resize(size.width, size.height);
+  component.fills = [];
+  component.clipsContent = true;
+  const base = figma.createRectangle();
+  base.name = "底图";
+  base.resize(size.width, size.height);
+  base.fills = [{ type: "IMAGE", imageHash: image.hash, scaleMode: "FILL" }];
+  component.appendChild(base);
+
+  const level = options.uploadFeather ? options.uploadFeather.level : 0;
+  const ratio = FEATHER_RATIO[level] || 0;
+  if (ratio > 0) {
+    const t = Math.max(1, Math.round(Math.min(size.width, size.height) * ratio));
+    const color = solidPaint(options.uploadFeather.color).color;
+    const edges = [
+      ["左侧过渡", 0, 0, t, size.height, HORIZONTAL_GRADIENT, true],
+      ["右侧过渡", size.width - t, 0, t, size.height, HORIZONTAL_GRADIENT, false],
+      ["顶部过渡", 0, 0, size.width, t, VERTICAL_GRADIENT, true],
+      ["底部过渡", 0, size.height - t, size.width, t, VERTICAL_GRADIENT, false],
+    ];
+    for (const [name, x, y, w, h, transform, opaqueFirst] of edges) {
+      const rect = figma.createRectangle();
+      rect.name = name;
+      rect.x = x;
+      rect.y = y;
+      rect.resize(w, h);
+      rect.fills = [{
+        type: "GRADIENT_LINEAR",
+        gradientTransform: transform,
+        gradientStops: [
+          { position: 0, color: { ...color, a: opaqueFirst ? 1 : 0 } },
+          { position: 1, color: { ...color, a: opaqueFirst ? 0 : 1 } },
+        ],
+      }];
+      component.appendChild(rect);
+    }
+  }
+  page.appendChild(component);
+  component.x = -size.width - 400;
+  component.y = 0;
+  return component;
+}
+
+let availableFonts = null;
+const normalizeFontName = (value) => String(value || "").toLowerCase().replace(/[\s_-]/g, "");
+
+async function loadSceneFont(layer) {
+  const requested = { family: layer.fontFamily, style: layer.fontStyle };
+  try {
+    await figma.loadFontAsync(requested);
+    return requested;
+  } catch {
+    // 本机字体名可能与规范名大小写、空格或连字符不同，按归一化名称再找一次。
+  }
+  if (!availableFonts) availableFonts = await figma.listAvailableFontsAsync();
+  const family = normalizeFontName(requested.family);
+  const style = normalizeFontName(requested.style);
+  const sameFamily = availableFonts.filter((font) => normalizeFontName(font.fontName.family) === family);
+  const match = sameFamily.find((font) => normalizeFontName(font.fontName.style) === style)
+    || (sameFamily.length === 1 ? sameFamily[0] : null);
+  if (!match) throw new Error(`缺少字体：${requested.family} ${requested.style}。请安装公司规范字体后重试。`);
+  await figma.loadFontAsync(match.fontName);
+  return match.fontName;
+}
+
+function placeByAnchor(node, layer) {
+  const x = layer.align === "left"
+    ? layer.anchor.x
+    : layer.align === "center" ? layer.anchor.x - node.width / 2 : layer.anchor.x - node.width;
+  node.x = Math.round(x);
+  node.y = Math.round(layer.anchor.y - node.height / 2);
+}
+
+function figmaPaint(paint) {
+  const opacity = typeof paint.opacity === "number" ? paint.opacity : 1;
+  if (paint.type === "SOLID") return { ...solidPaint(paint.color), opacity };
+  return {
+    type: paint.type,
+    opacity,
+    gradientTransform: paint.transform,
+    gradientStops: paint.stops.map((item) => ({ position: item.pos, color: { ...solidPaint(item.color).color, a: item.alpha } })),
+  };
+}
+
+async function createSceneText(layer, fallbackColor, lineHeight) {
+  const node = figma.createText();
+  node.name = layer.name;
+  node.fontName = await loadSceneFont(layer);
+  node.fontSize = Math.max(1, layer.fontPx);
+  node.lineHeight = { value: lineHeight, unit: "PERCENT" };
+  node.characters = layer.text;
+  node.textAutoResize = "WIDTH_AND_HEIGHT";
+  node.textAlignHorizontal = layer.align === "left" ? "LEFT" : layer.align === "center" ? "CENTER" : "RIGHT";
+  const colors = layer.charColors || [];
+  node.fills = [solidPaint(colors[0] || fallbackColor)];
+  let offset = 0;
+  let runStart = 0;
+  let runColor = colors[0] || fallbackColor;
+  Array.from(layer.text).forEach((character, index) => {
+    const color = colors[index] || fallbackColor;
+    if (color !== runColor) {
+      if (offset > runStart) node.setRangeFills(runStart, offset, [solidPaint(runColor)]);
+      runStart = offset;
+      runColor = color;
+    }
+    offset += character.length;
+  });
+  if (offset > runStart) node.setRangeFills(runStart, offset, [solidPaint(runColor)]);
+  const chars = Array.from(layer.text);
+  const utf16 = (index) => chars.slice(0, index).join("").length;
+  if (Array.isArray(layer.highlightRuns) && layer.highlightRuns.length) {
+    for (const run of layer.highlightRuns) {
+      const paints = (run.paints || []).map(figmaPaint);
+      if (paints.length && run.end > run.start) node.setRangeFills(utf16(run.start), utf16(run.end), paints);
+    }
+  }
+  if (Array.isArray(layer.fontRuns)) {
+    for (const run of layer.fontRuns) {
+      if (run.end <= run.start) continue;
+      node.setRangeFontName(utf16(run.start), utf16(run.end), await loadSceneFont(run));
+    }
+  }
+  if (layer.stroke && Array.isArray(layer.stroke.paints) && layer.stroke.paints.length) {
+    node.strokes = layer.stroke.paints.map(figmaPaint);
+    node.strokeWeight = Math.max(0.1, layer.stroke.weight);
+    node.strokeAlign = layer.stroke.align || "OUTSIDE";
+  }
+  if (layer.letterSpacing) node.letterSpacing = { value: layer.letterSpacing, unit: "PIXELS" };
+  if (Array.isArray(layer.lineFontPx)) {
+    let start = 0;
+    layer.text.split("\n").forEach((line, row) => {
+      const size = layer.lineFontPx[row];
+      if (line.length && size) node.setRangeFontSize(start, start + line.length, Math.max(1, size));
+      start += line.length + 1;
+    });
+  }
+  return node;
+}
+
+function overlayPaint(overlay) {
+  const base = solidPaint(overlay.color).color;
+  return {
+    type: "GRADIENT_LINEAR",
+    gradientStops: [
+      { position: 0, color: { ...base, a: overlay.alpha } },
+      { position: 1, color: { r: 1, g: 105 / 255, b: 0, a: 0 } },
+    ],
+    gradientTransform: [[1, 0, 0], [0, 1, 0]],
+  };
+}
+
+function appendSvg(parent, svg, box, name) {
+  if (!svg || !box) return;
+  const node = figma.createNodeFromSvg(svg);
+  node.name = name;
+  if (node.width > 0) node.rescale(box.w / node.width);
+  node.x = box.x;
+  node.y = box.y;
+  parent.appendChild(node);
+}
+
+/** 角标：底图 SVG + 文字（+ 财报季 moomoo 标），坐标全部相对角标外框。 */
+async function createSceneBadge(layer) {
+  const badge = layer.badge;
+  const frame = figma.createFrame();
+  frame.name = layer.name || "角标";
+  frame.resize(Math.max(1, layer.box.w), Math.max(1, layer.box.h));
+  frame.fills = [];
+  frame.clipsContent = false;
+  appendSvg(frame, badge.bgSvg, badge.bgBox, "底图");
+  appendSvg(frame, badge.markSvg, badge.markBox, "moomoo");
+  const text = await createSceneText({ ...layer, align: badge.textAlign, charColors: undefined }, badge.textColor, (layer.lineHeight || 1.2) * 100);
+  if (badge.textOverlay) text.fills = [solidPaint(badge.textColor), overlayPaint(badge.textOverlay)];
+  frame.appendChild(text);
+  const x = badge.textAlign === "left" ? badge.textX : badge.textAlign === "center" ? badge.textX - text.width / 2 : badge.textX - text.width;
+  const y = badge.textCy - text.height / 2;
+  if (badge.skew) {
+    const c = Math.tan((badge.skew * Math.PI) / 180);
+    text.relativeTransform = [[1, c, x - (c * text.height) / 2], [0, 1, y]];
+  } else {
+    text.x = x;
+    text.y = y;
+  }
+  frame.x = Math.round(layer.box.x);
+  frame.y = Math.round(layer.box.y);
+  return frame;
+}
+
+async function writeScene(frame, plan, component) {
+  const scene = plan.scene;
+  const groupIds = new Set(scene.group ? scene.group.ids : []);
+  for (const layer of scene.layers) {
+    if (layer.role === "visual") {
+      const instance = component.createInstance();
+      instance.name = "主视觉组件";
+      instance.rescale(layer.box.w / instance.width);
+      instance.x = Math.round(layer.box.x);
+      instance.y = Math.round(layer.box.y);
+      frame.appendChild(instance);
+      if (scene.edgeFade) {
+        const color = solidPaint(scene.background).color;
+        const fade = Math.round(scene.edgeFade);
+        const hex = String(scene.background).toUpperCase();
+        for (const [name, x, opaqueFirst] of [["左侧过渡到底色", 0, true], ["右侧过渡到底色", scene.board.w - fade, false]]) {
+          const rect = figma.createRectangle();
+          rect.name = `${name} ${hex}`;
+          rect.x = x;
+          rect.y = 0;
+          rect.resize(fade, scene.board.h);
+          rect.fills = [{
+            type: "GRADIENT_LINEAR",
+            gradientTransform: HORIZONTAL_GRADIENT,
+            gradientStops: [
+              { position: 0, color: { ...color, a: opaqueFirst ? 1 : 0 } },
+              { position: 1, color: { ...color, a: opaqueFirst ? 0 : 1 } },
+            ],
+          }];
+          frame.appendChild(rect);
+        }
+      }
+      continue;
+    }
+    if (layer.role === "logo") {
+      if (plan.logoSvg) {
+        const logo = figma.createNodeFromSvg(plan.logoSvg);
+        logo.name = plan.logo ? plan.logo.name : "Logo";
+        logo.rescale(layer.box.h / logo.height);
+        logo.x = Math.round(layer.box.x);
+        logo.y = Math.round(layer.box.y);
+        frame.appendChild(logo);
+      } else {
+        const rect = { x: layer.box.x / scene.board.w, y: layer.box.y / scene.board.h, w: layer.box.w / scene.board.w, h: layer.box.h / scene.board.h };
+        await appendAsset(frame, plan.logo, rect, "Logo");
+      }
+      continue;
+    }
+    if (layer.role === "cta" && layer.cta) {
+      const button = figma.createFrame();
+      button.name = "CTA";
+      button.layoutMode = "HORIZONTAL";
+      button.primaryAxisAlignItems = "CENTER";
+      button.counterAxisAlignItems = "CENTER";
+      button.paddingLeft = Math.round(layer.cta.paddingX);
+      button.paddingRight = Math.round(layer.cta.paddingX);
+      button.paddingTop = 0;
+      button.paddingBottom = 0;
+      button.cornerRadius = layer.box.h / 2;
+      button.fills = Array.isArray(layer.cta.paints) && layer.cta.paints.length
+        ? layer.cta.paints.map(figmaPaint)
+        : [gradientPaint(layer.cta.backgroundImage) || solidPaint(layer.cta.backgroundColor)];
+      const label = await createSceneText({ ...layer, charColors: undefined, stroke: undefined }, layer.cta.textColor, 100);
+      button.appendChild(label);
+      button.resize(Math.max(layer.cta.minWidth, layer.box.w), Math.round(layer.box.h));
+      button.counterAxisSizingMode = "FIXED";
+      if (layer.cta.fixedWidth) {
+        button.primaryAxisSizingMode = "FIXED";
+        button.resize(Math.round(layer.cta.fixedWidth), Math.round(layer.box.h));
+      } else {
+        button.primaryAxisSizingMode = "AUTO";
+        try {
+          button.minWidth = Math.round(layer.cta.minWidth);
+          if (layer.cta.maxWidth) button.maxWidth = Math.round(layer.cta.maxWidth);
+        } catch {
+          // 旧版 Figma 不支持 minWidth / maxWidth 时保持 hug 宽度。
+        }
+      }
+      frame.appendChild(button);
+      placeByAnchor(button, layer);
+      continue;
+    }
+    if (layer.role === "badge" && layer.badge) {
+      frame.appendChild(await createSceneBadge(layer));
+      continue;
+    }
+    if (groupIds.has(layer.id)) continue;
+    const text = await createSceneText(layer, "#ffffff", (layer.lineHeight || 1.2) * 100);
+    frame.appendChild(text);
+    placeByAnchor(text, layer);
+  }
+  if (scene.group) {
+    const counterAlign = scene.group.align === "left" ? "MIN" : scene.group.align === "center" ? "CENTER" : "MAX";
+    const stackFrame = (name, spacing) => {
+      const node = figma.createFrame();
+      node.name = name;
+      node.layoutMode = "VERTICAL";
+      node.primaryAxisSizingMode = "AUTO";
+      node.counterAxisSizingMode = "AUTO";
+      node.itemSpacing = Math.round(spacing);
+      node.counterAxisAlignItems = counterAlign;
+      node.fills = [];
+      node.clipsContent = false;
+      return node;
+    };
+    const texts = [];
+    for (const id of scene.group.ids) {
+      const layer = scene.layers.find((item) => item.id === id);
+      if (layer) texts.push(await createSceneText(layer, "#ffffff", (layer.lineHeight || 1.2) * 100));
+    }
+    const gaps = scene.group.gaps && scene.group.gaps.length === texts.length - 1 ? scene.group.gaps : texts.slice(1).map(() => scene.group.gap);
+    // Auto Layout 只有统一间距；间距不同时把后面的层再包一层 Auto Layout。
+    const nest = (nodes, spacings, name) => {
+      const node = stackFrame(name, spacings[0] || 0);
+      if (spacings.every((value) => Math.round(value) === Math.round(spacings[0] || 0))) {
+        nodes.forEach((child) => node.appendChild(child));
+        return node;
+      }
+      node.appendChild(nodes[0]);
+      node.appendChild(nest(nodes.slice(1), spacings.slice(1), "标题组内层"));
+      return node;
+    };
+    const group = nest(texts, gaps, "标题组");
+    frame.appendChild(group);
+    placeByAnchor(group, { anchor: scene.group.anchor, align: scene.group.align });
+  }
+}
+
+/** 仿原生文字：行高、字间距按 px；highlight 区间按字符下标换算成 UTF-16。 */
+async function createNativeText(node) {
+  const text = figma.createText();
+  text.name = node.name;
+  text.fontName = await loadSceneFont({ fontFamily: node.font.family, fontStyle: node.font.style });
+  text.fontSize = node.size;
+  text.lineHeight = { unit: "PIXELS", value: node.lineHeight };
+  if (node.tracking) text.letterSpacing = { unit: "PIXELS", value: node.tracking };
+  text.characters = node.text;
+  text.fills = [solidPaint(node.color)];
+  const chars = Array.from(node.text);
+  const utf16 = (index) => chars.slice(0, index).join("").length;
+  for (const run of node.runs || []) {
+    if (run.end > run.start) text.setRangeFills(utf16(run.start), utf16(run.end), [solidPaint(run.color)]);
+  }
+  if (node.wrap) {
+    text.textAutoResize = "HEIGHT";
+    text.resize(Math.max(1, node.w), text.height);
+  } else {
+    text.textAutoResize = "WIDTH_AND_HEIGHT";
+  }
+  return text;
+}
+
+function nativeSvg(assets, url, name, w) {
+  const svg = assets[url];
+  if (!svg) throw new Error(`缺少仿原生素材：${url}`);
+  const node = figma.createNodeFromSvg(svg);
+  node.name = name;
+  if (node.width > 0) node.rescale(w / node.width);
+  return node;
+}
+
+async function writeNative(frame, plan) {
+  const board = plan.native;
+  const assets = board.assets || {};
+  frame.clipsContent = true;
+  for (const node of board.nodes) {
+    if (node.kind === "rect") {
+      const rect = figma.createRectangle();
+      rect.name = node.name;
+      rect.resize(node.w, node.h);
+      rect.x = node.x;
+      rect.y = node.y;
+      rect.fills = [solidPaint(node.fill)];
+      if (node.radius) rect.cornerRadius = node.radius;
+      frame.appendChild(rect);
+    } else if (node.kind === "svg") {
+      const svg = nativeSvg(assets, node.url, node.name, node.w);
+      svg.x = node.x;
+      svg.y = node.y;
+      frame.appendChild(svg);
+    } else if (node.kind === "image") {
+      const data = assets[node.url];
+      if (!data) throw new Error(`缺少仿原生配图：${node.url}`);
+      const image = figma.createImage(figma.base64Decode(data));
+      const rect = figma.createRectangle();
+      rect.name = node.name;
+      rect.resize(node.w, node.h);
+      rect.x = node.x;
+      rect.y = node.y;
+      rect.fills = [{ type: "IMAGE", imageHash: image.hash, scaleMode: "FILL" }];
+      frame.appendChild(rect);
+    } else if (node.kind === "text") {
+      const text = await createNativeText(node);
+      text.x = node.x;
+      text.y = node.y;
+      frame.appendChild(text);
+    } else if (node.kind === "pill") {
+      const button = figma.createFrame();
+      button.name = node.name;
+      button.layoutMode = "HORIZONTAL";
+      button.primaryAxisAlignItems = "CENTER";
+      button.counterAxisAlignItems = "CENTER";
+      button.primaryAxisSizingMode = "FIXED";
+      button.counterAxisSizingMode = "FIXED";
+      button.resize(node.w, node.h);
+      button.cornerRadius = node.h / 2;
+      button.paddingTop = Math.max(0, (node.dy || 0) * 2);
+      button.fills = [solidPaint(node.fill)];
+      button.appendChild(await createNativeText({ ...node, name: "按钮文案", runs: [], wrap: false }));
+      button.x = node.x;
+      button.y = node.y;
+      frame.appendChild(button);
+    } else if (node.kind === "link") {
+      const link = figma.createFrame();
+      link.name = node.name;
+      link.layoutMode = "HORIZONTAL";
+      link.counterAxisAlignItems = "CENTER";
+      link.primaryAxisSizingMode = "AUTO";
+      link.counterAxisSizingMode = "AUTO";
+      link.itemSpacing = 0;
+      link.fills = [];
+      link.clipsContent = false;
+      link.appendChild(await createNativeText({ ...node, name: "按钮文案", runs: [], wrap: false }));
+      link.appendChild(nativeSvg(assets, node.chevron.url, "箭头", node.chevron.size));
+      link.x = node.x;
+      link.y = node.y;
+      frame.appendChild(link);
+    }
+  }
+}
+
 async function write(job) {
-  const component = await sourceComponent(job.options.visualComponent.id);
+  const needsVisual = job.boards.some((plan) => !plan.native);
+  const uploaded = needsVisual && job.options.visualComponent.source === "upload";
+  const existing = needsVisual && !uploaded ? await sourceComponent(job.options.visualComponent.id) : null;
   const page = job.options.page === "new" ? figma.createPage() : figma.currentPage;
   if (job.options.page === "new") page.name = job.options.pageName;
+  const component = needsVisual ? existing || await uploadedComponent(job.options, page) : null;
   const nodes = [];
   const createdFrames = [];
   const failures = [];
   const columns = job.options.arrange === "flat" ? 5 : 3;
+  const framesByKey = new Map();
+  const masters = new Map();
+
+  // 闪屏设备尺寸：同语种母版画板转为组件，设备画板放实例按高度缩放居中裁切，底部加白条与闪屏 Logo。
+  const writeLinked = async (frame, plan) => {
+    const id = `${plan.linked.masterKey}|${plan.lang}`;
+    let master = masters.get(id);
+    if (!master) {
+      const source = framesByKey.get(id);
+      if (!source) throw new Error("缺少闪屏母版画板，请同时写入母版");
+      const sourceId = source.id;
+      master = figma.createComponentFromNode(source);
+      masters.set(id, master);
+      const entry = nodes.find((item) => item.nodeId === sourceId);
+      if (entry) entry.nodeId = master.id;
+      const at = createdFrames.indexOf(source);
+      if (at >= 0) createdFrames[at] = master;
+    }
+    const w = plan.solution.board.w;
+    const h = plan.solution.board.h;
+    frame.clipsContent = true;
+    const instance = master.createInstance();
+    instance.rescale(plan.linked.scale);
+    instance.x = plan.linked.x;
+    instance.y = 0;
+    frame.appendChild(instance);
+    const bar = figma.createRectangle();
+    bar.name = "底部白条";
+    bar.resize(w, plan.linked.bar);
+    bar.x = 0;
+    bar.y = h - plan.linked.bar;
+    bar.fills = [solidPaint("#FFFFFF")];
+    frame.appendChild(bar);
+    if (plan.linked.logoSvg) {
+      const logo = figma.createNodeFromSvg(plan.linked.logoSvg);
+      logo.name = "闪屏底部logo";
+      logo.rescale(plan.linked.logo.w / logo.width);
+      logo.x = plan.linked.logo.x;
+      logo.y = plan.linked.logo.y;
+      frame.appendChild(logo);
+    }
+  };
 
   for (let index = 0; index < job.boards.length; index += 1) {
     const plan = job.boards[index];
     try {
       const frame = figma.createFrame();
       frame.name = plan.name;
-      frame.resize(plan.solution.board.w, plan.solution.board.h);
+      frame.resize(plan.native ? plan.native.w : plan.solution.board.w, plan.native ? plan.native.h : plan.solution.board.h);
       frame.x = (index % columns) * (frame.width + 160);
       frame.y = Math.floor(index / columns) * (frame.height + 160);
       frame.fills = [solidPaint(plan.backgroundColor)];
       page.appendChild(frame);
 
-      const usedRecipe = await writeResolvedRecipe(frame, plan, component);
+      if (plan.native) {
+        await writeNative(frame, plan);
+        nodes.push({ key: plan.key, lang: plan.lang, nodeId: frame.id, validated: false });
+        createdFrames.push(frame);
+        continue;
+      }
+      if (plan.linked) {
+        await writeLinked(frame, plan);
+        nodes.push({ key: plan.key, lang: plan.lang, nodeId: frame.id, validated: false });
+        createdFrames.push(frame);
+        continue;
+      }
+      framesByKey.set(`${plan.key}|${plan.lang}`, frame);
+
+      const usedScene = Boolean(plan.scene);
+      if (usedScene) await writeScene(frame, plan, component);
+      const usedRecipe = usedScene || await writeResolvedRecipe(frame, plan, component);
       if (!usedRecipe) {
         if (plan.solution.kv) {
           const instance = component.createInstance();
@@ -373,7 +865,7 @@ async function write(job) {
         }
         await addText(frame, plan.disclaimerLabel || "", plan.solution.disc, plan.solution.discPx, "regular", "#8f949b");
       }
-      validateResolvedFrame(frame, plan);
+      if (!usedScene) validateResolvedFrame(frame, plan);
       nodes.push({
         key: plan.key,
         lang: plan.lang,

@@ -193,8 +193,9 @@ export class LocalPluginFigmaWriter implements FigmaWriterPort {
   }
 
   async write(boards: BoardPlan[], options: FigmaWriteOptions): Promise<FigmaWriteResult> {
-    if (!options.visualComponent?.figmaUrl) {
-      throw new Error("请先在第一步识别主视觉 Component 或 Instance 链接");
+    const uploaded = options.visualComponent?.source === "upload" && options.visualComponent.previewUrl?.startsWith("data:");
+    if (boards.some((board) => !board.native) && !options.visualComponent?.figmaUrl && !uploaded) {
+      throw new Error("请先在第一步识别主视觉组件或上传图片");
     }
     const created = await fetch("/api/figma/write", {
       method: "POST",

@@ -8,7 +8,7 @@
  * 核心逻辑一行都不用改 —— 这就是「禁止核心业务逻辑与页面层强耦合」的落地方式。
  */
 
-import type { AssetRef, BadgeStyle, CtaStyle, GenerateRun, Project, Solution } from "@futu/domain";
+import type { AssetRef, BadgeStyle, CtaStyle, GenerateRun, NativeBoard, Project, SceneBoard, Solution } from "@futu/domain";
 
 /* ------------------------------------------------------------------ */
 /* 基础设施                                                            */
@@ -87,12 +87,35 @@ export interface BoardPlan {
   ctaStyle?: CtaStyle;
   /** 第二步设定或第三步按画幅覆盖的角标样式。 */
   badgeStyle?: BadgeStyle;
+  /** 四步流程的逐层场景；存在时写入端按图层逐个落位，不走 recipe 结构。 */
+  scene?: SceneBoard;
+  /** 预设 Logo 的矢量源，写入端用 createNodeFromSvg 还原，不退化成文字。 */
+  logoSvg?: string;
+  /**
+   * 联动画板（如闪屏各设备尺寸）：不独立排版，写入端把同语种母版画板转成组件，
+   * 这里放它的实例（按 scale 缩放、x 偏移、贴顶），再铺底部白条与 Logo。
+   */
+  /**
+   * 仿原生固定模板：写入端按图元逐个落位，不用主视觉组件。
+   * assets 按图元 url 存 SVG 文本或 PNG base64（不带 data: 前缀）。
+   */
+  native?: NativeBoard & { assets: Record<string, string> };
+  linked?: {
+    masterKey: string;
+    scale: number;
+    x: number;
+    bar: number;
+    logo: { x: number; y: number; w: number; h: number };
+    logoSvg?: string;
+  };
 }
 
 export interface FigmaWriteOptions {
   fileKey?: string;
   /** 已在第一步识别的主视觉组件；写入端必须创建其 Instance，而非复制图层。 */
   visualComponent?: AssetRef;
+  /** 上传图片转组件时的边缘过渡：强度 0..3 与过渡到的底色。 */
+  uploadFeather?: { level: number; color: string };
   /** 建新页还是写当前页 */
   page: "new" | "current";
   pageName: string;

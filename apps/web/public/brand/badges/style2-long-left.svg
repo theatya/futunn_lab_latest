@@ -1,0 +1,18 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="404.437" height="50.0068" viewBox="0 0 404.437 50.0068" fill="none" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="Subtract">
+<use xlink:href="#stroke0_0_4" fill="url(#paint0_linear_0_4)"/>
+<use xlink:href="#stroke0_0_4" fill="url(#paint1_linear_0_4)"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_0_4" x1="-171.072" y1="27.7534" x2="488.731" y2="45.2484" gradientUnits="userSpaceOnUse">
+<stop stop-color="#874510"/>
+<stop offset="1" stop-color="#874510" stop-opacity="0.48"/>
+</linearGradient>
+<linearGradient id="paint1_linear_0_4" x1="101.85" y1="-56.6744" x2="177.625" y2="109.402" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FFCE85"/>
+<stop offset="0.465" stop-color="#FFF3D5"/>
+<stop offset="1" stop-color="#FFCE85"/>
+</linearGradient>
+<path id="stroke0_0_4" d="M404.434 0.00195313C404.377 0.00106495 404.32 2.10737e-06 404.263 0C397.719 -1.11118e-06 390.627 5.84673 386 16.2539C385.131 18.2085 384.362 20.2937 383.687 22.4893L383.557 22.8301C377.28 39.2001 361.561 50.0068 344.029 50.0068H0V0H404.437L404.434 0.00195313Z"/>
+</defs>
+</svg>

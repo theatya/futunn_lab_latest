@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type InputHTMLAttributes, type ReactNode } from "react";
+import { useEffect, useRef, useState, type InputHTMLAttributes, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { cn, clamp } from "@/lib/utils";
 
 const BASE =
@@ -62,6 +62,7 @@ export function NumberField({
   suffix,
   className,
   ariaLabel,
+  decimals,
 }: {
   value: number;
   onCommit: (v: number) => void;
@@ -71,19 +72,22 @@ export function NumberField({
   suffix?: string;
   className?: string;
   ariaLabel?: string;
+  decimals?: number;
 }) {
-  const [draft, setDraft] = useState(String(value));
+  const format = (n: number) => decimals === undefined ? String(n) : n.toFixed(decimals);
+  const [draft, setDraft] = useState(format(value));
   const [editing, setEditing] = useState(false);
+  const scrub = useScrub({ value, onChange: onCommit, min, max, step, decimals });
 
   useEffect(() => {
-    if (!editing) setDraft(String(value));
-  }, [value, editing]);
+    if (!editing) setDraft(decimals === undefined ? String(value) : value.toFixed(decimals));
+  }, [value, editing, decimals]);
 
   const commit = () => {
     setEditing(false);
     const n = Number(draft);
     if (Number.isFinite(n)) onCommit(clamp(n, min, max));
-    else setDraft(String(value));
+    else setDraft(format(value));
   };
 
   return (
@@ -109,7 +113,7 @@ export function NumberField({
         onKeyDown={(e) => {
           if (e.key === "Enter") e.currentTarget.blur();
           if (e.key === "Escape") {
-            setDraft(String(value));
+            setDraft(format(value));
             setEditing(false);
             e.currentTarget.blur();
           }
@@ -117,8 +121,86 @@ export function NumberField({
         className="w-full bg-transparent text-right tabular-nums text-[12px] text-[var(--app-text)] px-1.5 py-1 focus:outline-none"
       />
       {suffix ? (
-        <span className="pr-1.5 text-[11px] text-[var(--app-text-3)] select-none">{suffix}</span>
+        <span {...scrub} title="按住左右拖动调整" className="cursor-ew-resize pr-1.5 text-[11px] text-[var(--app-text-3)] select-none">{suffix}</span>
       ) : null}
     </span>
+  );
+}
+
+type ScrubOptions = { value: number; onChange: (v: number) => void; min: number; max: number; step?: number; decimals?: number };
+
+/**
+ * 按住左右拖动改数值（同 Figma 的标签拖拽）：每像素一个步长，按住 Shift 十倍。
+ * 拖动中连续提交，撤销历史按时间窗合并成一步。
+ */
+export function useScrub({ value, onChange, min, max, step = 1, decimals }: ScrubOptions) {
+  const drag = useRef<{ x: number; value: number; last: number } | null>(null);
+  const latest = useRef(onChange);
+  latest.current = onChange;
+  const round = (n: number) => decimals === undefined ? Math.round(n / step) * step : Number(n.toFixed(decimals));
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    drag.current = { x: event.clientX, value, last: value };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.style.cursor = "ew-resize";
+  };
+  const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const state = drag.current;
+    if (!state) return;
+    const delta = (event.clientX - state.x) * step * (event.shiftKey ? 10 : 1);
+    const next = clamp(round(state.value + delta), min, max);
+    if (next === state.last) return;
+    state.last = next;
+    latest.current(next);
+  };
+  const onPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!drag.current) return;
+    drag.current = null;
+    document.body.style.cursor = "";
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp };
+}
+
+/** 带可拖动标签的数值框：标签按住左右拖即可改值，也可直接输入。 */
+export function ScrubField({
+  label,
+  value,
+  onCommit,
+  min,
+  max,
+  step = 1,
+  suffix,
+  decimals,
+  ariaLabel,
+  disabled,
+  className,
+}: {
+  label: ReactNode;
+  value: number;
+  onCommit: (v: number) => void;
+  min: number;
+  max: number;
+  step?: number;
+  suffix?: string;
+  decimals?: number;
+  ariaLabel?: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const scrub = useScrub({ value, onChange: onCommit, min, max, step, decimals });
+  return (
+    <div className={cn("text-[9px] text-[var(--app-text-4)]", disabled && "pointer-events-none opacity-45", className)}>
+      <span
+        {...(disabled ? {} : scrub)}
+        title="按住左右拖动调整，按住 Shift 加速"
+        className="inline-block cursor-ew-resize select-none pr-2 hover:text-[var(--app-text-2)]"
+      >
+        {label}
+      </span>
+      <NumberField ariaLabel={ariaLabel} value={value} decimals={decimals} min={min} max={max} step={step} suffix={suffix} onCommit={onCommit} className="mt-1 w-full" />
+    </div>
   );
 }

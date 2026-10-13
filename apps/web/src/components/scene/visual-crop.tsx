@@ -1,0 +1,112 @@
+"use client";
+
+import { useRef, type PointerEvent as ReactPointerEvent } from "react";
+import type { SceneBox } from "@futu/domain";
+
+const MAX_W = 264;
+const MAX_H = 180;
+const CORNERS = [
+  { id: "nw", x: 0, y: 0, sign: -1, cursor: "nwse-resize" },
+  { id: "ne", x: 1, y: 0, sign: 1, cursor: "nesw-resize" },
+  { id: "sw", x: 0, y: 1, sign: -1, cursor: "nesw-resize" },
+  { id: "se", x: 1, y: 1, sign: 1, cursor: "nwse-resize" },
+] as const;
+
+/** 拖动期间舞台会随主视觉重排，换算比例固定用按下时的 k。 */
+type Drag = { kind: "move" | "scale"; sign: number; startX: number; startY: number; box: SceneBox; k: number };
+
+/**
+ * 主视觉取景预览：整张主视觉组件 + 当前画板的可见范围框。
+ * 拖框移动画面；拖四角按画板中心缩放，框越小画面越大。
+ */
+export function VisualCrop({
+  kvUrl,
+  box,
+  board,
+  onChange,
+}: {
+  kvUrl?: string;
+  /** 主视觉在画板上的外框（画板像素）。 */
+  box: SceneBox;
+  board: { w: number; h: number };
+  /** 新的主视觉外框；由调用方换算成位置与比例。 */
+  onChange: (next: SceneBox) => void;
+}) {
+  const drag = useRef<Drag | null>(null);
+  /** 舞台同时容纳整张主视觉和取景框（画板比主视觉宽时框会伸出图外），单位为画板像素。 */
+  const minX = Math.min(box.x, 0);
+  const minY = Math.min(box.y, 0);
+  const spanW = Math.max(box.x + box.w, board.w) - minX;
+  const spanH = Math.max(box.y + box.h, board.h) - minY;
+  const k = Math.min(MAX_W / spanW, MAX_H / spanH);
+  const width = box.w * k;
+  const height = box.h * k;
+  const image = { left: (box.x - minX) * k, top: (box.y - minY) * k, width, height };
+  const crop = { left: -minX * k, top: -minY * k, width: board.w * k, height: board.h * k };
+
+  const begin = (event: ReactPointerEvent<HTMLElement>, kind: Drag["kind"], sign = 1) => {
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { kind, sign, startX: event.clientX, startY: event.clientY, box, k };
+  };
+  const move = (event: ReactPointerEvent<HTMLElement>) => {
+    const state = drag.current;
+    if (!state || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    const origin = state.box;
+    const dx = (event.clientX - state.startX) / state.k;
+    const dy = (event.clientY - state.startY) / state.k;
+    if (state.kind === "move") {
+      onChange({ ...origin, x: origin.x - dx, y: origin.y - dy });
+      return;
+    }
+    const cropW = board.w;
+    const nextCropW = Math.max(board.w * 0.1, cropW + state.sign * dx * 2);
+    const factor = cropW / nextCropW;
+    const w = origin.w * factor;
+    const h = origin.h * factor;
+    const cu = (board.w / 2 - origin.x) / origin.w;
+    const cv = (board.h / 2 - origin.y) / origin.h;
+    onChange({ x: board.w / 2 - cu * w, y: board.h / 2 - cv * h, w, h });
+  };
+  const end = (event: ReactPointerEvent<HTMLElement>) => {
+    drag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  return (
+    <div className="grid place-items-center rounded-[4px] bg-[#0b0c0e] p-2">
+      <div className="relative overflow-hidden" style={{ width: spanW * k, height: spanH * k }}>
+        <div className="pointer-events-none absolute" style={image}>
+          {kvUrl ? (
+            <img src={kvUrl} alt="" draggable={false} className="block size-full select-none" />
+          ) : (
+            <div className="grid size-full place-items-center border border-dashed border-white/25 text-[9px] text-white/45">主视觉组件</div>
+          )}
+        </div>
+        <div
+          role="presentation"
+          aria-label="画板可见范围"
+          onPointerDown={(event) => begin(event, "move")}
+          onPointerMove={move}
+          onPointerUp={end}
+          onPointerCancel={end}
+          className="absolute cursor-move border border-[var(--color-brand)] shadow-[0_0_0_9999px_rgb(0_0_0/0.55)]"
+          style={crop}
+        >
+          {CORNERS.map((corner) => (
+            <span
+              key={corner.id}
+              role="presentation"
+              onPointerDown={(event) => begin(event, "scale", corner.sign)}
+              onPointerMove={move}
+              onPointerUp={end}
+              onPointerCancel={end}
+              className="absolute size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-[2px] border border-[var(--color-brand)] bg-white"
+              style={{ left: `${corner.x * 100}%`, top: `${corner.y * 100}%`, cursor: corner.cursor }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

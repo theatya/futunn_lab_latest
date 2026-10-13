@@ -30,6 +30,7 @@ import { motion } from "motion/react";
 import {
   CTA_STYLE_PRESETS,
   LANGS,
+  SCENE_FAMILY_LABEL,
   badgeStyleOf,
   disclaimerText,
   emptyLangCopy,
@@ -46,7 +47,8 @@ import {
   type RecipeTypography,
   type TargetBoard,
 } from "@futu/domain";
-import { ALL_SIZES, SIZE_GROUPS } from "@futu/specs";
+import { ALL_SIZES, linkedOf, nativeOf } from "@futu/specs";
+import { SizePicker } from "@/components/size-picker";
 import {
   StudioProvider,
   createBlankStudioSnapshot,
@@ -61,6 +63,8 @@ import { StepGenerate } from "@/components/steps/step-generate";
 import { BreakPicker } from "@/components/steps/break-picker";
 import { LogoBind } from "@/components/steps/asset-bind";
 import { LogoPresetPreview } from "@/components/logo-preset-preview";
+import { BackgroundColorControl, colorToHex, hexToHsv, hsvToHex } from "@/components/color-control";
+import { SceneBatchStep, SceneConfigStep, ScenePrepareStep, sceneFamilies } from "@/components/scene/scene-steps";
 import { Button, WorkflowSparkle } from "@/components/ui/button";
 import { TextArea, TextField } from "@/components/ui/field";
 import { Slider } from "@/components/ui/slider";
@@ -73,7 +77,7 @@ import type { LayerRole } from "@/lib/recognize";
 
 type Mode = "home" | "extend" | "copy";
 
-const EXTEND_STEPS = ["识别画板", "编辑与延展", "预览与写入"] as const;
+const EXTEND_STEPS = ["准备主视觉", "选择资源位", "配置内容与样式", "批量生成并精调"] as const;
 const COPY_STEPS = ["选择范围", "匹配文案", "编辑与检查", "写回 Figma"] as const;
 
 type TaskType = "extend" | "copy";
@@ -116,37 +120,6 @@ const ROLE_OPTIONS: Array<[LayerRole, string]> = [
   ["badge", "角标"],
   ["custom", "自定义"],
 ];
-
-function colorToHex(value: string | undefined, fallback = "#0f1112") {
-  if (!value) return fallback;
-  if (/^#[\da-f]{6}$/i.test(value)) return value.toLowerCase();
-  const channels = value.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
-  if (!channels) return fallback;
-  return `#${channels.slice(1, 4).map((channel) => Math.max(0, Math.min(255, Math.round(Number(channel)))).toString(16).padStart(2, "0")).join("")}`;
-}
-
-function hexToHsv(hex: string) {
-  const value = colorToHex(hex);
-  const [r, g, b] = [1, 3, 5].map((index) => parseInt(value.slice(index, index + 2), 16) / 255);
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const delta = max - min;
-  let h = 0;
-  if (delta) {
-    if (max === r) h = 60 * (((g - b) / delta) % 6);
-    else if (max === g) h = 60 * ((b - r) / delta + 2);
-    else h = 60 * ((r - g) / delta + 4);
-  }
-  return { h: (h + 360) % 360, s: max ? delta / max : 0, v: max };
-}
-
-function hsvToHex(h: number, s: number, v: number) {
-  const c = v * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = v - c;
-  const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
-  return `#${[r, g, b].map((channel) => Math.round((channel + m) * 255).toString(16).padStart(2, "0")).join("")}`;
-}
 
 function isPlatformFont(family: string | undefined) {
   if (!family) return false;
@@ -412,7 +385,11 @@ function PlatformInner() {
 
   useEffect(() => {
     if (!tasksReady) return;
-    window.localStorage.setItem(TASKS_KEY, JSON.stringify({ tasks, activeTaskId }));
+    try {
+      window.localStorage.setItem(TASKS_KEY, JSON.stringify({ tasks, activeTaskId }));
+    } catch {
+      // 多个任务都带上传大图时可能超出本地存储配额；当前会话的任务列表不受影响。
+    }
   }, [activeTaskId, tasks, tasksReady]);
 
   useEffect(() => {
@@ -583,9 +560,10 @@ function PlatformInner() {
               onStep={(value) => studio.setStep(value as StepIndex)}
               onBack={goHome}
             >
-              {studio.step === 0 ? <RecognizeMaster onNext={() => studio.setStep(1)} /> : null}
-              {studio.step === 1 ? <EditExtendFlow onNext={() => studio.setStep(2)} /> : null}
-              {studio.step === 2 ? <StepGenerate /> : null}
+              {studio.step === 0 ? <ScenePrepareStep onNext={() => studio.setStep(1)} /> : null}
+              {studio.step === 1 ? <SceneTargetsStep onBack={() => studio.setStep(0)} onNext={() => studio.setStep(2)} /> : null}
+              {studio.step === 2 ? <SceneConfigStep onBack={() => studio.setStep(1)} onNext={() => studio.setStep(3)} /> : null}
+              {studio.step === 3 ? <SceneBatchStep onBack={() => studio.setStep(2)} /> : null}
             </Workspace>
           ) : null}
           {mode === "copy" ? (
@@ -798,7 +776,7 @@ function SettingsItem({ icon, label, detail }: { icon: React.ReactNode; label: s
 
 function taskMeta(task: WorkspaceTask) {
   if (task.type === "copy") return `批量改文案 · 第 ${(task.copyStep ?? 0) + 1} 步`;
-  const languages = Object.values(task.studio?.masterSources ?? {}).filter((source) => source?.confirmed).length;
+  const languages = task.studio?.project.content.langs.length ?? 0;
   return `${languages} 语言 · 第 ${(task.studio?.step ?? 0) + 1} 步`;
 }
 
@@ -812,6 +790,8 @@ function taskTime(value: string) {
 
 function taskThumbnail(task: WorkspaceTask) {
   if (task.type !== "extend") return undefined;
+  const kv = task.studio?.project.content.kv;
+  if (kv?.source === "figma" || kv?.source === "upload") return kv.previewUrl;
   return Object.values(task.studio?.masterSources ?? {})
     .find((source) => source?.result?.previewUrl)?.result?.previewUrl;
 }
@@ -1123,7 +1103,7 @@ function Workspace({
                 <button
                   onClick={() => onStep(index)}
                   className={cn(
-                    "h-10 rounded-[6px] px-4 flex items-center gap-2 text-[13px]",
+                    "h-10 rounded-[6px] px-4 flex items-center gap-2 whitespace-nowrap text-[13px]",
                     index === step
                       ? "bg-[var(--app-surface-3)] text-[var(--app-text)] shadow-[inset_0_0_0_1px_var(--app-line-strong)]"
                       : "text-[var(--app-text-3)] hover:text-[var(--app-text-2)]",
@@ -1762,18 +1742,7 @@ function groupedTargets(targets: TargetBoard[]) {
 function EditExtendFlow({ onNext }: { onNext: () => void }) {
   const { project, masterSources, setStep, setTargets, focusKey, setFocusKey } = useStudio();
   const [phase, setPhase] = useState<"select" | "group" | "edit">("select");
-  const [sizeGroupId, setSizeGroupId] = useState("inapp");
-  const [customName, setCustomName] = useState("");
-  const [customWidth, setCustomWidth] = useState("");
-  const [customHeight, setCustomHeight] = useState("");
-  const [customError, setCustomError] = useState("");
-  const selected = new Set(project.targets.map((target) => target.key));
   const families = groupedTargets(project.targets);
-  const activeSizeGroup = SIZE_GROUPS.find((group) => group.id === sizeGroupId) ?? SIZE_GROUPS[0]!;
-  const customSizes = project.targets
-    .filter((target) => target.sizeId?.startsWith("custom-"))
-    .map((target) => ({ id: target.sizeId, w: target.w, h: target.h, use: target.use }));
-  const visibleSizes = activeSizeGroup.id === "custom" ? customSizes : activeSizeGroup.items;
   const activeFamily = families.find((family) => family.items.some((item) => item.key === focusKey)) ?? families[0];
   const phaseIndex = phase === "select" ? 0 : phase === "group" ? 1 : 2;
   const phases = ["选择画幅", "智能分组", "编辑代表画幅"];
@@ -1785,51 +1754,10 @@ function EditExtendFlow({ onNext }: { onNext: () => void }) {
     }),
   );
 
-  const toggleTarget = (key: string) => {
-    const next = new Set(selected);
-    if (next.has(key)) {
-      next.delete(key);
-    } else {
-      next.add(key);
-    }
-    setTargets([...next]);
-  };
-
-  const addCustomSize = () => {
-    const width = Number(customWidth);
-    const height = Number(customHeight);
-    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) return;
-    const key = sizeKey(width, height);
-    const catalogGroup = SIZE_GROUPS.find((group) => group.items.some((item) => item.w === width && item.h === height));
-    if (catalogGroup) {
-      if (!selected.has(key)) setTargets([...selected, key]);
-      setCustomError(`该尺寸已在“${catalogGroup.name}”中${selected.has(key) ? "并已选中" : "，已为你选中"}`);
-      return;
-    }
-    if (selected.has(key)) {
-      setCustomError("该自定义尺寸已经添加");
-      return;
-    }
-    setTargets([...selected, key], { [key]: customName });
-    setCustomName("");
-    setCustomWidth("");
-    setCustomHeight("");
-    setCustomError("");
-  };
-
   const openPhaseTab = (index: number) => {
     if (index === 0) setPhase("select");
     if (index === 1 && project.targets.length) setPhase("group");
     if (index === 2 && project.targets.length) setPhase("edit");
-  };
-
-  const selectCurrentSizeGroup = () => {
-    setTargets([...selected, ...visibleSizes.map((item) => sizeKey(item.w, item.h))]);
-  };
-
-  const clearCurrentSizeGroup = () => {
-    const currentKeys = new Set(visibleSizes.map((item) => sizeKey(item.w, item.h)));
-    setTargets([...selected].filter((key) => !currentKeys.has(key)));
   };
 
   if (!mappingReady) {
@@ -1918,103 +1846,8 @@ function EditExtendFlow({ onNext }: { onNext: () => void }) {
       </div>
 
       {phase === "select" ? (
-        <div className="grid min-h-0 flex-1 grid-cols-[170px_minmax(0,1fr)_250px] gap-3">
-          <aside className="min-h-0 overflow-y-auto py-1">
-            <div className="mb-3 text-[11px] font-semibold">画幅用途</div>
-            {SIZE_GROUPS.map((group) => (
-              <button
-                key={group.id}
-                type="button"
-                onClick={() => setSizeGroupId(group.id)}
-                className={cn(
-                  "flex w-full items-center justify-between rounded-[4px] px-2 py-2 text-left text-[10px] hover:bg-[var(--app-surface-2)]",
-                  activeSizeGroup.id === group.id ? "bg-[var(--app-surface-2)] text-[var(--app-text)]" : "text-[var(--app-text-3)]",
-                )}
-              >
-                <span>{group.name}</span>
-                <span>
-                  {group.id === "custom"
-                    ? customSizes.length
-                    : `${group.items.filter((item) => selected.has(sizeKey(item.w, item.h))).length}/${group.items.length}`}
-                </span>
-              </button>
-            ))}
-          </aside>
-          <section className="min-h-0 overflow-y-auto">
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <div className="text-[12px] font-semibold">{activeSizeGroup.name}</div>
-                <div className="mt-1 text-[9px] text-[var(--app-text-4)]">{activeSizeGroup.note}</div>
-              </div>
-              <div className="flex items-center gap-3 text-[10px]">
-                <button type="button" onClick={selectCurrentSizeGroup} className="text-[var(--app-text-3)] hover:text-[var(--app-text)]">全选</button>
-                <button type="button" onClick={clearCurrentSizeGroup} className="text-[var(--app-text-3)] hover:text-[var(--app-text)]">清空</button>
-              </div>
-            </div>
-            {activeSizeGroup.id !== "custom" ? (
-              <div className="mb-3 text-[9px] text-[var(--app-text-4)]">系统将按比例自动选择代表画幅，你无需逐个调整。</div>
-            ) : null}
-            <div className="grid grid-cols-3 items-start gap-2">
-              {activeSizeGroup.id === "custom" ? (
-                <div className="min-h-[68px] rounded-[6px] border border-[var(--app-line)] p-2">
-                  <input
-                    value={customName}
-                    onChange={(event) => {
-                      setCustomName(event.target.value);
-                      setCustomError("");
-                    }}
-                    aria-label="尺寸名称"
-                    placeholder="尺寸名称，例如活动页横幅"
-                    className="block h-6 w-full bg-transparent px-1 text-[10px] text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-4)]"
-                  />
-                  <div className="mt-1 flex items-center gap-1">
-                    <input value={customWidth} onChange={(event) => {
-                      setCustomWidth(event.target.value.replace(/\D/g, ""));
-                      setCustomError("");
-                    }} aria-label="宽度" inputMode="numeric" placeholder="宽度" className="h-7 min-w-0 flex-1 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-page)] px-2 text-[9px] text-[var(--app-text)] outline-none focus:border-[var(--app-line-strong)]" />
-                    <span className="text-[9px] text-[var(--app-text-4)]">×</span>
-                    <input value={customHeight} onChange={(event) => {
-                      setCustomHeight(event.target.value.replace(/\D/g, ""));
-                      setCustomError("");
-                    }} aria-label="高度" inputMode="numeric" placeholder="高度" className="h-7 min-w-0 flex-1 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-page)] px-2 text-[9px] text-[var(--app-text)] outline-none focus:border-[var(--app-line-strong)]" />
-                    <button type="button" onClick={addCustomSize} className="h-7 shrink-0 rounded-[4px] bg-[var(--app-text)] px-2 text-[9px] font-medium text-[var(--app-page)] disabled:opacity-40" disabled={!customName.trim() || !customWidth || !customHeight}>添加</button>
-                  </div>
-                  {customError ? <div className="mt-1 truncate px-1 text-[8px] text-[var(--warn-text)]" title={customError}>{customError}</div> : null}
-                </div>
-              ) : null}
-              {visibleSizes.map((item) => {
-                const key = sizeKey(item.w, item.h);
-                const on = selected.has(key);
-                return (
-                  <div key={`${activeSizeGroup.id}-${item.id}`} className={cn("flex min-h-[68px] items-center rounded-[6px] border px-3 py-2", on ? "border-[var(--app-line-strong)] bg-[var(--app-surface-2)]" : "border-[var(--app-line)] hover:border-[var(--app-line-strong)]")}>
-                    <button type="button" onClick={() => toggleTarget(key)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                      <span className="grid h-9 w-11 place-items-center">
-                        <span className="max-h-9 max-w-11 border border-[var(--app-line-strong)] bg-[var(--app-surface-3)]" style={{ aspectRatio: `${item.w}/${item.h}`, width: item.w >= item.h ? 42 : undefined, height: item.h > item.w ? 36 : undefined }} />
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block text-[11px] font-medium tabular-nums">{item.w} × {item.h}</span>
-                        <span className="mt-1 block truncate text-[9px] text-[var(--app-text-4)]">{item.use}</span>
-                      </span>
-                    </button>
-                    {activeSizeGroup.id === "custom" ? (
-                      <button type="button" aria-label={`删除 ${item.use}`} title="删除自定义画幅" onClick={() => toggleTarget(key)} className="ml-2 grid size-6 place-items-center rounded-[4px] text-[var(--app-text-4)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]">
-                        <X size={12} />
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        aria-label={on ? `取消选择 ${item.w} × ${item.h}` : `选择 ${item.w} × ${item.h}`}
-                        onClick={() => toggleTarget(key)}
-                        className={cn("ml-2 grid size-4 place-items-center rounded-[3px] border", on ? "border-[var(--app-text)] bg-[var(--app-text)] text-[var(--app-page)]" : "border-[var(--app-line-strong)]")}
-                      >
-                        {on ? <Check size={10} /> : null}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_250px] gap-3">
+          <SizePicker />
           <aside className="flex min-h-0 flex-col border-l border-[var(--app-line)] pl-4">
             <div className="text-[11px] font-semibold">本次延展</div>
             <div className="mt-1 text-[9px] text-[var(--app-text-4)]">已选择 {project.targets.length} 个画幅</div>
@@ -2079,6 +1912,59 @@ function EditExtendFlow({ onNext }: { onNext: () => void }) {
         <Button variant="workflow" size="lg" disabled={!project.targets.length} onClick={() => setPhase(phase === "select" ? "group" : "edit")}>
           {phase === "select" ? "智能分组并继续" : "编辑代表画幅"}
         </Button>
+      </div>
+    </div>
+  );
+}
+
+function SceneTargetsStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
+  const { project } = useStudio();
+  const families = sceneFamilies(project.targets);
+  const linkedCount = project.targets.filter((target) => linkedOf(target)).length;
+  const nativeCount = project.targets.filter((target) => nativeOf(target)).length;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_250px] gap-3">
+        <SizePicker />
+        <aside className="flex min-h-0 flex-col border-l border-[var(--app-line)] pl-4">
+          <div className="text-[11px] font-semibold">本次延展</div>
+          <div className="mt-1 text-[9px] text-[var(--app-text-4)]">已选择 {project.targets.length} 个画幅</div>
+          <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+            {families.map((group) => (
+              <div key={group.family} className="mb-3">
+                <div className="flex justify-between text-[10px]">
+                  <span>{SCENE_FAMILY_LABEL[group.family]}</span>
+                  <span className="text-[var(--app-text-4)]">{group.items.length}</span>
+                </div>
+                <div className="mt-1 text-[9px] text-[var(--app-text-4)]">代表画幅 {group.representative.w}×{group.representative.h}</div>
+                <div className="mt-0.5 text-[9px] leading-relaxed text-[var(--app-text-4)]">{group.items.map((item) => `${item.use ?? ""} ${item.w}×${item.h}`.trim()).join("、")}</div>
+              </div>
+            ))}
+            {linkedCount ? (
+              <div className="mb-3">
+                <div className="flex justify-between text-[10px]">
+                  <span>闪屏联动</span>
+                  <span className="text-[var(--app-text-4)]">{linkedCount}</span>
+                </div>
+                <div className="mt-1 text-[9px] text-[var(--app-text-4)]">跟随 2000×2400 母版自动适配</div>
+              </div>
+            ) : null}
+            {nativeCount ? (
+              <div className="mb-3">
+                <div className="flex justify-between text-[10px]">
+                  <span>仿原生</span>
+                  <span className="text-[var(--app-text-4)]">{nativeCount}</span>
+                </div>
+                <div className="mt-1 text-[9px] text-[var(--app-text-4)]">固定模板 1080×225，深浅两版</div>
+              </div>
+            ) : null}
+          </div>
+        </aside>
+      </div>
+      <div className="mt-3 flex shrink-0 justify-end gap-2">
+        <Button size="lg" onClick={onBack}>上一步</Button>
+        <Button variant="workflow" size="lg" disabled={!project.targets.length} onClick={onNext}>下一步：配置内容与样式</Button>
       </div>
     </div>
   );
@@ -2313,100 +2199,6 @@ function MasterBoard({
           </div>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function BackgroundColorControl({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState({ left: 0, top: 0 });
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const hsv = hexToHsv(value);
-
-  const openPicker = () => {
-    const rect = buttonRef.current?.getBoundingClientRect();
-    if (rect) setAnchor({ left: Math.min(rect.left, window.innerWidth - 280), top: Math.max(12, rect.top - 260) });
-    setOpen(true);
-  };
-
-  const pickSaturation = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const s = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    const v = Math.max(0, Math.min(1, 1 - (event.clientY - rect.top) / rect.height));
-    onChange(hsvToHex(hsv.h, s, v));
-  };
-
-  return (
-    <div className="flex items-center gap-2">
-      <button
-        ref={buttonRef}
-        type="button"
-        aria-label="打开背景色取色器"
-        onClick={openPicker}
-        className="size-5 rounded-[3px] border border-white/20"
-        style={{ backgroundColor: colorToHex(value) }}
-      />
-      <input
-        aria-label="母版背景色色值"
-        value={value.replace("#", "").toUpperCase()}
-        onChange={(event) => {
-          const next = event.target.value.replace(/[^\da-f]/gi, "").slice(0, 6);
-          onChange(`#${next}`);
-        }}
-        onBlur={() => onChange(colorToHex(value))}
-        className="w-[64px] bg-transparent text-[10px] uppercase text-[var(--app-text-2)] outline-none"
-      />
-      {open && createPortal(
-        <>
-          <button type="button" aria-label="关闭取色器" className="fixed inset-0 z-[99] cursor-default" onClick={() => setOpen(false)} />
-          <div className="fixed z-[100] w-[268px] rounded-[8px] border border-white/15 bg-[#292929] p-3 shadow-[0_18px_55px_rgb(0_0_0/0.55)]" style={{ left: anchor.left, top: anchor.top }}>
-            <div
-              className="relative h-[160px] cursor-crosshair overflow-hidden rounded-[6px]"
-              style={{ backgroundColor: `hsl(${hsv.h} 100% 50%)`, backgroundImage: "linear-gradient(to top,#000,transparent),linear-gradient(to right,#fff,transparent)" }}
-              onPointerDown={(event) => {
-                event.currentTarget.setPointerCapture(event.pointerId);
-                pickSaturation(event);
-              }}
-              onPointerMove={(event) => event.currentTarget.hasPointerCapture(event.pointerId) && pickSaturation(event)}
-            >
-              <span className="pointer-events-none absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-[0_0_0_1px_rgb(0_0_0/0.45)]" style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` }} />
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="360"
-              value={Math.round(hsv.h)}
-              onChange={(event) => onChange(hsvToHex(Number(event.target.value), hsv.s, hsv.v))}
-              aria-label="背景色色相"
-              className="mt-3 h-3 w-full cursor-pointer appearance-none rounded-full bg-[linear-gradient(to_right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)]"
-            />
-            <div className="mt-3 flex items-center gap-2 rounded-[4px] bg-black/20 px-2 py-2">
-              <button
-                type="button"
-                aria-label="吸取屏幕颜色"
-                title="吸取屏幕颜色"
-                onClick={async () => {
-                  const EyeDropperApi = (window as Window & { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
-                  if (!EyeDropperApi) return;
-                  try {
-                    const picked = await new EyeDropperApi().open();
-                    onChange(picked.sRGBHex);
-                  } catch {
-                    // 用户取消取色时保持当前颜色。
-                  }
-                }}
-                className="grid size-6 place-items-center rounded-[3px] text-white/70 hover:bg-white/10 hover:text-white"
-              >
-                <Pipette size={14} />
-              </button>
-              <span className="text-[10px] text-white/45">Hex</span>
-              <span className="text-[11px] uppercase text-white/90">{colorToHex(value).slice(1)}</span>
-              <span className="ml-auto text-[10px] text-white/45">100%</span>
-            </div>
-          </div>
-        </>,
-        document.body,
-      )}
     </div>
   );
 }

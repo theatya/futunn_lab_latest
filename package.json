@@ -15,7 +15,8 @@
     "clean": "turbo run clean",
     "corpus:import": "node scripts/import-corpus.mjs",
     "corpus:validate": "node scripts/import-corpus.mjs --validate",
-    "corpus:test": "tsx scripts/corpus-acceptance.test.ts"
+    "corpus:test": "tsx scripts/corpus-acceptance.test.ts",
+    "spec:audit": "tsx scripts/spec-audit.ts"
   },
   "devDependencies": {
     "tsx": "^4.23.15",

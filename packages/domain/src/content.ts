@@ -6,6 +6,7 @@
  */
 
 import type { MasterLayoutFingerprint, RecipeOverride, RecipeRole, RecipeTrace, RecipeTypography } from "./layout-recipe";
+import type { SceneState } from "./scene";
 
 export type Lang = "sc" | "tc" | "en" | "ja" | "th";
 
@@ -225,6 +226,8 @@ export interface Content {
   /** 各语言的文案，切语言不丢 */
   copy: Record<Lang, LangCopy>;
   kv?: AssetRef;
+  /** 四步延展流程的画板场景：元素、族编辑、单板覆盖、高亮。 */
+  scene?: SceneState;
   /** 没按语种单选时的默认二维码 */
   qrCode?: AssetRef;
   /** 各语言可使用不同二维码 */
@@ -350,6 +353,16 @@ const LIBRARY_LOGOS: Record<LibraryLogoPreset, AssetRef> = {
   futuNasdaqLight: { id: "logo-futu-nasdaq-light", name: "富途牛牛 × Nasdaq · 浅色背景", source: "library", kind: "component" },
   moomooNasdaqLight: { id: "logo-moomoo-nasdaq-light", name: "moomoo × Nasdaq · 浅色背景", source: "library", kind: "component" },
 };
+
+/** 闪屏底部白条里的 Logo（训练版 Logo 页「闪屏底部logo」），按品牌二选一，基准 150×58。 */
+export const SPLASH_LOGOS = {
+  futu: { id: "splash-logo-futu", name: "闪屏底部logo · 牛牛", url: "/brand/splash/futu.svg", w: 150, h: 59 },
+  moomoo: { id: "splash-logo-moomoo", name: "闪屏底部logo · moomoo", url: "/brand/splash/moomoo.svg", w: 151, h: 59 },
+} as const;
+
+export function splashLogoOf(preset: LibraryLogoPreset) {
+  return preset.startsWith("moomoo") ? SPLASH_LOGOS.moomoo : SPLASH_LOGOS.futu;
+}
 
 export function presetLogo(preset: LibraryLogoPreset): AssetRef {
   return { ...LIBRARY_LOGOS[preset] };

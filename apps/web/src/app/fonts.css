@@ -8,9 +8,25 @@
 }
 
 @font-face {
+  font-family: "face-brhendrix-blackitalic";
+  src: url("/api/fonts/brhendrix-blackitalic") format("opentype");
+  font-weight: 1 1000;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
   font-family: "BR Hendrix";
   src: url("/api/fonts/brhendrix-black") format("opentype");
   font-weight: 900;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-brhendrix-black";
+  src: url("/api/fonts/brhendrix-black") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -24,9 +40,25 @@
 }
 
 @font-face {
+  font-family: "face-brhendrix-bolditalic";
+  src: url("/api/fonts/brhendrix-bolditalic") format("opentype");
+  font-weight: 1 1000;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
   font-family: "BR Hendrix";
   src: url("/api/fonts/brhendrix-bold") format("opentype");
   font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-brhendrix-bold";
+  src: url("/api/fonts/brhendrix-bold") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -40,9 +72,25 @@
 }
 
 @font-face {
+  font-family: "face-brhendrix-extralightitalic";
+  src: url("/api/fonts/brhendrix-extralightitalic") format("opentype");
+  font-weight: 1 1000;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
   font-family: "BR Hendrix";
   src: url("/api/fonts/brhendrix-extralight") format("opentype");
   font-weight: 200;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-brhendrix-extralight";
+  src: url("/api/fonts/brhendrix-extralight") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -56,9 +104,25 @@
 }
 
 @font-face {
+  font-family: "face-brhendrix-lightitalic";
+  src: url("/api/fonts/brhendrix-lightitalic") format("opentype");
+  font-weight: 1 1000;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
   font-family: "BR Hendrix";
   src: url("/api/fonts/brhendrix-light") format("opentype");
   font-weight: 300;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-brhendrix-light";
+  src: url("/api/fonts/brhendrix-light") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -72,9 +136,25 @@
 }
 
 @font-face {
+  font-family: "face-brhendrix-mediumitalic";
+  src: url("/api/fonts/brhendrix-mediumitalic") format("opentype");
+  font-weight: 1 1000;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
   font-family: "BR Hendrix";
   src: url("/api/fonts/brhendrix-medium") format("opentype");
   font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-brhendrix-medium";
+  src: url("/api/fonts/brhendrix-medium") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -88,9 +168,25 @@
 }
 
 @font-face {
+  font-family: "face-brhendrix-regularitalic";
+  src: url("/api/fonts/brhendrix-regularitalic") format("opentype");
+  font-weight: 1 1000;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
   font-family: "BR Hendrix";
   src: url("/api/fonts/brhendrix-regular") format("opentype");
   font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-brhendrix-regular";
+  src: url("/api/fonts/brhendrix-regular") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -104,9 +200,25 @@
 }
 
 @font-face {
+  font-family: "face-brhendrix-semibolditalic";
+  src: url("/api/fonts/brhendrix-semibolditalic") format("opentype");
+  font-weight: 1 1000;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
   font-family: "BR Hendrix";
   src: url("/api/fonts/brhendrix-semibold") format("opentype");
   font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-brhendrix-semibold";
+  src: url("/api/fonts/brhendrix-semibold") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -120,6 +232,14 @@
 }
 
 @font-face {
+  font-family: "face-brhendrix-thinitalic";
+  src: url("/api/fonts/brhendrix-thinitalic") format("opentype");
+  font-weight: 1 1000;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
   font-family: "BR Hendrix";
   src: url("/api/fonts/brhendrix-thin") format("opentype");
   font-weight: 100;
@@ -128,121 +248,9 @@
 }
 
 @font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-bold") format("opentype");
-  font-weight: 700;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-demibold") format("opentype");
-  font-weight: 600;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-extralight") format("opentype");
-  font-weight: 200;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-heavy") format("opentype");
-  font-weight: 900;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-light") format("opentype");
-  font-weight: 300;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-medium") format("opentype");
-  font-weight: 500;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-normal") format("opentype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-regular") format("opentype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-semibold") format("opentype");
-  font-weight: 600;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "MiSans";
-  src: url("/api/fonts/misans-thin") format("opentype");
-  font-weight: 100;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "FZLanTingHeiS-DB1-GBK";
-  src: url("/api/fonts/fzltzchk--gbk1-0") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "FZLanTingHei-DB-GBK";
-  src: url("/api/fonts/fzltzhk--gbk1-0") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "FZLanTingHei-EB-GBK";
-  src: url("/api/fonts/fzltdhk--gbk1-0") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "FZLanTingHei-L-GBK";
-  src: url("/api/fonts/fzltxhk") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "FZLanTingHei-R-GBK";
-  src: url("/api/fonts/fzlthk--gbk1-0") format("truetype");
-  font-weight: 400;
+  font-family: "face-brhendrix-thin";
+  src: url("/api/fonts/brhendrix-thin") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -256,9 +264,25 @@
 }
 
 @font-face {
+  font-family: "face-mplus1p-black";
+  src: url("/api/fonts/mplus1p-black") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "M PLUS 1p";
   src: url("/api/fonts/mplus1p-bold") format("truetype");
   font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-mplus1p-bold";
+  src: url("/api/fonts/mplus1p-bold") format("truetype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -272,9 +296,25 @@
 }
 
 @font-face {
+  font-family: "face-mplus1p-extrabold";
+  src: url("/api/fonts/mplus1p-extrabold") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "M PLUS 1p";
   src: url("/api/fonts/mplus1p-light") format("truetype");
   font-weight: 300;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-mplus1p-light";
+  src: url("/api/fonts/mplus1p-light") format("truetype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -288,9 +328,25 @@
 }
 
 @font-face {
+  font-family: "face-mplus1p-medium";
+  src: url("/api/fonts/mplus1p-medium") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "M PLUS 1p";
   src: url("/api/fonts/mplus1p-regular") format("truetype");
   font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-mplus1p-regular";
+  src: url("/api/fonts/mplus1p-regular") format("truetype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -304,6 +360,174 @@
 }
 
 @font-face {
+  font-family: "face-mplus1p-thin";
+  src: url("/api/fonts/mplus1p-thin") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-bold") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-bold";
+  src: url("/api/fonts/misans-bold") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-demibold") format("opentype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-demibold";
+  src: url("/api/fonts/misans-demibold") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-extralight") format("opentype");
+  font-weight: 200;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-extralight";
+  src: url("/api/fonts/misans-extralight") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-heavy") format("opentype");
+  font-weight: 900;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-heavy";
+  src: url("/api/fonts/misans-heavy") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-light") format("opentype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-light";
+  src: url("/api/fonts/misans-light") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-medium") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-medium";
+  src: url("/api/fonts/misans-medium") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-normal") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-normal";
+  src: url("/api/fonts/misans-normal") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-regular") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-regular";
+  src: url("/api/fonts/misans-regular") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-semibold") format("opentype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-semibold";
+  src: url("/api/fonts/misans-semibold") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/api/fonts/misans-thin") format("opentype");
+  font-weight: 100;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-misans-thin";
+  src: url("/api/fonts/misans-thin") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "Source Han Serif";
   src: url("/api/fonts/sourcehanserif-bold") format("opentype");
   font-weight: 700;
@@ -323,6 +547,14 @@
   font-family: "Source Han Serif TC";
   src: url("/api/fonts/sourcehanserif-bold") format("opentype");
   font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-sourcehanserif-bold";
+  src: url("/api/fonts/sourcehanserif-bold") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -352,6 +584,14 @@
 }
 
 @font-face {
+  font-family: "face-sourcehanserif-extralight";
+  src: url("/api/fonts/sourcehanserif-extralight") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "Source Han Serif";
   src: url("/api/fonts/sourcehanserif-heavy") format("opentype");
   font-weight: 900;
@@ -371,6 +611,14 @@
   font-family: "Source Han Serif TC";
   src: url("/api/fonts/sourcehanserif-heavy") format("opentype");
   font-weight: 900;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-sourcehanserif-heavy";
+  src: url("/api/fonts/sourcehanserif-heavy") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -400,6 +648,14 @@
 }
 
 @font-face {
+  font-family: "face-sourcehanserif-light";
+  src: url("/api/fonts/sourcehanserif-light") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "Source Han Serif";
   src: url("/api/fonts/sourcehanserif-medium") format("opentype");
   font-weight: 500;
@@ -419,6 +675,14 @@
   font-family: "Source Han Serif TC";
   src: url("/api/fonts/sourcehanserif-medium") format("opentype");
   font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-sourcehanserif-medium";
+  src: url("/api/fonts/sourcehanserif-medium") format("opentype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -448,6 +712,14 @@
 }
 
 @font-face {
+  font-family: "face-sourcehanserif-regular";
+  src: url("/api/fonts/sourcehanserif-regular") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "Source Han Serif";
   src: url("/api/fonts/sourcehanserif-semibold") format("opentype");
   font-weight: 600;
@@ -467,6 +739,94 @@
   font-family: "Source Han Serif TC";
   src: url("/api/fonts/sourcehanserif-semibold") format("opentype");
   font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-sourcehanserif-semibold";
+  src: url("/api/fonts/sourcehanserif-semibold") format("opentype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "FZLanTingHeiS-DB1-GBK";
+  src: url("/api/fonts/fzltzchk--gbk1-0") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-fzltzchk--gbk1-0";
+  src: url("/api/fonts/fzltzchk--gbk1-0") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "FZLanTingHei-DB-GBK";
+  src: url("/api/fonts/fzltzhk--gbk1-0") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-fzltzhk--gbk1-0";
+  src: url("/api/fonts/fzltzhk--gbk1-0") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "FZLanTingHei-EB-GBK";
+  src: url("/api/fonts/fzltdhk--gbk1-0") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-fzltdhk--gbk1-0";
+  src: url("/api/fonts/fzltdhk--gbk1-0") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "FZLanTingHei-L-GBK";
+  src: url("/api/fonts/fzltxhk") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-fzltxhk";
+  src: url("/api/fonts/fzltxhk") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "FZLanTingHei-R-GBK";
+  src: url("/api/fonts/fzlthk--gbk1-0") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "face-fzlthk--gbk1-0";
+  src: url("/api/fonts/fzlthk--gbk1-0") format("truetype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -480,6 +840,14 @@
 }
 
 @font-face {
+  font-family: "face-hyyakuhei-45f";
+  src: url("/api/fonts/hyyakuhei-45f") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "HYYaKuHei";
   src: url("/api/fonts/hyyakuhei-45j") format("truetype");
   font-weight: 300;
@@ -488,9 +856,9 @@
 }
 
 @font-face {
-  font-family: "HYYakuHei";
-  src: url("/api/fonts/hyyakuhei-dew") format("truetype");
-  font-weight: 300;
+  font-family: "face-hyyakuhei-45j";
+  src: url("/api/fonts/hyyakuhei-45j") format("truetype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }
@@ -504,6 +872,14 @@
 }
 
 @font-face {
+  font-family: "face-hyyakuhei-85f";
+  src: url("/api/fonts/hyyakuhei-85f") format("truetype");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "HYYaKuHei";
   src: url("/api/fonts/hyyakuhei-85j") format("truetype");
   font-weight: 700;
@@ -512,25 +888,9 @@
 }
 
 @font-face {
-  font-family: "HYYakuHei";
-  src: url("/api/fonts/hyyakuhei-hew") format("truetype");
-  font-weight: 800;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "HYYaKuHeiX";
-  src: url("/api/fonts/hyyakuheix-75w") format("truetype");
-  font-weight: 500;
-  font-style: normal;
-  font-display: block;
-}
-
-@font-face {
-  font-family: "HYYaKuHeiW";
-  src: url("/api/fonts/hyyakuheiw") format("truetype");
-  font-weight: 400;
+  font-family: "face-hyyakuhei-85j";
+  src: url("/api/fonts/hyyakuhei-85j") format("truetype");
+  font-weight: 1 1000;
   font-style: normal;
   font-display: block;
 }

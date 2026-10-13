@@ -7,6 +7,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type SetStateAction,
   type ReactNode,
@@ -14,6 +15,8 @@ import {
 import {
   BOARD_CONFIG_DEFAULT,
   boardConfigOf,
+  createDefaultScene,
+  type SceneState,
   emptyLangCopy,
   isOverridden,
   nextUnusedLang,
@@ -27,12 +30,12 @@ import {
   type TargetBoard,
   type TitleBreakChoice,
 } from "@futu/domain";
-import { ALL_SIZES } from "@futu/specs";
+import { ALL_SIZES, slotByKey, slotKey, slotTarget } from "@futu/specs";
 import { createDefaultProject } from "./seed";
 import type { FigmaRecognitionResult } from "./figma-recognition";
 
-export const STEPS = ["识别画板", "编辑与延展", "预览与写入"] as const;
-export type StepIndex = 0 | 1 | 2;
+export const STEPS = ["准备主视觉", "选择资源位", "配置内容与样式", "批量生成并精调"] as const;
+export type StepIndex = 0 | 1 | 2 | 3;
 export type EntryMode = "pick" | "blank";
 export type VisualComponentRecognitionSource = {
   url: string;
@@ -86,9 +89,17 @@ type StudioContext = {
   setEntry: (m: EntryMode) => void;
   lang: Lang;
   setLang: (l: Lang) => void;
+  /** 当前编辑的自定义版本，null = 语种本身。 */
+  versionId: string | null;
+  setVersion: (id: string, lang: Lang) => void;
   focusKey: string;
   setFocusKey: (k: string) => void;
   updateContent: (patch: Partial<Project["content"]>) => void;
+  updateScene: (recipe: (current: SceneState) => SceneState) => void;
+  undoScene: () => void;
+  redoScene: () => void;
+  canUndoScene: boolean;
+  canRedoScene: boolean;
   updateCopy: (lang: Lang, patch: Partial<LangCopy>) => void;
   setTitleBreakChoice: (lang: Lang, targetKey: string, choice: TitleBreakChoice) => void;
   setBrand: (brand: Brand) => void;
@@ -145,17 +156,10 @@ function clone<T>(v: T): T {
 
 function normalizeProjectTargets(project: Project): Project {
   const normalizedTargets = project.targets.flatMap((target) => {
-    const catalogItem = ALL_SIZES.find((item) => item.w === target.w && item.h === target.h);
-    if (catalogItem) {
-      return [{
-        ...target,
-        key: sizeKey(catalogItem.w, catalogItem.h),
-        w: catalogItem.w,
-        h: catalogItem.h,
-        sizeId: catalogItem.id,
-        use: catalogItem.use,
-      }];
-    }
+    const catalogItem = slotByKey(target.key)
+      ?? ALL_SIZES.find((item) => item.id === target.sizeId)
+      ?? slotByKey(sizeKey(target.w, target.h));
+    if (catalogItem) return [slotTarget(catalogItem)];
     return target.sizeId?.startsWith("custom-") ? [target] : [];
   });
   const targets = [...new Map(normalizedTargets.map((target) => [target.key, target])).values()];
@@ -174,6 +178,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const [step, setStep] = useState<StepIndex>(0);
   const [entry, setEntryState] = useState<EntryMode>("pick");
   const [lang, setLang] = useState<Lang>("en");
+  const [versionId, setVersionId] = useState<string | null>(null);
   const [focusKey, setFocusKey] = useState(() => project.targets[0]?.key ?? "1080×1080");
   const [draft, setDraft] = useState<BoardConfig | null>(null);
   const [masterSources, setMasterSources] = useState<MasterRecognitionSources>({
@@ -197,7 +202,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
           activeMasterLang?: Lang;
         };
         if (saved.project) setProject(normalizeProjectTargets(saved.project));
-        if (saved.step != null) setStep(saved.step >= 3 ? 2 : saved.step >= 1 ? 1 : 0);
+        if (saved.step != null) setStep(clampStep(saved.step));
         if (saved.entry === "pick" || saved.entry === "blank") setEntryState(saved.entry);
         if (saved.lang) setLang(saved.lang);
         if (saved.focusKey) setFocusKey(saved.focusKey);
@@ -233,16 +238,20 @@ export function StudioProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!storageReady) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      project,
-      step,
-      entry,
-      lang,
-      focusKey,
-      draft,
-      masterSources,
-      activeMasterLang,
-    }));
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        project,
+        step,
+        entry,
+        lang,
+        focusKey,
+        draft,
+        masterSources,
+        activeMasterLang,
+      }));
+    } catch {
+      // 上传的大图可能超出本地存储配额；当前会话仍可继续，刷新后需重新上传。
+    }
   }, [activeMasterLang, draft, entry, focusKey, lang, masterSources, project, step, storageReady]);
 
   const focusCfg = useMemo(() => {
@@ -262,6 +271,51 @@ export function StudioProvider({ children }: { children: ReactNode }) {
 
   const updateContent: StudioContext["updateContent"] = (patch) => {
     update((p) => ({ ...p, content: { ...p.content, ...patch } }));
+  };
+
+  /** 场景撤销栈。间隔不足 250ms 的连续修改（如拖动）合并成一步；切换项目时清空。 */
+  const sceneHistory = useRef<{ projectId: string; past: SceneState[]; future: SceneState[]; lastAt: number }>({ projectId: "", past: [], future: [], lastAt: 0 });
+  const [, setHistoryTick] = useState(0);
+  const history = sceneHistory.current;
+  if (history.projectId !== project.id) {
+    history.projectId = project.id;
+    history.past = [];
+    history.future = [];
+    history.lastAt = 0;
+  }
+  const currentScene = () => project.content.scene ?? createDefaultScene(project.content.copy);
+
+  const updateScene: StudioContext["updateScene"] = (recipe) => {
+    const now = Date.now();
+    if (now - history.lastAt > 250) {
+      history.past.push(currentScene());
+      if (history.past.length > 100) history.past.shift();
+    }
+    history.lastAt = now;
+    history.future = [];
+    update((p) => ({
+      ...p,
+      content: { ...p.content, scene: recipe(p.content.scene ?? createDefaultScene(p.content.copy)) },
+    }));
+    setHistoryTick((tick) => tick + 1);
+  };
+
+  const undoScene = () => {
+    const previous = history.past.pop();
+    if (!previous) return;
+    history.future.push(currentScene());
+    history.lastAt = 0;
+    update((p) => ({ ...p, content: { ...p.content, scene: previous } }));
+    setHistoryTick((tick) => tick + 1);
+  };
+
+  const redoScene = () => {
+    const next = history.future.pop();
+    if (!next) return;
+    history.past.push(currentScene());
+    history.lastAt = 0;
+    update((p) => ({ ...p, content: { ...p.content, scene: next } }));
+    setHistoryTick((tick) => tick + 1);
   };
 
   const updateCopy: StudioContext["updateCopy"] = (id, patch) => {
@@ -420,10 +474,16 @@ export function StudioProvider({ children }: { children: ReactNode }) {
 
   const setTargets: StudioContext["setTargets"] = (keys, customNames = {}) => {
     const targets: TargetBoard[] = [];
-    for (const key of new Set(keys)) {
-      const item = ALL_SIZES.find((s) => sizeKey(s.w, s.h) === key);
+    const wanted = new Set(keys);
+    for (const key of keys) {
+      const master = slotByKey(key)?.linked?.master;
+      const masterItem = master ? ALL_SIZES.find((item) => item.id === master) : undefined;
+      if (masterItem) wanted.add(slotKey(masterItem));
+    }
+    for (const key of wanted) {
+      const item = slotByKey(key);
       if (item) {
-        targets.push({ key, w: item.w, h: item.h, sizeId: item.id, use: item.use });
+        targets.push(slotTarget(item));
         continue;
       }
       const dimensions = key.match(/^(\d+)×(\d+)$/);
@@ -518,7 +578,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const loadSnapshot: StudioContext["loadSnapshot"] = (next) => {
     const normalizedProject = normalizeProjectTargets(clone(next.project));
     setProject(normalizedProject);
-    setStep(next.step >= 3 ? 2 : next.step >= 1 ? 1 : 0);
+    setStep(clampStep(next.step));
     setEntryState(next.entry);
     setLang(next.lang);
     setFocusKey(
@@ -538,13 +598,26 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     entry,
     setEntry,
     lang,
-    setLang,
+    setLang: (l) => {
+      setVersionId(null);
+      setLang(l);
+    },
+    versionId,
+    setVersion: (id, l) => {
+      setVersionId(id);
+      setLang(l);
+    },
     focusKey,
     setFocusKey: (k) => {
       setFocusKey(k);
       setDraft(null);
     },
     updateContent,
+    updateScene,
+    undoScene,
+    redoScene,
+    canUndoScene: history.past.length > 0,
+    canRedoScene: history.future.length > 0,
     updateCopy,
     setTitleBreakChoice,
     setBrand,
@@ -574,6 +647,20 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+function clampStep(value: number): StepIndex {
+  return Math.max(0, Math.min(3, Math.floor(value))) as StepIndex;
+}
+
+/** 画板场景读写；项目里还没有场景时按当前文案生成默认值，首次修改时落盘。 */
+export function useScene() {
+  const { project, updateScene, undoScene, redoScene, canUndoScene, canRedoScene } = useStudio();
+  const scene = useMemo(
+    () => project.content.scene ?? createDefaultScene(project.content.copy),
+    [project.content.copy, project.content.scene],
+  );
+  return { scene, updateScene, undoScene, redoScene, canUndoScene, canRedoScene };
 }
 
 export function useStudio() {
