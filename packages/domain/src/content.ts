@@ -161,6 +161,21 @@ export function emptyLangCopy(): LangCopy {
   };
 }
 
+/** 新增语言时可直接开始编辑的初始文案；保留空值给尚未定义的语言。 */
+export function initialLangCopy(lang: Lang): LangCopy {
+  if (lang !== "ja") return emptyLangCopy();
+  return {
+    sub: "条件達成で必ずもらおう",
+    supplement: "",
+    title: "5万円分のNVIDIA株またはSpaceX株",
+    titleBreaks: [13],
+    ctaLong: "今すぐ参加",
+    ctaShort: "今すぐ参加",
+    badge: "",
+    disclaimer: [],
+  };
+}
+
 export function titleBreakVariantsOf(copy: LangCopy): TitleBreakVariant[] {
   return copy.titleBreakVariants?.length
     ? copy.titleBreakVariants

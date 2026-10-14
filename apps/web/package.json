@@ -19,6 +19,8 @@
     "@futu/specs": "workspace:*",
     "clsx": "catalog:",
     "gsap": "catalog:",
+    "html-to-image": "^1.11.13",
+    "jszip": "^3.10.2",
     "lucide-react": "catalog:",
     "motion": "catalog:",
     "next": "catalog:",

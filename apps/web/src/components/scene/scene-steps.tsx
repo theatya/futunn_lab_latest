@@ -1,7 +1,11 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ImageUp, Layers3, Link2, Loader2, X } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
+import { toBlob } from "html-to-image";
+import JSZip from "jszip";
+import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, CopyPlus, Download, Eye, EyeOff, ImageUp, Layers3, Link2, Loader2, Lock, LockOpen, MousePointerClick, X } from "lucide-react";
 import {
   LANGS,
   NATIVE_SKINS,
@@ -10,7 +14,11 @@ import {
   buildSceneBoard,
   linkedPlacement,
   presetLogo,
-  sceneFamilyOf,
+  sceneBoardLocked,
+  sceneBucketLocked,
+  sceneBoardFamily,
+  sceneFamilyAlign,
+  sceneLanguageBoardView,
   splashLogoOf,
   sceneSolution,
   sceneVersionView,
@@ -18,12 +26,14 @@ import {
   type NativeBoard,
   type SceneBoard,
   type SceneBoardRef,
+  type SceneBucket,
   type SceneFamily,
   type SceneState,
+  type SceneVersion,
   type TargetBoard,
 } from "@futu/domain";
 import type { BoardPlan, FigmaWriteResult } from "@futu/ports";
-import { linkedOf, nativeOf, slotBoardRef, specOf } from "@futu/specs";
+import { SIZE_GROUPS, isOfflineSlot, linkedOf, nativeOf, slotBoardRef, slotBucket, specOf } from "@futu/specs";
 import { createWebPorts } from "@futu/adapters-web";
 import { colorToHex } from "@/components/color-control";
 import { Button, WorkflowSparkle } from "@/components/ui/button";
@@ -45,8 +55,82 @@ const PILL_TABS = "flex rounded-full bg-[var(--app-surface-2)] p-1 text-[10px]";
 const FEATHER_LABELS = ["关", "弱", "中", "强"] as const;
 const FAMILY_ORDER: SceneFamily[] = ["strip", "landscape", "square", "portrait"];
 const FAMILY_IDEAL: Record<SceneFamily, number> = { strip: 1080 / 225, landscape: 1.91, square: 1, portrait: 810 / 1110 };
+const BATCH_ASIDE_STORE = "futu:scene-batch-aside-width";
+const BATCH_ASIDE_LIMITS = [360, 640] as const;
+/** 至少容纳两张 200px 卡片和间距；卡片内部再按实际宽度缩放预览。 */
+const BATCH_BOARD_MIN_WIDTH = 440;
 
 export const sceneRef = slotBoardRef;
+
+function safeFileName(value: string) {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").replace(/\s+/g, " ").trim() || "未命名";
+}
+
+function uniqueArchivePath(path: string, used: Set<string>) {
+  if (!used.has(path)) {
+    used.add(path);
+    return path;
+  }
+  const dot = path.lastIndexOf(".");
+  const base = dot > path.lastIndexOf("/") ? path.slice(0, dot) : path;
+  const extension = dot > path.lastIndexOf("/") ? path.slice(dot) : "";
+  let index = 2;
+  let next = `${base}-${index}${extension}`;
+  while (used.has(next)) {
+    index += 1;
+    next = `${base}-${index}${extension}`;
+  }
+  used.add(next);
+  return next;
+}
+
+const boardSizeLabel = (board: Pick<TargetBoard, "w" | "h">) => `${board.w} × ${board.h}`;
+const SLOT_ITEM_BY_ID = new Map(SIZE_GROUPS.flatMap((group) => group.items.map((item) => [item.id, item] as const)));
+const EXTERNAL_SLOT_IDS = new Set(SIZE_GROUPS.find((group) => group.id === "external")?.items.map((item) => item.id) ?? []);
+const isExternalTarget = (target: Pick<TargetBoard, "sizeId">) => Boolean(target.sizeId && EXTERNAL_SLOT_IDS.has(target.sizeId));
+const boardUseLabel = (target: Pick<TargetBoard, "sizeId" | "use">) => {
+  const item = target.sizeId ? SLOT_ITEM_BY_ID.get(target.sizeId) : undefined;
+  return item ? `${item.use}${item.variant ? ` ${item.variant}` : ""}` : target.use;
+};
+const boardDisplayLabel = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => (
+  isExternalTarget(target) || !boardUseLabel(target)
+    ? boardSizeLabel(target)
+    : `${boardSizeLabel(target)} ${boardUseLabel(target)}`
+);
+const boardFileStem = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => (
+  isExternalTarget(target) || !boardUseLabel(target)
+    ? boardSizeLabel(target)
+    : `${boardSizeLabel(target)}_${boardUseLabel(target)}`
+);
+
+async function imageDataUrl(src?: string) {
+  if (!src || src.startsWith("data:")) return src;
+  const response = await fetch(src);
+  if (!response.ok) throw new Error("主视觉图片读取失败，无法导出图片");
+  const blob = await response.blob();
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("主视觉图片读取失败，无法导出图片"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function waitForRenderedAssets(node: HTMLElement) {
+  await document.fonts.ready;
+  await Promise.all([...node.querySelectorAll("img")].map((image) => image.complete
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+      image.addEventListener("load", () => resolve(), { once: true });
+      image.addEventListener("error", () => resolve(), { once: true });
+    })));
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+}
+
+function clampBatchAsideWidth(width: number, layoutMax: number = BATCH_ASIDE_LIMITS[1]) {
+  const max = Math.max(BATCH_ASIDE_LIMITS[0], Math.min(BATCH_ASIDE_LIMITS[1], layoutMax));
+  return Math.round(Math.max(BATCH_ASIDE_LIMITS[0], Math.min(max, width)));
+}
 
 /** 把角标用到的 SVG 文件读成文本塞进画板数据，插件端直接 createNodeFromSvg。 */
 async function inlineBadgeSvgs(boards: SceneBoard[]) {
@@ -183,27 +267,126 @@ async function readUpload(file: File) {
   }
 }
 
-/** 版式族只收独立排版的画板；闪屏设备尺寸由母版联动生成、仿原生用固定模板，都不进族。 */
-export function sceneFamilies(targets: TargetBoard[]) {
-  return FAMILY_ORDER.map((family) => {
-    const items = targets.filter((target) => !linkedOf(target) && !nativeOf(target) && sceneFamilyOf(target.w, target.h) === family);
-    const representative = [...items].sort((a, b) => {
+export type SceneEditKind = "layout" | "outside" | "offline" | "splash" | "background" | "special";
+
+export interface SceneEditGroup {
+  id: SceneBucket;
+  kind: SceneEditKind;
+  label: string;
+  items: TargetBoard[];
+  representative: TargetBoard;
+  /**
+   * 只有特殊规范组锁版式（只改内容与样式，不用保存预设）。
+   * 版式组不锁：族里的位置、对齐、字号、图层顺序照常改，规范画板按偏移叠在自己的规范锚点上。
+   */
+  locked: boolean;
+}
+
+export const SCENE_EDIT_KIND_LABEL: Record<SceneEditKind, string> = { layout: "站内/官网版式", outside: "站外版式", offline: "线下版式", splash: "闪屏母版", background: "纯背景", special: "特殊规范" };
+
+const ALIGN_LABEL = { left: "左对齐", center: "居中", right: "右对齐" } as const;
+const ALIGN_ORDER = ["left", "center", "right"] as const;
+/** 没有规范锚点时，分组的代表画幅优先取最常用的尺寸。 */
+const STANDARD_SIZE: Partial<Record<SceneFamily, readonly [number, number]>> = { strip: [1080, 225] };
+const familyShort = (family: SceneFamily) => SCENE_FAMILY_LABEL[family].replace(/族$/, "");
+/** 资源位指定了版式族的（如 300×250 归方版族）按指定的，否则按宽高比。 */
+const targetFamily = (target: TargetBoard) => sceneBoardFamily(slotBoardRef(target));
+/** 站外版式的分组顺序：各画幅族，通栏后面接超扁幅（代表画幅 728×90）。 */
+const OUTSIDE_SEGMENTS: Array<{ id: string; family: SceneFamily; label: string; standard?: readonly [number, number] }> = FAMILY_ORDER.flatMap((family) => [
+  { id: family, family, label: SCENE_FAMILY_LABEL[family] },
+  ...(family === "strip" ? [{ id: "strip@ultra", family, label: "超扁幅", standard: [728, 90] as const }] : []),
+]);
+/** 站外 / 自定义画板所在的站外版式分组 id。 */
+const outsideSegmentOf = (target: TargetBoard) => slotBucket(target) ?? targetFamily(target);
+
+/**
+ * 第三步的编辑分组：
+ *  - 版式：站内/官网有规范或首选对齐的按「对齐 × 画幅」合组（如「左对齐 · 通栏」），其后是站外 / 自定义的画幅族；
+ *  - 线下版式：每个实体店物料独立编辑，不与其它画幅共用；
+ *  - 闪屏母版：只在选了闪屏时出现；
+ *  - 特殊规范：只出主视觉、或版式结构合不进去的，按规范模板各自一组。
+ * 闪屏设备尺寸由母版联动生成、仿原生用固定模板，都不进分组。
+ */
+export function sceneEditGroups(targets: TargetBoard[]): SceneEditGroup[] {
+  const free = targets.filter((target) => !linkedOf(target) && !nativeOf(target));
+  const fixed = new Map<string, TargetBoard[]>();
+  for (const target of free) {
+    const bucket = slotBucket(target);
+    if (bucket) fixed.set(bucket, [...(fixed.get(bucket) ?? []), target]);
+  }
+  /** 特殊规范里排版不锁的资源位单独一组（`族@own:资源位`）。 */
+  const isSpecialBucket = (id: string) => sceneBucketLocked(id) || id.includes("@own:");
+  const sizeCount = new Map<string, number>();
+  for (const [id, items] of fixed) {
+    if (!isSpecialBucket(id)) continue;
+    const size = `${items[0]!.w}×${items[0]!.h}`;
+    sizeCount.set(size, (sizeCount.get(size) ?? 0) + 1);
+  }
+  const special: SceneEditGroup[] = [];
+  const background: SceneEditGroup[] = [];
+  const offline: SceneEditGroup[] = [];
+  const splash: SceneEditGroup[] = [];
+  for (const [id, items] of fixed) {
+    const representative = items[0]!;
+    if (id.includes("@offline:") && isOfflineSlot(representative)) {
+      offline.push({
+        id,
+        kind: "offline",
+        label: `${representative.w}×${representative.h} · ${representative.use ?? ""}`.trim(),
+        items,
+        representative,
+        locked: false,
+      });
+      continue;
+    }
+    if (id.includes("@splash")) splash.push({ id, kind: "splash", label: SCENE_EDIT_KIND_LABEL.splash, items, representative, locked: false });
+    if (!isSpecialBucket(id)) continue;
+    const size = `${representative.w}×${representative.h}`;
+    const variant = specOf(representative.w, representative.h, representative.sizeId)?.item.variant;
+    const label = (sizeCount.get(size) ?? 0) > 1 ? `${size} · ${representative.use ?? ""}${variant ? `（${variant}）` : ""}`.trim() : size;
+    const kind = slotBoardRef(representative).layout?.visualFill ? "background" : "special";
+    (kind === "background" ? background : special).push({ id, kind, label, items, representative, locked: sceneBucketLocked(id) });
+  }
+  const aligned = ALIGN_ORDER.flatMap((align) => FAMILY_ORDER.flatMap((family): SceneEditGroup[] => {
+    const id = `${family}@align:${align}`;
+    const items = fixed.get(id);
+    if (!items?.length) return [];
+    /** 代表画板优先取有规范锚点的：族里的位置改动记成相对锚点的偏移，组里每块画板都跟着挪。 */
+    const anchored = items.find((target) => {
+      const layout = slotBoardRef(target).layout;
+      return layout?.group && !layout.soft;
+    });
+    const standard = STANDARD_SIZE[family];
+    const typical = standard ? items.find((target) => target.w === standard[0] && target.h === standard[1]) : undefined;
+    return [{ id, kind: "layout", label: `${ALIGN_LABEL[align]} · ${familyShort(family)}`, items, representative: anchored ?? typical ?? items[0]!, locked: false }];
+  }));
+  /** 站外 / 自定义按画幅族；超扁幅另成一族排在通栏族后面。 */
+  const families = OUTSIDE_SEGMENTS.flatMap(({ id, family, label, standard }): SceneEditGroup[] => {
+    const items = id.includes("@") ? fixed.get(id) ?? [] : free.filter((target) => !slotBucket(target) && targetFamily(target) === family);
+    const typical = standard ? items.find((target) => target.w === standard[0] && target.h === standard[1]) : undefined;
+    const representative = typical ?? [...items].sort((a, b) => {
       const specA = specOf(a.w, a.h, a.sizeId)?.spec ? 0 : 1;
       const specB = specOf(b.w, b.h, b.sizeId)?.spec ? 0 : 1;
       if (specA !== specB) return specA - specB;
       return Math.abs(Math.log(a.w / a.h / FAMILY_IDEAL[family])) - Math.abs(Math.log(b.w / b.h / FAMILY_IDEAL[family]));
     })[0];
-    return { family, items, representative };
-  }).filter((group) => group.items.length && group.representative) as Array<{ family: SceneFamily; items: TargetBoard[]; representative: TargetBoard }>;
+    return representative ? [{ id, kind: "outside", label, items, representative, locked: false }] : [];
+  });
+  return [...aligned, ...families, ...offline, ...splash, ...background, ...special];
+}
+
+/** 画幅族里混进的站内/官网资源位都是规范未注明的。 */
+export function unspecifiedInApp(group: SceneEditGroup) {
+  return group.kind === "outside" ? group.items.filter((target) => !slotBucket(target) && specOf(target.w, target.h, target.sizeId)?.isInApp && target.sizeId) : [];
 }
 
 const langName = (id: string) => LANGS.find((item) => item.id === id)?.name ?? id;
 
 /** 当前语种或自定义版本对应的场景视图。 */
 function useActiveVersion() {
-  const { project, lang, versionId } = useStudio();
+  const { lang, versionId } = useStudio();
   const { scene } = useScene();
-  const version = scene.versions?.find((item) => item.id === versionId && item.lang === lang && project.content.langs.includes(item.lang)) ?? null;
+  const version = scene.versions?.find((item) => item.id === versionId && item.lang === lang) ?? null;
   const view = useMemo(() => sceneVersionView(scene, version), [scene, version]);
   return { version, view };
 }
@@ -213,13 +396,16 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
   const { project, lang, versionId, setLang, setVersion, toggleLang } = useStudio();
   const { scene, updateScene } = useScene();
   const langs = project.content.langs;
-  const versions = langsOnly ? [] : (scene.versions ?? []).filter((item) => langs.includes(item.lang));
+  const versions = langsOnly ? [] : (scene.versions ?? []);
   const activeVersion = versions.find((item) => item.id === versionId && item.lang === lang) ?? null;
-  const activeLang = langs.includes(lang) ? lang : langs[0]!;
+  const activeLang = activeVersion?.lang ?? (langs.includes(lang) ? lang : langs[0]!);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [base, setBase] = useState<Lang>(activeLang);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [settings, setSettings] = useState<{ id: string; name: string } | null>(null);
+  const [railWidth, setRailWidth] = useState(132);
+  const resize = useRef<{ x: number; width: number } | null>(null);
   useEffect(() => {
     if (activeLang !== lang) setLang(activeLang);
   }, [activeLang, lang, setLang]);
@@ -236,15 +422,87 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
   };
   const rename = (id: string, value: string) => {
     const trimmed = value.trim();
-    if (trimmed) updateScene((current) => ({ ...current, versions: (current.versions ?? []).map((item) => item.id === id ? { ...item, name: trimmed } : item) }));
+    if (trimmed) updateScene((current) => {
+      const item = current.versions?.find((entry) => entry.id === id);
+      if (!item || (current.lockedLanguages?.includes(item.lang) && !item.independent)) return current;
+      return { ...current, versions: (current.versions ?? []).map((entry) => entry.id === id ? { ...entry, name: trimmed } : entry) };
+    });
     setRenaming(null);
   };
+  /** 复制的是当下看到的内容快照；后续文字、局部高亮和显隐都只写进新版本。 */
+  const copyVersion = (source: SceneVersion | null, sourceLang: Lang) => {
+    const id = `v-${Date.now().toString(36)}`;
+    updateScene((current) => {
+      const original = source ? current.versions?.find((item) => item.id === source.id) ?? source : null;
+      const view = sceneVersionView(current, original);
+      const elements = view.elements;
+      const texts = Object.fromEntries(elements.map((item) => [item.id, item.texts[sourceLang] ?? ""]));
+      const highlights = Object.fromEntries(elements.map((item) => [item.id, structuredClone(view.highlights[item.id]?.[sourceLang] ?? [])]));
+      const fontRuns = Object.fromEntries(elements.map((item) => [item.id, structuredClone(view.fontRuns?.[item.id]?.[sourceLang] ?? [])]));
+      const globalVisibility = current.languageVisibility?.[sourceLang]?.["*"] ?? {};
+      const visibility = Object.fromEntries(elements.map((item) => [item.id, globalVisibility[item.id] ?? item.visible]));
+      const version = {
+        id,
+        name: `${source?.name ?? langName(sourceLang)} 副本`,
+        lang: sourceLang,
+        independent: true,
+        texts,
+        highlights,
+        fontRuns,
+        visibility,
+      };
+      const versions = [...(current.versions ?? [])];
+      const sourceIndex = source
+        ? versions.findIndex((item) => item.id === source.id)
+        : versions.findIndex((item) => item.lang === sourceLang);
+      versions.splice(sourceIndex < 0 ? versions.length : source ? sourceIndex + 1 : sourceIndex, 0, version);
+      return {
+        ...current,
+        versions,
+      };
+    });
+    setVersion(id, sourceLang);
+    setSettings({ id, name: `${source?.name ?? langName(sourceLang)} 副本` });
+  };
+  const applySettings = () => {
+    if (!settings || !settings.name.trim()) return;
+    updateScene((current) => ({
+      ...current,
+      versions: (current.versions ?? []).map((item) => {
+        if (item.id !== settings.id) return item;
+        return { ...item, name: settings.name.trim() };
+      }),
+    }));
+    setSettings(null);
+  };
   const remove = (id: string, lang: Lang) => {
+    const item = scene.versions?.find((entry) => entry.id === id);
+    if (scene.lockedLanguages?.includes(lang) && !item?.independent) return;
     updateScene((current) => ({ ...current, versions: (current.versions ?? []).filter((item) => item.id !== id) }));
     if (versionId === id) setLang(lang);
   };
+  const toggleLanguageLock = (id: Lang) => updateScene((current) => {
+    const locked = new Set(current.lockedLanguages ?? []);
+    if (locked.has(id)) locked.delete(id);
+    else locked.add(id);
+    return { ...current, lockedLanguages: [...locked] };
+  });
+  const toggleLanguageOutput = (id: Lang) => updateScene((current) => {
+    const hidden = new Set(current.hiddenLanguages ?? []);
+    if (hidden.has(id)) hidden.delete(id);
+    else hidden.add(id);
+    return { ...current, hiddenLanguages: [...hidden] };
+  });
+  const toggleVersionLock = (id: string) => updateScene((current) => ({
+    ...current,
+    versions: (current.versions ?? []).map((item) => item.id === id ? { ...item, locked: !item.locked } : item),
+  }));
+  const toggleVersionOutput = (id: string) => updateScene((current) => ({
+    ...current,
+    versions: (current.versions ?? []).map((item) => item.id === id ? { ...item, hidden: !item.hidden } : item),
+  }));
   const row = (active: boolean, indent: boolean) => cn(
-    "group flex h-8 cursor-pointer items-center gap-1 rounded-[4px] px-2 text-[10px]",
+    "group flex h-8 cursor-pointer items-center gap-0.5 rounded-[4px] px-2 text-[10px]",
     indent && "pl-5",
     active ? "bg-[var(--app-surface-3)] text-[var(--app-text)]" : "text-[var(--app-text-2)] hover:bg-[var(--app-surface-2)]",
   );
@@ -256,52 +514,167 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
         event.stopPropagation();
         onClick();
       }}
-      className="grid size-5 shrink-0 place-items-center rounded-[3px] text-[var(--app-text-4)] opacity-0 hover:text-[var(--app-text)] group-hover:opacity-100"
+      className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[var(--app-text-4)] opacity-0 hover:text-[var(--app-text)] group-hover:opacity-100"
     >
-      <X size={11} />
+      <X size={10} />
     </button>
   );
 
+  const beginResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    resize.current = { x: event.clientX, width: railWidth };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resize.current) return;
+    setRailWidth(Math.max(118, Math.min(260, resize.current.width + event.clientX - resize.current.x)));
+  };
+  const endResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    resize.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
   return (
-    <aside className="flex w-[132px] shrink-0 flex-col overflow-y-auto border-r border-[var(--app-line)] py-3 pr-3">
+    <aside style={{ width: railWidth }} className="relative flex shrink-0 flex-col overflow-y-auto border-r border-[var(--app-line)] py-3 pr-2">
       <div className="mb-2 text-[11px] font-semibold">版本</div>
       <div className="space-y-0.5">
         {langs.map((id) => (
           <Fragment key={id}>
             <div role="button" tabIndex={0} onClick={() => setLang(id)} onKeyDown={(event) => event.key === "Enter" && setLang(id)} className={row(!activeVersion && activeLang === id, false)}>
               <span className="min-w-0 flex-1 truncate">{langName(id)}</span>
-              {langs.length > 1 ? removeButton(`移除${langName(id)}`, () => toggleLang(id)) : null}
-            </div>
-            {versions.filter((item) => item.lang === id).map((item) => (
-              <div
-                key={item.id}
-                role="button"
-                tabIndex={0}
-                title={`基于${langName(item.lang)} · 双击重命名`}
-                onClick={() => setVersion(item.id, item.lang)}
-                onDoubleClick={() => setRenaming(item.id)}
-                onKeyDown={(event) => event.key === "Enter" && setVersion(item.id, item.lang)}
-                className={row(activeVersion?.id === item.id, true)}
-              >
-                {renaming === item.id ? (
-                  <input
-                    autoFocus
-                    aria-label="版本名称"
-                    defaultValue={item.name}
-                    onClick={(event) => event.stopPropagation()}
-                    onBlur={(event) => rename(item.id, event.target.value)}
-                    onKeyDown={(event) => {
-                      event.stopPropagation();
-                      if (event.key === "Enter") rename(item.id, event.currentTarget.value);
-                      if (event.key === "Escape") setRenaming(null);
-                    }}
-                    className="h-6 min-w-0 flex-1 rounded-[3px] border border-[var(--app-line-strong)] bg-[var(--app-field)] px-1.5 text-[10px] outline-none"
-                  />
-                ) : (
-                  <span className="min-w-0 flex-1 truncate">{item.name}</span>
+              <button
+                type="button"
+                aria-label={`${scene.lockedLanguages?.includes(id) ? "解锁" : "锁定"}${langName(id)}`}
+                title={scene.lockedLanguages?.includes(id) ? "解锁后可编辑该语言" : "锁定该语言，防止任何改动"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleLanguageLock(id);
+                }}
+                className={cn(
+                  "grid size-4 shrink-0 place-items-center rounded-[3px] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]",
+                  scene.lockedLanguages?.includes(id) ? "bg-[var(--app-surface-3)] text-[var(--app-text)]" : "text-[var(--app-text-4)]",
                 )}
-                {renaming === item.id ? null : removeButton(`删除${item.name}`, () => remove(item.id, item.lang))}
-              </div>
+              >
+                {scene.lockedLanguages?.includes(id) ? <Lock size={10} /> : <LockOpen size={10} />}
+              </button>
+              <button
+                type="button"
+                aria-label={`${scene.hiddenLanguages?.includes(id) ? "加入" : "排除"}${langName(id)}批量生成`}
+                title={scene.hiddenLanguages?.includes(id) ? "当前不生成；点击恢复批量生成" : "隐藏后批量生成将跳过该语言"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleLanguageOutput(id);
+                }}
+                className={cn(
+                  "grid size-4 shrink-0 place-items-center rounded-[3px] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]",
+                  scene.hiddenLanguages?.includes(id) ? "text-[var(--app-text-4)]" : "text-[var(--app-text-2)]",
+                )}
+              >
+                {scene.hiddenLanguages?.includes(id) ? <EyeOff size={11} /> : <Eye size={11} />}
+              </button>
+              {!langsOnly ? (
+                <button
+                  type="button"
+                  aria-label={`复制${langName(id)}版本`}
+                  title="在下方复制新版本"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    copyVersion(null, id);
+                  }}
+                  className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[var(--app-text-4)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]"
+                >
+                  <CopyPlus size={10} />
+                </button>
+              ) : null}
+              {langs.length > 1 && !scene.lockedLanguages?.includes(id)
+                ? removeButton(`移除${langName(id)}`, () => toggleLang(id))
+                : <span aria-hidden className="size-4 shrink-0" />}
+            </div>
+            {versions.filter((item) => item.lang === id || (id === langs[langs.length - 1] && !langs.includes(item.lang))).map((item) => (
+              <Fragment key={item.id}>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  title="双击重命名"
+                  onClick={() => setVersion(item.id, item.lang)}
+                  onDoubleClick={() => !item.locked && setRenaming(item.id)}
+                  onKeyDown={(event) => event.key === "Enter" && setVersion(item.id, item.lang)}
+                  className={row(activeVersion?.id === item.id, false)}
+                >
+                  {renaming === item.id ? (
+                    <input
+                      autoFocus
+                      aria-label="版本名称"
+                      defaultValue={item.name}
+                      onClick={(event) => event.stopPropagation()}
+                      onBlur={(event) => rename(item.id, event.target.value)}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.key === "Enter") rename(item.id, event.currentTarget.value);
+                        if (event.key === "Escape") setRenaming(null);
+                      }}
+                      className="h-6 min-w-0 flex-1 rounded-[3px] border border-[var(--app-line-strong)] bg-[var(--app-field)] px-1.5 text-[10px] outline-none"
+                    />
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                  )}
+                  {renaming === item.id ? null : (
+                    <>
+                      <button
+                        type="button"
+                        aria-label={`${item.locked ? "解锁" : "锁定"}${item.name}`}
+                        title={item.locked ? "解锁后可编辑该版本" : "锁定该版本，防止任何改动"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleVersionLock(item.id);
+                        }}
+                        className={cn("grid size-4 shrink-0 place-items-center rounded-[3px] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]", item.locked ? "bg-[var(--app-surface-3)] text-[var(--app-text)]" : "text-[var(--app-text-4)]")}
+                      >
+                        {item.locked ? <Lock size={10} /> : <LockOpen size={10} />}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`${item.hidden ? "加入" : "排除"}${item.name}批量生成`}
+                        title={item.hidden ? "当前不生成；点击恢复批量生成" : "隐藏后批量生成将跳过该版本"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleVersionOutput(item.id);
+                        }}
+                        className={cn("grid size-4 shrink-0 place-items-center rounded-[3px] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]", item.hidden ? "text-[var(--app-text-4)]" : "text-[var(--app-text-2)]")}
+                      >
+                        {item.hidden ? <EyeOff size={11} /> : <Eye size={11} />}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`复制${item.name}`}
+                        title="在下方复制新版本"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          copyVersion(item, item.lang);
+                        }}
+                        className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[var(--app-text-4)] opacity-0 hover:text-[var(--app-text)] group-hover:opacity-100"
+                      >
+                        <CopyPlus size={10} />
+                      </button>
+                      {removeButton(`删除${item.name}`, () => remove(item.id, item.lang))}
+                    </>
+                  )}
+                </div>
+                {settings?.id === item.id ? (
+                  <div className="mb-1 space-y-1 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-surface-1)] p-1.5">
+                    <input
+                      autoFocus
+                      aria-label="版本名称"
+                      value={settings.name}
+                      onChange={(event) => setSettings({ ...settings, name: event.target.value })}
+                      className="h-7 w-full rounded-[3px] border border-[var(--app-line)] bg-[var(--app-field)] px-1.5 text-[10px] outline-none focus:border-[var(--app-line-strong)]"
+                    />
+                    <div className="flex gap-1">
+                      <button type="button" disabled={!settings.name.trim()} onClick={applySettings} className={cn(GHOST, "h-6 flex-1 bg-[var(--app-surface-2)] px-0 disabled:opacity-40")}>应用</button>
+                      <button type="button" onClick={() => setSettings(null)} className={cn(GHOST, "h-6 flex-1 px-0")}>取消</button>
+                    </div>
+                  </div>
+                ) : null}
+              </Fragment>
             ))}
           </Fragment>
         ))}
@@ -351,6 +724,16 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
           </button>
         )}
       </div>
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整版本栏宽度"
+        onPointerDown={beginResize}
+        onPointerMove={moveResize}
+        onPointerUp={endResize}
+        onPointerCancel={endResize}
+        className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize"
+      />
     </aside>
   );
 }
@@ -691,21 +1074,70 @@ export function ScenePrepareStep({ onNext }: { onNext: () => void }) {
 export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
   const { project, lang } = useStudio();
   const { scene, updateScene } = useScene();
-  const families = useMemo(() => sceneFamilies(project.targets), [project.targets]);
+  const groups = useMemo(() => sceneEditGroups(project.targets), [project.targets]);
   const hasNative = project.targets.some((target) => nativeOf(target));
-  const saved = scene.savedFamilies ?? [];
-  const [familyId, setFamilyId] = useState<SceneFamily | "native" | null>(() => families.find((item) => !saved.includes(item.family))?.family ?? families[0]?.family ?? (hasNative ? "native" : null));
-  const nativeOpen = hasNative && (familyId === "native" || !families.length);
-  const active = nativeOpen ? undefined : families.find((item) => item.family === familyId) ?? families[0];
-  const unsaved = families.filter((item) => !saved.includes(item.family));
-  const activeSaved = active ? saved.includes(active.family) : false;
-  const nextUnsaved = unsaved.find((item) => item.family !== active?.family);
+  const saved = scene.savedFamiliesByLanguage
+    ? (scene.savedFamiliesByLanguage[lang] ?? [])
+    : (scene.savedFamilies ?? []);
+  /** 锁版式的规范组按规范生成，不用保存预设；其余分组要逐个保存。 */
+  const required = groups.filter((item) => !item.locked);
+  const [groupId, setGroupId] = useState<SceneBucket | "native" | null>(() => required.find((item) => !saved.includes(item.id))?.id ?? groups[0]?.id ?? (hasNative ? "native" : null));
+  const nativeOpen = hasNative && (groupId === "native" || !groups.length);
+  const active = nativeOpen ? undefined : groups.find((item) => item.id === groupId) ?? groups[0];
+  const unsaved = required.filter((item) => !saved.includes(item.id));
+  /** 站外画幅族第一次打开、还没动过时，先套用站内同画幅已保存的预设作为起点；之后各改各的。 */
+  useEffect(() => {
+    const id = active?.id;
+    if (!id || active.kind !== "outside" || id.includes("@") || saved.includes(id)) return;
+    if (Object.keys(scene.familyEdits[id] ?? {}).length || scene.familyContent?.[id]) return;
+    const family = id as SceneFamily;
+    const sources = [`${family}@align:${sceneFamilyAlign(family)}`, ...ALIGN_ORDER.map((align) => `${family}@align:${align}`)];
+    const source = sources.find((bucket) => saved.includes(bucket));
+    if (!source || (!Object.keys(scene.familyEdits[source] ?? {}).length && !scene.familyContent?.[source])) return;
+    updateScene((current) => ({
+      ...current,
+      familyEdits: { ...current.familyEdits, [id]: structuredClone(current.familyEdits[source] ?? {}) },
+      ...(current.familyContent?.[source] ? { familyContent: { ...current.familyContent, [id]: structuredClone(current.familyContent[source]) } } : {}),
+    }));
+  }, [active, saved, scene.familyContent, scene.familyEdits, updateScene]);
+  const nextUnsaved = unsaved.find((item) => item.id !== active?.id);
+  const kinds = (["layout", "outside", "offline", "splash", "background", "special"] as const).flatMap((kind) => {
+    const list = groups.filter((item) => item.kind === kind);
+    return list.length ? [{ kind, list }] : [];
+  });
+  const activeKind = nativeOpen ? "native" : active?.kind;
+  const siblings = kinds.find((item) => item.kind === activeKind)?.list ?? [];
+  const siblingRows = [{ label: activeKind === "layout" || activeKind === "outside" || activeKind === "offline" ? "版式" : "规范模板", list: siblings }];
+  /** 只有自定义尺寸时 tab 叫「自定义版式」，站外和自定义都有时叫「站外 / 自定义版式」。 */
+  const kindLabel = (kind: SceneEditKind, list: SceneEditGroup[]) => {
+    if (kind !== "outside") return SCENE_EDIT_KIND_LABEL[kind];
+    const custom = (target: TargetBoard) => !target.sizeId || target.sizeId.startsWith("custom-");
+    const hasCustom = list.some((group) => group.items.some(custom));
+    const hasExternal = list.some((group) => group.items.some((target) => !custom(target)));
+    return hasCustom ? (hasExternal ? "站外 / 自定义版式" : "自定义版式") : SCENE_EDIT_KIND_LABEL.outside;
+  };
+  const openKind = (kind: SceneEditKind) => {
+    const list = groups.filter((item) => item.kind === kind);
+    setGroupId((list.find((item) => !item.locked && !saved.includes(item.id)) ?? list[0])?.id ?? null);
+  };
 
   const savePreset = () => {
     if (!active) return;
-    updateScene((current) => ({ ...current, savedFamilies: [...new Set([...(current.savedFamilies ?? []), active.family])] }));
-    if (nextUnsaved) setFamilyId(nextUnsaved.family);
+    updateScene((current) => ({
+      ...current,
+      savedFamiliesByLanguage: {
+        ...current.savedFamiliesByLanguage,
+        [lang]: [...new Set([
+          ...(current.savedFamiliesByLanguage
+            ? (current.savedFamiliesByLanguage[lang] ?? [])
+            : (current.savedFamilies ?? [])),
+          active.id,
+        ])],
+      },
+    }));
+    if (nextUnsaved) setGroupId(nextUnsaved.id);
   };
+  const unspecified = active ? unspecifiedInApp(active) : [];
 
   if (!active && !nativeOpen) {
     return (
@@ -720,42 +1152,60 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mb-3 flex shrink-0 items-center gap-2">
-        <span className="text-[9px] text-[var(--app-text-4)]">版式族</span>
-        {families.map((group) => {
-          const done = saved.includes(group.family);
-          return (
-            <button
-              key={group.family}
-              type="button"
-              title={done ? "已保存预设" : "未保存预设"}
-              onClick={() => setFamilyId(group.family)}
-              className={cn("flex h-7 items-center gap-1.5 rounded-[4px] px-3 text-[10px]", active?.family === group.family ? "bg-[var(--color-brand-soft)] text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)]")}
-            >
-              {done ? <CheckCircle2 size={11} className="text-[var(--color-down)]" /> : <span className="size-1.5 rounded-full border border-[var(--app-text-4)]" />}
-              {SCENE_FAMILY_LABEL[group.family]} · {group.items.length}
-            </button>
-          );
-        })}
-        {hasNative ? (
-          <button
-            type="button"
-            onClick={() => setFamilyId("native")}
-            className={cn("flex h-7 items-center gap-1.5 rounded-[4px] px-3 text-[10px]", nativeOpen ? "bg-[var(--color-brand-soft)] text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)]")}
-          >
-            仿原生
-          </button>
-        ) : null}
-      </div>
+      {kinds.length + (hasNative ? 1 : 0) > 1 || activeKind === "offline" ? (
+        <div className="mb-2 flex shrink-0 items-center gap-2">
+          <div className={PILL_TABS}>
+            {kinds.map(({ kind, list }) => (
+              <button key={kind} type="button" onClick={() => openKind(kind)} className={pillTab(activeKind === kind)}>
+                {kindLabel(kind, list)}{kind === "splash" ? "" : ` · ${list.length}`}
+              </button>
+            ))}
+            {hasNative ? <button type="button" onClick={() => setGroupId("native")} className={pillTab(nativeOpen)}>仿原生</button> : null}
+          </div>
+        </div>
+      ) : null}
+      {siblings.length > 1 || (siblings.length === 1 && activeKind !== "splash") ? (
+        <div className={cn("mb-3 flex shrink-0 items-center gap-2", siblingRows.length > 1 ? "flex-wrap gap-y-1" : "overflow-x-auto")}>
+        {siblingRows.map((row, index) => (
+        <Fragment key={row.label}>
+          {index > 0 ? <span className="mx-1 h-4 w-px shrink-0 bg-[var(--app-line)]" /> : null}
+          <span className="shrink-0 text-[9px] text-[var(--app-text-4)]">{row.label}</span>
+          {row.list.map((group) => {
+            const done = group.locked || saved.includes(group.id);
+            return (
+              <button
+                key={group.id}
+                type="button"
+                title={group.items.map((item) => `${item.w}×${item.h} ${item.use ?? ""}`.trim()).join("\n")}
+                onClick={() => setGroupId(group.id)}
+                className={cn("flex h-7 max-w-[260px] shrink-0 items-center gap-1.5 rounded-[4px] px-3 text-[10px]", active?.id === group.id ? "bg-[var(--color-brand-soft)] text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)]")}
+              >
+                {group.locked ? <Lock size={10} className="shrink-0 text-[var(--app-text-4)]" /> : done ? <CheckCircle2 size={11} className="shrink-0 text-[var(--color-down)]" /> : <span className="size-1.5 shrink-0 rounded-full border border-[var(--app-text-4)]" />}
+                <span className="truncate">{group.label}</span>
+                <span className="shrink-0">· {group.items.length}</span>
+              </button>
+            );
+          })}
+        </Fragment>
+        ))}
+        </div>
+      ) : <div className="mb-1 shrink-0" />}
+      {unspecified.length ? (
+        <p className="mb-2 shrink-0 text-[9px] text-[var(--warn-text)]">
+          规范未注明，按版式族处理：{unspecified.map((item) => `${item.use ?? ""} ${item.w}×${item.h}`.trim()).join("、")}
+        </p>
+      ) : null}
       <div className="flex min-h-0 flex-1 gap-3">
         <VersionRail langsOnly={!active} />
         <div className="min-h-0 min-w-0 flex-1">
           {active ? (
             <SceneEditor
               mode="family"
-              board={{ ...sceneRef(active.representative), use: active.representative.use }}
+              board={{ ...sceneRef(active.representative), use: active.items.length > 1 ? `${active.representative.use ?? ""} 等 ${active.items.length} 个资源位`.trim() : active.representative.use }}
               lang={lang}
               familyBoards={active.items}
+              groupLabel={active.locked ? `规范 ${active.label}` : active.label}
+              locked={active.locked}
             />
           ) : (
             <NativeEditor />
@@ -764,25 +1214,22 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
       </div>
       <div className="mt-3 flex shrink-0 items-center justify-between">
         <div className="text-[10px] text-[var(--app-text-4)]">
-          {families.length ? (
+          {required.length ? (
             <>
-              已保存 {families.length - unsaved.length}/{families.length} 个版式族预设
-              {unsaved.length ? `，还差 ${unsaved.map((item) => SCENE_FAMILY_LABEL[item.family]).join("、")}` : ""}
+              已保存 {required.length - unsaved.length}/{required.length} 个预设
+              {unsaved.length ? `，还差 ${unsaved.map((item) => item.label).join("、")}` : ""}
             </>
           ) : null}
+          {groups.some((item) => item.locked) ? `${required.length ? "；" : ""}带锁的分组按规范生成，无需保存` : ""}
         </div>
         <div className="flex gap-2">
           <Button size="lg" onClick={onBack}>上一步</Button>
           {!active ? (
-            nextUnsaved ? <Button size="lg" onClick={() => setFamilyId(nextUnsaved.family)}>下一个：{SCENE_FAMILY_LABEL[nextUnsaved.family]}</Button> : null
-          ) : !activeSaved ? (
-            <Button size="lg" onClick={savePreset}>
-              保存{SCENE_FAMILY_LABEL[active.family]}预设{nextUnsaved ? `，下一个：${SCENE_FAMILY_LABEL[nextUnsaved.family]}` : ""}
-            </Button>
-          ) : nextUnsaved ? (
-            <Button size="lg" onClick={() => setFamilyId(nextUnsaved.family)}>下一个：{SCENE_FAMILY_LABEL[nextUnsaved.family]}</Button>
-          ) : null}
-          <Button variant="workflow" size="lg" icon={<WorkflowSparkle />} disabled={unsaved.length > 0} onClick={onNext}>批量生成</Button>
+            nextUnsaved ? <Button size="lg" onClick={() => setGroupId(nextUnsaved.id)}>下一个：{nextUnsaved.label}</Button> : null
+          ) : (
+            <Button size="lg" title={nextUnsaved ? `保存后进入下一个：${nextUnsaved.label}` : undefined} onClick={savePreset}>保存预设</Button>
+          )}
+          <Button variant="workflow" size="lg" disabled={unsaved.length > 0} onClick={onNext}>批量生成</Button>
         </div>
       </div>
     </div>
@@ -790,38 +1237,33 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
 }
 
 /* ------------------------------------------------------------------ */
-/* 第四步：批量生成并精调                                               */
+/* 第四步：批量生成并细化                                               */
 /* ------------------------------------------------------------------ */
 
-function Thumb({ scene, target, lang, selected, onOpen }: { scene: SceneState; target: TargetBoard; lang: Lang; selected?: boolean; onOpen: () => void }) {
+function Thumb({ scene, version, target, lang, selected, onOpen }: { scene: SceneState; version?: SceneVersion | null; target: TargetBoard; lang: Lang; selected?: boolean; onOpen: () => void }) {
   const { project } = useStudio();
   const ref = sceneRef(target);
-  const issues = buildSceneBoard(scene, ref, lang).issues;
-  const width = Math.min(220, 128 * (target.w / target.h));
-  const overridden = Object.keys(scene.boardOverrides[target.key] ?? {}).length > 0;
-  const spec = specOf(target.w, target.h, target.sizeId)?.spec;
+  const resolved = sceneVersionView(sceneLanguageBoardView(scene, lang, ref), version);
+  const fit = useFitBoard(target.w, target.h, 16);
+  const width = Math.min(220, fit.width);
+  const external = isExternalTarget(target);
   return (
     <button
       type="button"
       onClick={onOpen}
-      title={issues.length ? issues.map((issue) => issue.text).join("\n") : undefined}
+      aria-label={`细化 ${boardDisplayLabel(target)}`}
+      title={boardDisplayLabel(target)}
       className={cn(
-        "min-w-0 rounded-[6px] border p-2 text-left",
-        selected ? "border-[var(--color-brand)]" : issues.length ? "border-[var(--color-warn)]/50 hover:border-[var(--color-warn)]" : "border-[var(--app-line)] hover:border-[var(--app-line-strong)]",
+        "min-w-0 overflow-hidden rounded-[5px] border border-transparent bg-[var(--app-surface-2)] p-2 text-left outline-none transition-colors hover:bg-[var(--app-surface-3)] focus-visible:bg-[var(--app-surface-3)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--app-text-2)]",
+        selected && "bg-[var(--app-surface-3)]",
       )}
     >
-      <div className="grid h-[136px] place-items-center rounded-[4px] bg-[#111317]">
-        <SceneArtboard scene={scene} board={ref} lang={lang} kvUrl={project.content.kv?.previewUrl} width={width} />
+      <div ref={fit.ref} aria-hidden="true" className="grid h-[136px] min-w-0 place-items-center overflow-hidden rounded-[4px] bg-[#111317]">
+        <SceneArtboard scene={resolved} board={ref} lang={lang} kvUrl={project.content.kv?.previewUrl} width={width} />
       </div>
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <span className="text-[11px] font-medium tabular-nums">{target.key}</span>
-        <span className={cn("text-[9px]", issues.length ? "text-[var(--warn-text)]" : "text-[var(--color-down)]")}>
-          {issues.length ? `${issues.length} 项提示` : "检查通过"}
-        </span>
-      </div>
-      <div className="mt-0.5 flex items-center justify-between gap-2 text-[9px] text-[var(--app-text-4)]">
-        <span className="truncate">{target.use}</span>
-        <span className="shrink-0">{ref.edgeFade ? `两侧底色 ${scene.background.toUpperCase()}` : overridden ? "已单独调整" : spec ? "已录规范" : "规范待录"}</span>
+      <div className="mt-2 flex min-w-0 items-baseline gap-1.5 truncate text-[10px]">
+        <span className="shrink-0 font-medium tabular-nums text-[var(--app-text-2)]">{boardSizeLabel(target)}</span>
+        {external ? null : <span className="truncate text-[var(--app-text-3)]">{boardUseLabel(target)}</span>}
       </div>
     </button>
   );
@@ -830,16 +1272,21 @@ function Thumb({ scene, target, lang, selected, onOpen }: { scene: SceneState; t
 export function SceneBatchStep({ onBack }: { onBack: () => void }) {
   const { project, lang } = useStudio();
   const { scene } = useScene();
-  const { view } = useActiveVersion();
+  const { version } = useActiveVersion();
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [page, setPage] = useState<"new" | "current">("new");
   const [arrange, setArrange] = useState<"group" | "lang" | "flat">("group");
-  const [onlyIssues, setOnlyIssues] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportProgress, setExportProgress] = useState("");
   const [done, setDone] = useState<FigmaWriteResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bridgeLabel, setBridgeLabel] = useState("");
-  const families = useMemo(() => sceneFamilies(project.targets), [project.targets]);
+  const [asideWidth, setAsideWidth] = useState(400);
+  const asideDrag = useRef<{ x: number; width: number } | null>(null);
+  const batchRef = useRef<HTMLDivElement>(null);
+  const versionRef = useRef<HTMLDivElement>(null);
+  const families = useMemo(() => sceneEditGroups(project.targets), [project.targets]);
   const kv = project.content.kv;
   const visualReady = scene.visualMode === "figma"
     ? kv?.source === "figma" && Boolean(kv.figmaUrl)
@@ -847,13 +1294,43 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     void ports.figma.identity().then((identity) => setBridgeLabel(identity.label));
+    const storedValue = window.localStorage.getItem(BATCH_ASIDE_STORE);
+    if (storedValue === null) return;
+    const stored = Number(storedValue);
+    if (Number.isFinite(stored)) setAsideWidth(clampBatchAsideWidth(stored));
   }, []);
 
+  const asideLayoutMax = () => {
+    /** 平台根节点有 1.5× transform；clientWidth 才是 flex 实际使用的 CSS 宽度。 */
+    const total = batchRef.current?.clientWidth;
+    const versions = versionRef.current?.clientWidth;
+    if (!total || versions === undefined) return BATCH_ASIDE_LIMITS[1];
+    /** 12px 内容间距 + 12px 拖拽条；到达主画板最小宽度后不再放大右栏。 */
+    return total - versions - 24 - BATCH_BOARD_MIN_WIDTH;
+  };
+
+  useEffect(() => {
+    const keepLayoutSafe = () => setAsideWidth((current) => clampBatchAsideWidth(current, asideLayoutMax()));
+    keepLayoutSafe();
+    const observer = new ResizeObserver(keepLayoutSafe);
+    if (batchRef.current) observer.observe(batchRef.current);
+    if (versionRef.current) observer.observe(versionRef.current);
+    window.addEventListener("resize", keepLayoutSafe);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", keepLayoutSafe);
+    };
+  }, [openKey]);
+
+  const outputLangs = useMemo(
+    () => project.content.langs.filter((id) => !scene.hiddenLanguages?.includes(id)),
+    [project.content.langs, scene.hiddenLanguages],
+  );
   /** 每个语种和自定义版本各出一套；自定义版本用版本 id 作为 plan.lang，便于区分与重试。 */
-  const outputs = useMemo(() => [
-    ...project.content.langs.map((id) => ({ id: id as string, lang: id, label: id as string, view: scene })),
-    ...(scene.versions ?? []).filter((item) => project.content.langs.includes(item.lang)).map((item) => ({ id: item.id, lang: item.lang, label: item.name, view: sceneVersionView(scene, item) })),
-  ], [project.content.langs, scene]);
+  const outputs = useMemo<Array<{ id: string; lang: Lang; label: string; version?: SceneVersion }>>(() => [
+    ...outputLangs.map((id) => ({ id: id as string, lang: id, label: langName(id) })),
+    ...(scene.versions ?? []).filter((item) => !item.hidden).map((item) => ({ id: item.id, lang: item.lang, label: item.name, version: item })),
+  ], [outputLangs, scene]);
   const outputLabel = (id: string) => outputs.find((item) => item.id === id)?.label ?? langName(id);
   const boardTargets = useMemo(() => project.targets.filter((target) => !nativeOf(target)), [project.targets]);
   const nativeTargets = useMemo(() => project.targets.filter((target) => nativeOf(target)), [project.targets]);
@@ -861,19 +1338,19 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
   const { state: native } = useNative();
   const { measure, version: fontVersion } = useNativeMeasure();
   /** 仿原生每个语种出深浅两块；key 带上肤色，失败重试按块定位。 */
-  const nativePlans = useMemo<BoardPlan[]>(() => nativeTargets.flatMap((target) => project.content.langs.flatMap((lang) => NATIVE_SKINS.map((skin) => {
+  const nativePlans = useMemo<BoardPlan[]>(() => nativeTargets.flatMap((target) => outputLangs.flatMap((lang) => NATIVE_SKINS.map((skin) => {
     const board = buildNativeBoard(native, skin.id, lang, measure);
     return {
       key: `${target.key}·${skin.id}`,
       lang,
-      name: `${project.name} / ${target.use ? `${target.use}-` : ""}${target.w}*${target.h} / ${langName(lang)} / ${skin.name}`,
+      name: `${project.name} / ${target.w}*${target.h}${boardUseLabel(target) ? `-${boardUseLabel(target)}` : ""} / ${langName(lang)} / ${skin.name}`,
       solution: sceneSolution(sceneRef(target)),
       backgroundColor: board.background,
       native: { ...board, assets: {} },
     };
   // fontVersion 变化代表字体加载完成，需要重新量宽度。
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }))), [measure, native, nativeTargets, project.content.langs, project.name, fontVersion]);
+  }))), [measure, native, nativeTargets, outputLangs, project.name, fontVersion]);
   /** 联动画板排在最后：插件先建母版，再用母版组件实例生成设备尺寸。 */
   const boardPlans = useMemo<BoardPlan[]>(() => outputs.flatMap((output) => [
     ...boardTargets.filter((target) => !linkedOf(target)),
@@ -882,8 +1359,9 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     const link = linkedOf(target);
     const masterTarget = link ? project.targets.find((item) => item.sizeId === link.master.id) : undefined;
     const ref = sceneRef(masterTarget ?? target);
-    const board = buildSceneBoard(output.view, ref, output.lang);
-    const name = `${project.name} / ${target.use ? `${target.use}-` : ""}${target.w}*${target.h} / ${output.label}`;
+    const languageScene = sceneLanguageBoardView(scene, output.lang, ref);
+    const board = buildSceneBoard(sceneVersionView(languageScene, output.version), ref, output.lang);
+    const name = `${project.name} / ${target.w}*${target.h}${isExternalTarget(target) || !boardUseLabel(target) ? "" : `-${boardUseLabel(target)}`} / ${output.label}`;
     if (link && masterTarget) {
       const place = linkedPlacement(link.linked, target, masterTarget);
       return {
@@ -903,19 +1381,31 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       solution: sceneSolution(ref),
       backgroundColor: scene.background,
       scene: board,
-      ...(board.layers.some((layer) => layer.role === "logo") ? { logo: presetLogo(scene.logoPreset) } : {}),
+      ...(board.layers.some((layer) => layer.role === "logo") ? { logo: presetLogo(board.logoPreset) } : {}),
     };
-  })), [boardTargets, linkedTargets, outputs, project.name, project.targets, scene.background, scene.logoPreset]);
+  })), [boardTargets, linkedTargets, outputs, project.name, project.targets, scene.background]);
   const plans = useMemo(() => [...boardPlans, ...nativePlans], [boardPlans, nativePlans]);
-  const issueCount = plans.reduce((sum, plan) => sum + (plan.linked ? 0 : plan.native ? plan.native.issues.length : plan.scene?.issues.length ?? 0), 0);
-  /** 当前语种下有提示的画板，「只看有提示」按它筛。 */
-  const issueKeys = useMemo(
-    () => new Set(boardTargets.filter((target) => !linkedOf(target) && buildSceneBoard(view, sceneRef(target), lang).issues.length).map((target) => target.key)),
-    [boardTargets, lang, view],
-  );
-  const shownFamilies = onlyIssues
-    ? families.map((group) => ({ ...group, items: group.items.filter((target) => issueKeys.has(target.key)) })).filter((group) => group.items.length)
-    : families;
+  /** 按第二步的资源位分类分区（站内 / 官网 / 站外 / 自定义），区内按目录顺序平铺；闪屏设备尺寸排在站内末尾。 */
+  const channels = useMemo(() => {
+    const order = new Map<string, { group: string; index: number }>();
+    SIZE_GROUPS.forEach((group) => group.items.forEach((item, index) => order.set(item.id, { group: group.id, index })));
+    const groupOf = (target: TargetBoard) => (target.sizeId ? order.get(target.sizeId)?.group : undefined) ?? "custom";
+    const indexOf = (target: TargetBoard) => (target.sizeId ? order.get(target.sizeId)?.index : undefined) ?? Number.MAX_SAFE_INTEGER;
+    return SIZE_GROUPS.filter((group) => group.id !== "native").flatMap((group) => {
+      const all = boardTargets.filter((target) => groupOf(target) === group.id);
+      if (!all.length) return [];
+      const sorted = group.id === "custom" ? all : [...all].sort((a, b) => indexOf(a) - indexOf(b));
+      const items = sorted.filter((target) => !linkedOf(target));
+      /** 站外 / 自定义按画幅族分小段，和第三步的分组对应。 */
+      const parts = group.id === "external" || group.id === "custom"
+        ? OUTSIDE_SEGMENTS.flatMap(({ id, label }) => {
+          const list = items.filter((target) => outsideSegmentOf(target) === id);
+          return list.length ? [{ id, label, items: list }] : [];
+        })
+        : [{ id: group.id, label: "", items }];
+      return [{ id: group.id, name: group.name, count: all.length, parts, linked: sorted.filter((target) => linkedOf(target)) }];
+    });
+  }, [boardTargets]);
   const needsVisual = boardPlans.length > 0;
 
   useEffect(() => {
@@ -932,7 +1422,8 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     setDone(null);
     setError(null);
     try {
-      const logoSvg = subset.some((plan) => plan.logo) ? await buildLogoSvg(scene.logoPreset) : undefined;
+      const presets = [...new Set(subset.flatMap((plan) => plan.logo && plan.scene ? [plan.scene.logoPreset] : []))];
+      const logoSvgs = new Map(await Promise.all(presets.map(async (preset) => [preset, await buildLogoSvg(preset)] as const)));
       const splashSvg = subset.some((plan) => plan.linked) ? await fetch(splashLogoOf(scene.logoPreset).url).then((res) => res.text()) : undefined;
       const regular = subset.filter((plan) => !plan.native);
       const scenes = await inlineBadgeSvgs(regular.map((plan) => plan.scene!));
@@ -940,7 +1431,7 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       const boards = subset.map((plan) => plan.native ? { ...plan, native: { ...plan.native, assets: nativeAssets } } : {
         ...plan,
         scene: scenes[regular.indexOf(plan)],
-        ...(logoSvg && plan.logo ? { logoSvg } : {}),
+        ...(plan.logo && plan.scene && logoSvgs.get(plan.scene.logoPreset) ? { logoSvg: logoSvgs.get(plan.scene.logoPreset) } : {}),
         ...(plan.linked ? { linked: { ...plan.linked, logoSvg: splashSvg } } : {}),
       });
       const result = await ports.figma.write(boards, {
@@ -962,12 +1453,150 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     const link = linkedOf(target);
     return link ? project.targets.find((item) => item.sizeId === link.master.id) : undefined;
   };
+  const exportImages = async () => {
+    if (!plans.length || exportBusy || (needsVisual && !visualReady)) return;
+    setExportBusy(true);
+    setError(null);
+    setExportProgress(`正在准备 0 / ${plans.length}`);
+    const host = document.createElement("div");
+    host.setAttribute("aria-hidden", "true");
+    Object.assign(host.style, {
+      position: "fixed",
+      left: "-100000px",
+      top: "0",
+      zIndex: "-1",
+      overflow: "hidden",
+    });
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const zip = new JSZip();
+    const archivePaths = new Set<string>();
+    let completed = 0;
+    const capture = async (node: ReactNode, width: number, height: number, path: string) => {
+      const archivePath = uniqueArchivePath(path, archivePaths);
+      host.style.width = `${width}px`;
+      host.style.height = `${height}px`;
+      flushSync(() => root.render(
+        <div style={{ width, height, overflow: "hidden" }}>{node}</div>,
+      ));
+      const stage = host.firstElementChild as HTMLElement | null;
+      if (!stage) throw new Error("图片画板渲染失败");
+      await waitForRenderedAssets(stage);
+      const blob = await toBlob(stage, {
+        width,
+        height,
+        canvasWidth: width,
+        canvasHeight: height,
+        pixelRatio: 1,
+        cacheBust: false,
+      });
+      if (!blob) throw new Error(`图片生成失败：${archivePath}`);
+      zip.file(archivePath, blob);
+      completed += 1;
+      setExportProgress(`正在导出 ${completed} / ${plans.length}`);
+    };
+    try {
+      const exportKvUrl = await imageDataUrl(kv?.previewUrl);
+      for (const [outputIndex, output] of outputs.entries()) {
+        /** 序号保证重名版本或清洗后同名的版本不会在 ZIP 中互相覆盖。 */
+        const folder = `${String(outputIndex + 1).padStart(2, "0")}-${safeFileName(output.label)}`;
+        for (const target of boardTargets) {
+          const link = linkedOf(target);
+          const master = link ? masterOf(target) : undefined;
+          const sourceTarget = master ?? target;
+          const ref = sceneRef(sourceTarget);
+          const resolved = sceneVersionView(sceneLanguageBoardView(scene, output.lang, ref), output.version);
+          const name = `${safeFileName(boardFileStem(target))}.png`;
+          await capture(
+            link && master
+              ? (
+                <SceneLinkedPreview
+                  scene={resolved}
+                  master={sceneRef(master)}
+                  board={sceneRef(target)}
+                  linked={link.linked}
+                  lang={output.lang}
+                  kvUrl={exportKvUrl}
+                  logoUrl={splashLogoOf(scene.logoPreset).url}
+                  width={target.w}
+                  guides={false}
+                />
+              )
+              : <SceneArtboard scene={resolved} board={ref} lang={output.lang} kvUrl={exportKvUrl} width={target.w} />,
+            target.w,
+            target.h,
+            `${folder}/${name}`,
+          );
+        }
+      }
+      for (const target of nativeTargets) {
+        for (const outputLang of outputLangs) {
+          for (const skin of NATIVE_SKINS) {
+            const board = buildNativeBoard(native, skin.id, outputLang, measure);
+            await capture(
+              <NativeBanner board={board} width={target.w} />,
+              target.w,
+              target.h,
+              `${safeFileName(langName(outputLang))}/${safeFileName(boardFileStem(target))}_${skin.name}.png`,
+            );
+          }
+        }
+      }
+      setExportProgress("正在打包…");
+      const archive = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+      const url = URL.createObjectURL(archive);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${safeFileName(project.name)}-图片.zip`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setExportProgress("导出完成");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "图片导出失败");
+      setExportProgress("");
+    } finally {
+      root.unmount();
+      host.remove();
+      setExportBusy(false);
+    }
+  };
+
+  const endAsideResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!asideDrag.current) return;
+    asideDrag.current = null;
+    window.localStorage.setItem(BATCH_ASIDE_STORE, String(asideWidth));
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
   const openIndex = boardTargets.findIndex((target) => target.key === openKey);
   const openRaw = openIndex >= 0 ? boardTargets[openIndex] : undefined;
   const openTarget = openRaw ? masterOf(openRaw) ?? openRaw : undefined;
+  const batchActions = (
+    <div className="mt-3 flex shrink-0 justify-end gap-2">
+      <Button size="lg" disabled={busy || exportBusy} onClick={onBack}>上一步</Button>
+      <Button
+        size="lg"
+        aria-label="导出图片"
+        icon={exportBusy ? undefined : <Download size={14} />}
+        disabled={busy || exportBusy || !plans.length || (needsVisual && !visualReady)}
+        onClick={() => void exportImages()}
+      >
+        {exportBusy ? <><Loader2 size={14} className="animate-spin" />{exportProgress || "正在导出…"}</> : needsVisual && !visualReady ? "请先准备主视觉" : "导出图片"}
+      </Button>
+      <Button
+        variant="workflow"
+        size="lg"
+        aria-label="写入 Figma"
+        icon={busy ? undefined : <WorkflowSparkle />}
+        disabled={busy || exportBusy || !plans.length || (needsVisual && !visualReady)}
+        onClick={() => run()}
+      >
+        {busy ? <><Loader2 size={14} className="animate-spin" />等待写入…</> : needsVisual && !visualReady ? "请先准备主视觉" : "写入 Figma"}
+      </Button>
+    </div>
+  );
   if (openTarget) {
-    const family = sceneFamilyOf(openTarget.w, openTarget.h);
-    const familyBoards = families.find((item) => item.family === family)?.items ?? [openTarget];
+    const openGroup = families.find((item) => item.items.some((target) => target.key === openTarget.key));
+    const familyBoards = openGroup?.items ?? [openTarget];
     const step = (delta: number) => {
       const next = boardTargets[(openIndex + delta + boardTargets.length) % boardTargets.length];
       if (next) setOpenKey(next.key);
@@ -988,50 +1617,44 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
               board={{ ...sceneRef(openTarget), use: openTarget.use }}
               lang={lang}
               familyBoards={familyBoards}
+              {...(openGroup ? { groupLabel: openGroup.locked ? `规范 ${openGroup.label}` : openGroup.label } : {})}
             />
           </div>
         </div>
+        {batchActions}
       </div>
     );
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[auto_minmax(0,1fr)_320px] gap-3">
-      <VersionRail />
-      <section className="flex min-h-0 flex-col">
-        <div className="mb-3 flex shrink-0 items-center gap-3">
-          <span className="text-[12px] font-semibold">{plans.length} 块画板</span>
-          <span className={cn("text-[9px]", issueCount ? "text-[var(--warn-text)]" : "text-[var(--color-down)]")}>
-            {issueCount ? `共 ${issueCount} 项提示，点击画板逐个精调` : "全部检查通过"}
+    <div className="flex h-full min-h-0 flex-col">
+      <div ref={batchRef} className="flex min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
+        <div ref={versionRef} className="flex shrink-0"><VersionRail /></div>
+        <section className="ml-3 flex min-h-0 min-w-[440px] flex-1 flex-col">
+        <div className="mb-1 flex shrink-0 items-center gap-3 border-b border-[var(--app-line-soft)] pb-2 pt-1">
+          <span className="text-[10px] text-[var(--app-text-3)]">
+            全部画板
+            <span className="ml-2 tabular-nums text-[var(--app-text-4)]">{plans.length} 块</span>
           </span>
-          {issueKeys.size || onlyIssues ? (
-            <button
-              type="button"
-              aria-pressed={onlyIssues}
-              onClick={() => setOnlyIssues((value) => !value)}
-              className={cn(GHOST, "ml-auto", onlyIssues && "bg-[var(--app-surface-2)] text-[var(--app-text)]")}
-            >
-              {onlyIssues ? `只看有提示 · ${issueKeys.size}` : "只看有提示"}
-            </button>
-          ) : null}
+          <span className="flex items-center gap-1 rounded-[4px] bg-[var(--app-surface-2)] px-2 py-0.5 text-[10px] text-[var(--app-text-2)]">
+            <MousePointerClick size={11} />点击任意画板可单独细化
+          </span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {onlyIssues && !shownFamilies.length ? <div className="py-8 text-center text-[10px] text-[var(--app-text-4)]">{langName(lang)}画板全部检查通过</div> : null}
-          {shownFamilies.map((group) => (
-            <div key={group.family} className="mb-4">
-              <div className="mb-2 text-[10px] text-[var(--app-text-3)]">{SCENE_FAMILY_LABEL[group.family]} · {group.items.length}</div>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
-                {group.items.map((target) => (
-                  <Thumb key={target.key} scene={view} target={target} lang={lang} onOpen={() => setOpenKey(target.key)} />
+          {channels.map((channel) => (
+            <div key={channel.id} className="mb-4">
+              <div className="sticky top-0 z-10 flex items-baseline gap-2 bg-[var(--app-page)] pb-1">
+                <span className="text-[10px] font-medium text-[var(--app-text-2)]">{channel.name}</span>
+                <span className="text-[9px] tabular-nums text-[var(--app-text-4)]">{channel.count}</span>
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-1.5">
+                {channel.parts.flatMap((part) => part.items).map((target) => (
+                  <Thumb key={target.key} scene={scene} version={version} target={target} lang={lang} onOpen={() => setOpenKey(target.key)} />
                 ))}
               </div>
-            </div>
-          ))}
-          {linkedTargets.length ? (
-            <div className="mb-4">
-              <div className="mb-2 text-[10px] text-[var(--app-text-3)]">闪屏联动 · {linkedTargets.length}</div>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-2">
-                {linkedTargets.map((target) => {
+              {channel.linked.length ? (
+              <div className={cn("grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-1.5", channel.parts.some((part) => part.items.length) && "mt-1.5")}>
+                {channel.linked.map((target) => {
                   const link = linkedOf(target)!;
                   const master = masterOf(target);
                   if (!master) return null;
@@ -1040,50 +1663,100 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
                       key={target.key}
                       type="button"
                       onClick={() => setOpenKey(master.key)}
-                      className="flex flex-col items-center gap-1.5 rounded-[5px] bg-[var(--app-surface-2)] p-2 hover:bg-[var(--app-surface-3)]"
+                      aria-label={`细化 ${boardDisplayLabel(target)}，跟随闪屏母版`}
+                      title={`${boardDisplayLabel(target)} · 跟随闪屏母版`}
+                      className="flex flex-col items-center rounded-[5px] border border-transparent bg-[var(--app-surface-2)] p-2 outline-none transition-colors hover:bg-[var(--app-surface-3)] focus-visible:bg-[var(--app-surface-3)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--app-text-2)]"
                     >
-                      <SceneLinkedPreview
-                        scene={view}
-                        master={sceneRef(master)}
-                        board={sceneRef(target)}
-                        linked={link.linked}
-                        lang={lang}
-                        kvUrl={kv?.previewUrl}
-                        logoUrl={splashLogoOf(scene.logoPreset).url}
-                        width={Math.min(110, Math.round((160 * target.w) / target.h))}
-                      />
-                      <span className="w-full truncate text-center text-[9px] text-[var(--app-text-3)]">{target.use} · {target.w}×{target.h}</span>
+                      <div aria-hidden="true" className="grid w-full place-items-center">
+                        <SceneLinkedPreview
+                          scene={sceneVersionView(sceneLanguageBoardView(scene, lang, sceneRef(master)), version)}
+                          master={sceneRef(master)}
+                          board={sceneRef(target)}
+                          linked={link.linked}
+                          lang={lang}
+                          kvUrl={kv?.previewUrl}
+                          logoUrl={splashLogoOf(scene.logoPreset).url}
+                          width={Math.min(110, Math.round((160 * target.w) / target.h))}
+                        />
+                      </div>
+                      <span className="mt-1.5 flex w-full min-w-0 items-baseline justify-center gap-1 truncate text-[10px]">
+                        <span className="shrink-0 font-medium tabular-nums text-[var(--app-text-2)]">{boardSizeLabel(target)}</span>
+                        <span className="truncate text-[var(--app-text-3)]">{boardUseLabel(target)}</span>
+                      </span>
+                      <span className="mt-0.5 w-full truncate text-center text-[9px] text-[var(--app-text-4)]">跟随闪屏母版</span>
+                    </button>
+                  );
+                })}
+              </div>
+              ) : null}
+            </div>
+          ))}
+          {nativeTargets.length ? (
+            <div className="mb-4">
+              <div className="sticky top-0 z-10 flex items-baseline gap-2 bg-[var(--app-page)] pb-1">
+                <span className="text-[10px] font-medium text-[var(--app-text-2)]">仿原生</span>
+                <span className="text-[9px] tabular-nums text-[var(--app-text-4)]">{nativeTargets.length}</span>
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-1.5">
+                {nativePlans.filter((plan) => plan.lang === lang).map((plan) => {
+                  const target = nativeTargets.find((item) => plan.key.startsWith(`${item.key}·`)) ?? nativeTargets[0]!;
+                  const skin = NATIVE_SKINS.find((item) => plan.key.endsWith(item.id))?.name ?? "默认";
+                  return (
+                    <button key={plan.key} type="button" aria-label={`返回配置 ${boardDisplayLabel(target)} ${skin}`} title="回第三步修改仿原生" onClick={onBack} className="min-w-0 rounded-[5px] border border-transparent bg-[var(--app-surface-2)] p-2 text-left outline-none transition-colors hover:bg-[var(--app-surface-3)] focus-visible:bg-[var(--app-surface-3)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--app-text-2)]">
+                      <div aria-hidden="true" className="grid h-[136px] place-items-center rounded-[4px] bg-[#111317]">
+                        <NativeBanner board={plan.native!} width={200} />
+                      </div>
+                      <div className="mt-2 flex min-w-0 items-baseline gap-1.5 truncate text-[10px]">
+                        <span className="shrink-0 font-medium tabular-nums text-[var(--app-text-2)]">{boardSizeLabel(target)}</span>
+                        <span className="truncate text-[var(--app-text-3)]">{boardUseLabel(target) ?? "仿原生"}</span>
+                      </div>
+                      <div className="mt-0.5 truncate text-[9px] text-[var(--app-text-4)]">{skin}</div>
                     </button>
                   );
                 })}
               </div>
             </div>
           ) : null}
-          {nativeTargets.length ? (
-            <div className="mb-4">
-              <div className="mb-2 text-[10px] text-[var(--app-text-3)]">仿原生 · {langName(lang)} · {nativePlans.length} 块</div>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
-                {nativePlans.filter((plan) => plan.lang === lang).map((plan) => (
-                  <button key={plan.key} type="button" title="回第三步修改仿原生" onClick={onBack} className="min-w-0 rounded-[6px] border border-[var(--app-line)] p-2 text-left hover:border-[var(--app-line-strong)]">
-                    <div className="grid h-[136px] place-items-center rounded-[4px] bg-[#111317]">
-                      <NativeBanner board={plan.native!} width={200} />
-                    </div>
-                    <div className="mt-2 flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-medium tabular-nums">1080×225 · {NATIVE_SKINS.find((skin) => plan.key.endsWith(skin.id))?.name}</span>
-                      <span className={cn("text-[9px]", plan.native!.issues.length ? "text-[var(--warn-text)]" : "text-[var(--color-down)]")}>
-                        {plan.native!.issues.length ? `${plan.native!.issues.length} 项提示` : "检查通过"}
-                      </span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
         </div>
-      </section>
+        </section>
 
-      <aside className="flex min-h-0 flex-col border-l border-[var(--app-line)] pl-4">
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+        <div
+          role="separator"
+          tabIndex={0}
+          aria-orientation="vertical"
+          aria-label="调整写入 Figma 侧边栏宽度"
+          aria-valuemin={BATCH_ASIDE_LIMITS[0]}
+          aria-valuemax={clampBatchAsideWidth(BATCH_ASIDE_LIMITS[1], asideLayoutMax())}
+          aria-valuenow={asideWidth}
+          title="拖动调整侧边栏宽度；双击恢复默认"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            asideDrag.current = { x: event.clientX, width: asideWidth };
+          }}
+          onPointerMove={(event) => {
+            const drag = asideDrag.current;
+            if (!drag) return;
+            setAsideWidth(clampBatchAsideWidth(drag.width - (event.clientX - drag.x), asideLayoutMax()));
+          }}
+          onPointerUp={endAsideResize}
+          onPointerCancel={endAsideResize}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            const next = clampBatchAsideWidth(asideWidth + (event.key === "ArrowLeft" ? 10 : -10), asideLayoutMax());
+            setAsideWidth(next);
+            window.localStorage.setItem(BATCH_ASIDE_STORE, String(next));
+          }}
+          onDoubleClick={() => {
+            const next = clampBatchAsideWidth(400, asideLayoutMax());
+            setAsideWidth(next);
+            window.localStorage.setItem(BATCH_ASIDE_STORE, String(next));
+          }}
+          className="w-3 shrink-0 cursor-col-resize touch-none outline-none focus:bg-[var(--app-surface-2)]"
+        />
+        <aside className="flex min-h-0 shrink-0 flex-col border-l border-[var(--app-line)] pl-4" style={{ width: asideWidth }}>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
           <div>
             <div className="text-[11px] font-semibold">写入 Figma</div>
             <div className="mt-3 space-y-3">
@@ -1106,13 +1779,10 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
             <div className="text-[11px] font-semibold">本次写入</div>
             <dl className="mt-2 space-y-1.5 text-[10px]">
               <div className="flex justify-between"><dt className="text-[var(--app-text-4)]">画板</dt><dd className="tabular-nums">{boardTargets.length} 个尺寸 × {outputs.length} 个版本 = {boardPlans.length} 块</dd></div>
-              {nativePlans.length ? <div className="flex justify-between"><dt className="text-[var(--app-text-4)]">仿原生</dt><dd className="tabular-nums">{project.content.langs.length} 个语种 × 深浅 = {nativePlans.length} 块</dd></div> : null}
+              {nativePlans.length ? <div className="flex justify-between"><dt className="text-[var(--app-text-4)]">仿原生</dt><dd className="tabular-nums">{outputLangs.length} 个语种 × 深浅 = {nativePlans.length} 块</dd></div> : null}
               <div className="flex justify-between"><dt className="text-[var(--app-text-4)]">主视觉</dt><dd className="truncate pl-3">{visualReady ? kv?.name : "未准备"}</dd></div>
               <div className="flex justify-between"><dt className="text-[var(--app-text-4)]">单独调整</dt><dd className="tabular-nums">{Object.values(scene.boardOverrides).filter((item) => Object.keys(item).length).length} 块</dd></div>
             </dl>
-            {issueCount ? (
-              <p className="mt-2 text-[9px] leading-relaxed text-[var(--warn-text)]">仍有 {issueCount} 项提示。提示不阻塞写入，但写入后需在 Figma 中人工复核。</p>
-            ) : null}
           </div>
 
           {error ? <p className="text-[11px] leading-relaxed text-[var(--color-up)]">{error}</p> : null}
@@ -1123,7 +1793,12 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
                 <div className="font-medium">{done.ok ? "已写入 Figma" : "写入完成，但有部分画板失败"}</div>
                 <div className="mt-1 text-[var(--app-text-3)]">成功 {done.nodes.length} 块，失败 {done.failures.length} 块</div>
                 {done.failures.slice(0, 4).map((failure) => (
-                  <div key={`${failure.key}-${failure.lang}`} className="mt-1 text-[9px] text-[var(--color-up)]">{failure.key} · {outputLabel(failure.lang)}：{failure.error}</div>
+                  <div key={`${failure.key}-${failure.lang}`} className="mt-1 text-[9px] text-[var(--color-up)]">
+                    {(() => {
+                      const target = [...boardTargets, ...nativeTargets].find((item) => failure.key === item.key || failure.key.startsWith(`${item.key}·`));
+                      return target ? boardDisplayLabel(target) : "未识别资源位";
+                    })()} · {outputLabel(failure.lang)}：{failure.error}
+                  </div>
                 ))}
                 {done.failures.length ? (
                   <button type="button" disabled={busy} onClick={() => run(done.failures)} className={cn(GHOST, "mt-1.5 -ml-2.5")}>只重试失败的 {done.failures.length} 块</button>
@@ -1131,14 +1806,10 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
               </div>
             </div>
           ) : null}
-        </div>
-        <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-[var(--app-line)] pt-3">
-          <Button size="lg" disabled={busy} onClick={onBack}>上一步</Button>
-          <Button variant="workflow" size="lg" icon={busy ? undefined : <WorkflowSparkle />} disabled={busy || !plans.length || (needsVisual && !visualReady)} onClick={() => run()}>
-            {busy ? <><Loader2 size={14} className="animate-spin" />等待写入 {plans.length} 块…</> : needsVisual && !visualReady ? "请先准备主视觉" : `写入 Figma · ${plans.length} 块`}
-          </Button>
-        </div>
-      </aside>
+          </div>
+        </aside>
+      </div>
+      {batchActions}
     </div>
   );
 }

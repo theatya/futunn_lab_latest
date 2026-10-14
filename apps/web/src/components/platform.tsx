@@ -64,7 +64,7 @@ import { BreakPicker } from "@/components/steps/break-picker";
 import { LogoBind } from "@/components/steps/asset-bind";
 import { LogoPresetPreview } from "@/components/logo-preset-preview";
 import { BackgroundColorControl, colorToHex, hexToHsv, hsvToHex } from "@/components/color-control";
-import { SceneBatchStep, SceneConfigStep, ScenePrepareStep, sceneFamilies } from "@/components/scene/scene-steps";
+import { SceneBatchStep, SceneConfigStep, ScenePrepareStep, sceneEditGroups } from "@/components/scene/scene-steps";
 import { Button, WorkflowSparkle } from "@/components/ui/button";
 import { TextArea, TextField } from "@/components/ui/field";
 import { Slider } from "@/components/ui/slider";
@@ -77,7 +77,7 @@ import type { LayerRole } from "@/lib/recognize";
 
 type Mode = "home" | "extend" | "copy";
 
-const EXTEND_STEPS = ["准备主视觉", "选择资源位", "配置内容与样式", "批量生成并精调"] as const;
+const EXTEND_STEPS = ["准备主视觉", "选择资源位", "配置内容与样式", "批量生成并细化"] as const;
 const COPY_STEPS = ["选择范围", "匹配文案", "编辑与检查", "写回 Figma"] as const;
 
 type TaskType = "extend" | "copy";
@@ -92,6 +92,10 @@ type WorkspaceTask = {
 };
 
 const TASKS_KEY = "futu:workspace-tasks:v1";
+const SIDEBAR_WIDTH_STORE = "futu:platform-sidebar-width";
+const SIDEBAR_WIDTH_DEFAULT = 168;
+const SIDEBAR_WIDTH_MIN = 96;
+const SIDEBAR_WIDTH_MAX = 280;
 
 const ROLE_LABEL = {
   title: "主标题",
@@ -543,7 +547,7 @@ function PlatformInner() {
           onExtend={openExtend}
           onCopy={openCopy}
         />
-        <main className="min-w-0 flex-1 bg-[var(--app-page)]">
+        <main className="min-w-0 flex-1 bg-[var(--app-workspace-page)]">
           {mode === "home" ? (
             <HomeScreen
               tasks={tasks}
@@ -824,8 +828,13 @@ function Sidebar({
   const [recentOpen, setRecentOpen] = useState(true);
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [menuTaskId, setMenuTaskId] = useState<string | null>(null);
+  const [width, setWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
+  const [resizing, setResizing] = useState(false);
   const newMenuRef = useRef<HTMLDivElement>(null);
   const taskMenuRef = useRef<HTMLDivElement>(null);
+  const asideRef = useRef<HTMLElement>(null);
+  const widthRef = useRef(SIDEBAR_WIDTH_DEFAULT);
+  const resizeRef = useRef<{ x: number; width: number; scale: number } | null>(null);
 
   useEffect(() => {
     if (!newMenuOpen && !menuTaskId) return;
@@ -838,8 +847,39 @@ function Sidebar({
     return () => document.removeEventListener("pointerdown", closeMenus);
   }, [menuTaskId, newMenuOpen]);
 
+  useEffect(() => {
+    const storedValue = window.localStorage.getItem(SIDEBAR_WIDTH_STORE);
+    if (storedValue === null) return;
+    const stored = Number(storedValue);
+    if (!Number.isFinite(stored)) return;
+    const next = Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, stored));
+    widthRef.current = next;
+    setWidth(next);
+  }, []);
+
+  useEffect(() => {
+    if (!resizing) return;
+    const cursor = document.body.style.cursor;
+    const userSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    return () => {
+      document.body.style.cursor = cursor;
+      document.body.style.userSelect = userSelect;
+    };
+  }, [resizing]);
+
+  const finishResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    resizeRef.current = null;
+    setResizing(false);
+    setWidth(widthRef.current);
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORE, String(widthRef.current));
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const compact = width < 120;
+
   return (
-    <aside className="w-[168px] shrink-0 border-r border-[var(--app-line)] bg-[var(--app-rail)] p-2 flex flex-col">
+    <aside ref={asideRef} style={{ width }} className="relative flex shrink-0 flex-col bg-[var(--app-primary-nav)] p-2">
       <nav className="space-y-0.5">
         <NavButton active={mode === "home"} icon={<Home size={14} />} onClick={onHome}>
           首页
@@ -857,28 +897,28 @@ function Sidebar({
           type="button"
           aria-expanded={recentOpen}
           onClick={() => setRecentOpen((value) => !value)}
-          className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-[4px] px-1 text-[10px] font-medium text-[var(--app-text-4)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text-2)]"
+          className="flex h-7 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-[4px] px-0.5 text-[10px] font-medium text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text-2)]"
         >
-          <History size={12} />
-          <span>最近任务</span>
-          <ChevronDown size={12} className={cn("ml-auto transition-transform", !recentOpen && "-rotate-90")} />
+          <History size={11} className="shrink-0" />
+          <span className="min-w-0 truncate whitespace-nowrap">最近任务</span>
+          <ChevronDown size={11} className={cn("ml-auto shrink-0 transition-transform", compact && "hidden", !recentOpen && "-rotate-90")} />
         </button>
         <button
           type="button"
           aria-label="新建项目"
           onClick={() => setNewMenuOpen((value) => !value)}
-          className="ml-1 grid size-7 shrink-0 place-items-center rounded-[4px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]"
+          className={cn("ml-1 grid shrink-0 place-items-center rounded-[4px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]", compact ? "size-6" : "size-7")}
         >
-          <Plus size={14} />
+          <Plus size={compact ? 12 : 14} />
         </button>
         {newMenuOpen ? (
-          <div ref={newMenuRef} className="absolute left-1 right-1 top-9 z-40 rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1 shadow-[var(--glass-shadow)]">
+          <div ref={newMenuRef} className={cn("absolute left-1 top-9 z-40 rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1 shadow-[var(--glass-shadow)]", compact ? "w-[142px]" : "right-1")}>
             <button onClick={() => { setNewMenuOpen(false); onNewTask("extend"); }} className="w-full rounded-[4px] px-2.5 py-2 text-left text-[10px] hover:bg-[var(--app-surface-2)]">新建延展项目</button>
             <button onClick={() => { setNewMenuOpen(false); onNewTask("copy"); }} className="w-full rounded-[4px] px-2.5 py-2 text-left text-[10px] hover:bg-[var(--app-surface-2)]">新建批量改文案</button>
           </div>
         ) : null}
       </div>
-      {recentOpen ? <div className="relative mt-1 min-h-0 flex-1 space-y-1 overflow-y-auto">
+      {recentOpen ? <div className={cn("relative mt-1 min-h-0 flex-1 space-y-1", menuTaskId ? "overflow-visible" : "overflow-y-auto")}>
         {tasks.map((item) => {
           const thumbnail = taskThumbnail(item);
           return (
@@ -886,13 +926,14 @@ function Sidebar({
             key={item.id}
             ref={menuTaskId === item.id ? taskMenuRef : undefined}
             className={cn(
-              "group relative flex w-full items-center gap-2 rounded-[6px] p-1.5 text-left hover:bg-[var(--app-surface-2)]",
+              "group relative flex w-full items-center rounded-[6px] text-left hover:bg-[var(--app-surface-2)]",
+              compact ? "gap-1 p-1" : "gap-2 p-1.5",
               activeTaskId === item.id && mode !== "home" && "bg-[var(--app-surface-2)]",
               menuTaskId === item.id && "z-50",
             )}
           >
             <button onClick={() => onOpenTask(item)} className="absolute inset-0 rounded-[6px]" aria-label={`打开 ${item.name}`} />
-            <div className="pointer-events-none relative size-10 shrink-0 overflow-hidden rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-3)]">
+            <div className={cn("pointer-events-none relative shrink-0 overflow-hidden rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-3)]", compact ? "size-8" : "size-10")}>
               {thumbnail ? (
                 <img src={thumbnail} alt="" className="size-full object-cover" />
               ) : (
@@ -902,8 +943,8 @@ function Sidebar({
               )}
             </div>
             <div className="relative min-w-0 flex-1 pointer-events-none">
-              <div className="truncate pr-5 text-[11px] font-medium">{item.name}</div>
-              <div className="mt-0.5 truncate text-[9px] text-[var(--app-text-4)]">
+              <div className={cn("truncate text-[11px] font-medium", !compact && "pr-5")}>{item.name}</div>
+              <div className={cn("mt-0.5 truncate text-[9px] text-[var(--app-text-3)]", compact && "hidden")}>
                 {taskMeta(item)} · {taskTime(item.updatedAt)}
               </div>
             </div>
@@ -911,12 +952,12 @@ function Sidebar({
               type="button"
               aria-label={`${item.name} 更多操作`}
               onClick={() => setMenuTaskId((current) => current === item.id ? null : item.id)}
-              className="relative z-10 grid size-6 shrink-0 place-items-center rounded-[4px] text-[var(--app-text-3)] opacity-60 hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] hover:opacity-100"
+              className={cn("relative z-10 grid shrink-0 place-items-center rounded-[4px] text-[var(--app-text-3)] opacity-60 hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] hover:opacity-100", compact ? "size-5" : "size-6")}
             >
-              <MoreHorizontal size={14} />
+              <MoreHorizontal size={compact ? 12 : 14} />
             </button>
             {menuTaskId === item.id ? (
-              <div className="absolute right-1 top-10 z-50 w-[142px] rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1 shadow-[var(--glass-shadow)]">
+              <div className={cn("absolute z-50 w-[142px] rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1 shadow-[var(--glass-shadow)]", compact ? "left-full top-0 ml-1" : "right-1 top-10")}>
                 <TaskMenuItem icon={<ArrowRight size={13} />} label="打开项目" onClick={() => { setMenuTaskId(null); onOpenTask(item); }} />
                 <TaskMenuItem icon={<Pencil size={13} />} label="重命名" onClick={() => { setMenuTaskId(null); onRenameTask(item); }} />
                 <TaskMenuItem icon={<Copy size={13} />} label="复制项目" onClick={() => { setMenuTaskId(null); onDuplicateTask(item); }} />
@@ -927,8 +968,50 @@ function Sidebar({
           </div>
           );
         })}
-        {!tasks.length ? <div className="px-2 py-3 text-[9px] text-[var(--app-text-4)]">暂无任务</div> : null}
+        {!tasks.length ? <div className="px-2 py-3 text-[9px] text-[var(--app-text-3)]">暂无任务</div> : null}
       </div> : <div className="flex-1" />}
+      <div
+        role="separator"
+        tabIndex={0}
+        aria-orientation="vertical"
+        aria-label="调整主导航栏宽度"
+        aria-valuemin={SIDEBAR_WIDTH_MIN}
+        aria-valuemax={SIDEBAR_WIDTH_MAX}
+        aria-valuenow={width}
+        title="拖动调整主导航栏宽度；双击恢复默认"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          const node = asideRef.current;
+          const scale = node ? node.getBoundingClientRect().width / node.offsetWidth : 1;
+          resizeRef.current = { x: event.clientX, width, scale: scale || 1 };
+          setResizing(true);
+        }}
+        onPointerMove={(event) => {
+          const drag = resizeRef.current;
+          if (!drag) return;
+          const next = Math.round(Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, drag.width + (event.clientX - drag.x) / drag.scale)));
+          widthRef.current = next;
+          event.currentTarget.setAttribute("aria-valuenow", String(next));
+          if (asideRef.current) asideRef.current.style.width = `${next}px`;
+        }}
+        onPointerUp={finishResize}
+        onPointerCancel={finishResize}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          event.preventDefault();
+          const next = Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, width + (event.key === "ArrowRight" ? 8 : -8)));
+          widthRef.current = next;
+          setWidth(next);
+          window.localStorage.setItem(SIDEBAR_WIDTH_STORE, String(next));
+        }}
+        onDoubleClick={() => {
+          widthRef.current = SIDEBAR_WIDTH_DEFAULT;
+          setWidth(SIDEBAR_WIDTH_DEFAULT);
+          window.localStorage.setItem(SIDEBAR_WIDTH_STORE, String(SIDEBAR_WIDTH_DEFAULT));
+        }}
+        className="platform-sidebar-resizer absolute inset-y-0 -right-1 z-30 w-2 cursor-col-resize touch-none"
+      />
     </aside>
   );
 }
@@ -975,14 +1058,14 @@ function NavButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "w-full h-8 px-2.5 rounded-[5px] flex items-center gap-2 text-[12px]",
+        "flex h-8 w-full min-w-0 items-center gap-2 overflow-hidden rounded-[5px] px-2.5 text-[12px]",
         active
-          ? "bg-[var(--app-surface-3)] text-[var(--app-text)]"
+          ? "bg-[var(--app-primary-nav-active)] text-[var(--app-text)]"
           : "text-[var(--app-text-2)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]",
       )}
     >
-      {icon}
-      {children}
+      <span className="shrink-0">{icon}</span>
+      <span className="min-w-0 truncate">{children}</span>
     </button>
   );
 }
@@ -1919,7 +2002,7 @@ function EditExtendFlow({ onNext }: { onNext: () => void }) {
 
 function SceneTargetsStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
   const { project } = useStudio();
-  const families = sceneFamilies(project.targets);
+  const families = sceneEditGroups(project.targets);
   const linkedCount = project.targets.filter((target) => linkedOf(target)).length;
   const nativeCount = project.targets.filter((target) => nativeOf(target)).length;
 
@@ -1932,12 +2015,12 @@ function SceneTargetsStep({ onBack, onNext }: { onBack: () => void; onNext: () =
           <div className="mt-1 text-[9px] text-[var(--app-text-4)]">已选择 {project.targets.length} 个画幅</div>
           <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
             {families.map((group) => (
-              <div key={group.family} className="mb-3">
-                <div className="flex justify-between text-[10px]">
-                  <span>{SCENE_FAMILY_LABEL[group.family]}</span>
-                  <span className="text-[var(--app-text-4)]">{group.items.length}</span>
+              <div key={group.id} className="mb-3">
+                <div className="flex justify-between gap-2 text-[10px]">
+                  <span className="min-w-0 truncate">{group.kind === "special" ? `特殊规范 · ${group.label}` : group.kind === "background" ? `纯背景 · ${group.label}` : group.label}</span>
+                  <span className="shrink-0 text-[var(--app-text-4)]">{group.items.length}</span>
                 </div>
-                <div className="mt-1 text-[9px] text-[var(--app-text-4)]">代表画幅 {group.representative.w}×{group.representative.h}</div>
+                <div className="mt-1 text-[9px] text-[var(--app-text-4)]">{group.locked ? "版式按广告规范，只改内容与样式" : group.kind === "splash" ? "单独设计，设备尺寸由它联动生成" : `代表画幅 ${group.representative.w}×${group.representative.h}`}</div>
                 <div className="mt-0.5 text-[9px] leading-relaxed text-[var(--app-text-4)]">{group.items.map((item) => `${item.use ?? ""} ${item.w}×${item.h}`.trim()).join("、")}</div>
               </div>
             ))}

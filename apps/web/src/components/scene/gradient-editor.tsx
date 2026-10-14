@@ -12,7 +12,7 @@ import {
   type SceneGradientType,
 } from "@futu/domain";
 import { BackgroundColorControl } from "@/components/color-control";
-import { ScrubField } from "@/components/ui/field";
+import { arrowStep, ScrubField } from "@/components/ui/field";
 import { Segmented } from "@/components/ui/segmented";
 import { cn } from "@/lib/utils";
 
@@ -155,6 +155,7 @@ export function GradientEditor({ value, onChange }: { value: SceneCustomGradient
                   const next = Number(event.target.value.replace(/[^\d.]/g, ""));
                   if (Number.isFinite(next)) patchStop(index, { pos: Math.max(0, Math.min(100, next)) / 100 });
                 }}
+                onKeyDown={(event) => arrowStep(event, Math.round(item.pos * 100), (next) => patchStop(index, { pos: next / 100 }), 0, 100)}
                 className={cn(NUM, "pr-3.5")}
               />
               <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-[var(--app-text-4)]">%</span>
@@ -171,6 +172,7 @@ export function GradientEditor({ value, onChange }: { value: SceneCustomGradient
                   const next = Number(event.target.value.replace(/[^\d.]/g, ""));
                   if (Number.isFinite(next)) patchStop(index, { alpha: Math.max(0, Math.min(100, next)) / 100 });
                 }}
+                onKeyDown={(event) => arrowStep(event, Math.round(item.alpha * 100), (next) => patchStop(index, { alpha: next / 100 }), 0, 100)}
                 className={cn(NUM, "pr-3.5")}
               />
               <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-[var(--app-text-4)]">%</span>

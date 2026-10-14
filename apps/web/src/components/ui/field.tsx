@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type InputHTMLAttributes, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type InputHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { cn, clamp } from "@/lib/utils";
 
 const BASE =
@@ -112,6 +112,16 @@ export function NumberField({
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === "Enter") e.currentTarget.blur();
+          /** 同 Figma：上下键按步长加减并立即生效，Shift 十倍。 */
+          if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+            e.preventDefault();
+            const typed = Number(draft);
+            const base = Number.isFinite(typed) ? typed : value;
+            const delta = (e.key === "ArrowUp" ? 1 : -1) * step * (e.shiftKey ? 10 : 1);
+            const next = clamp(Number((base + delta).toFixed(decimals ?? 4)), min, max);
+            setDraft(format(next));
+            onCommit(next);
+          }
           if (e.key === "Escape") {
             setDraft(format(value));
             setEditing(false);
@@ -125,6 +135,15 @@ export function NumberField({
       ) : null}
     </span>
   );
+}
+
+/** 手写数值框的上下键：同 NumberField，按步长加减，Shift 十倍，返回是否处理了按键。 */
+export function arrowStep(event: ReactKeyboardEvent<HTMLInputElement>, value: number, apply: (next: number) => void, min: number, max: number, step = 1) {
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return false;
+  event.preventDefault();
+  const delta = (event.key === "ArrowUp" ? 1 : -1) * step * (event.shiftKey ? 10 : 1);
+  apply(clamp(Number((value + delta).toFixed(4)), min, max));
+  return true;
 }
 
 type ScrubOptions = { value: number; onChange: (v: number) => void; min: number; max: number; step?: number; decimals?: number };

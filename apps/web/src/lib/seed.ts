@@ -1,6 +1,6 @@
 import {
   BOARD_CONFIG_DEFAULT,
-  emptyLangCopy,
+  initialLangCopy,
   type Content,
   type LangCopy,
   type Project,
@@ -69,7 +69,7 @@ const TC: LangCopy = {
 const DEFAULT_CONTENT: Content = {
   brand: "moomoo",
   langs: ["en"],
-  copy: { en: EN, sc: SC, tc: TC, ja: emptyLangCopy(), th: emptyLangCopy() },
+  copy: { en: EN, sc: SC, tc: TC, ja: initialLangCopy("ja"), th: initialLangCopy("th") },
   kv: { id: "kv-tte", name: "KV / Transfer-to-Earn", source: "library", kind: "component" },
   logo: { id: "logo-moomoo", name: "moomoo", source: "library", kind: "component" },
   logoPreset: "moomoo",

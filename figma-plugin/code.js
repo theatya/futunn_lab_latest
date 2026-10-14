@@ -458,6 +458,10 @@ async function createSceneText(layer, fallbackColor, lineHeight) {
     layer.text.split("\n").forEach((line, row) => {
       const size = layer.lineFontPx[row];
       if (line.length && size) node.setRangeFontSize(start, start + line.length, Math.max(1, size));
+      const height = layer.lineHeightPx && layer.lineHeightPx[row];
+      if (line.length && height) node.setRangeLineHeight(start, start + line.length, { value: height, unit: "PIXELS" });
+      const spacing = layer.lineLetterSpacing && layer.lineLetterSpacing[row];
+      if (line.length && typeof spacing === "number") node.setRangeLetterSpacing(start, start + line.length, { value: spacing, unit: "PIXELS" });
       start += line.length + 1;
     });
   }
@@ -516,6 +520,8 @@ async function createSceneBadge(layer) {
 async function writeScene(frame, plan, component) {
   const scene = plan.scene;
   const groupIds = new Set(scene.group ? scene.group.ids : []);
+  // 标题组按图层顺序插回第一个成员所在的层级，主视觉可以在它上面。
+  let groupIndex = -1;
   for (const layer of scene.layers) {
     if (layer.role === "visual") {
       const instance = component.createInstance();
@@ -599,7 +605,10 @@ async function writeScene(frame, plan, component) {
       frame.appendChild(await createSceneBadge(layer));
       continue;
     }
-    if (groupIds.has(layer.id)) continue;
+    if (groupIds.has(layer.id)) {
+      if (groupIndex < 0) groupIndex = frame.children.length;
+      continue;
+    }
     const text = await createSceneText(layer, "#ffffff", (layer.lineHeight || 1.2) * 100);
     frame.appendChild(text);
     placeByAnchor(text, layer);
@@ -636,7 +645,8 @@ async function writeScene(frame, plan, component) {
       return node;
     };
     const group = nest(texts, gaps, "标题组");
-    frame.appendChild(group);
+    if (groupIndex >= 0) frame.insertChild(groupIndex, group);
+    else frame.appendChild(group);
     placeByAnchor(group, { anchor: scene.group.anchor, align: scene.group.align });
   }
 }

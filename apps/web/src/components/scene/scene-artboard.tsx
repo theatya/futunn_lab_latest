@@ -7,6 +7,7 @@ import {
   SCENE_TEXT_ROLES,
   buildSceneBoard,
   isSceneGroupRole,
+  layoutScene,
   linkedPlacement,
   resolveSceneGroup,
   resolveSceneOwn,
@@ -16,6 +17,7 @@ import {
   type Lang,
   type SceneBadgeOut,
   type SceneBoardRef,
+  type SceneBox,
   type SceneLayerOut,
   type ScenePlacementPatch,
   type SceneState,
@@ -30,17 +32,39 @@ const FEATHER_RATIO = [0, 0.08, 0.14, 0.2];
 type DragState = {
   /** 写入的目标：标题组成员拖动时写到标题组。 */
   target: string;
-  kind: "move" | "scale" | "width";
+  kind: "move" | "scale" | "width" | "height";
   startX: number;
   startY: number;
   boardW: number;
   boardH: number;
   layerW: number;
+  layerH: number;
   /** 跟随标题组对齐时 x 由标题组决定，只能上下拖。 */
   lockX: boolean;
   widthSign?: number;
   origin: { x: number; y: number; scale: number; w: number };
+  /** 多选拖动时一起挪的其它对象。 */
+  followers: Array<{ target: string; origin: { x: number; y: number }; lockX: boolean }>;
+  /** 被拖对象合起来的外框（画板像素），用于吸附。 */
+  box?: SceneBox;
+  snap?: { xs: number[]; ys: number[] };
 };
+
+type DragUnit = { target: string; origin: { x: number; y: number }; lockX: boolean; box: SceneBox };
+
+const SNAP_PX = 5;
+
+/** 移动后的外框三条边（左/中/右或上/中/下）里离参考线最近的一条，在阈值内返回需要补的位移。 */
+function snapAxis(edges: number[], lines: number[], threshold: number) {
+  let best: { delta: number; at: number } | null = null;
+  for (const edge of edges) {
+    for (const line of lines) {
+      const delta = line - edge;
+      if (Math.abs(delta) <= threshold && (!best || Math.abs(delta) < Math.abs(best.delta))) best = { delta, at: line };
+    }
+  }
+  return best;
+}
 
 function svgDataUrl(svg: string) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
@@ -181,6 +205,7 @@ const FrozenEditable = memo(function FrozenEditable({ label, api, children }: { 
       }}
       onBlur={() => api.current?.exit()}
       className="cursor-text select-text whitespace-pre outline-none"
+      style={{ lineHeight: "inherit" }}
     >
       {children}
     </div>
@@ -199,9 +224,13 @@ export function SceneArtboard({
   guides = false,
   outlines = true,
   onSelect,
+  focusId,
+  onFocusLayer,
   onPatch,
   onTextRange,
   onTextChange,
+  fixedLayout = false,
+  pinnedIds,
 }: {
   scene: SceneState;
   board: SceneBoardRef;
@@ -217,10 +246,18 @@ export function SceneArtboard({
   outlines?: boolean;
   /** additive：按住 Shift / Ctrl / ⌘ 点选，加入或移出多选。 */
   onSelect?: (id: string | null, additive?: boolean) => void;
+  /** 标题组选中时，组里正在单独调的那一层。 */
+  focusId?: string | null;
+  /** 点到标题组里的某一层：标题组保持选中，展开这一层的参数。 */
+  onFocusLayer?: (id: string) => void;
   onPatch?: (id: string, patch: ScenePlacementPatch) => void;
   /** 双击文字进入编辑，选区变化时回传字符区间。 */
   onTextRange?: (id: string, start: number, end: number) => void;
   onTextChange?: (id: string, text: string) => void;
+  /** 版式按规范锁定：只有主视觉能拖，其它图层点选不挪。 */
+  fixedLayout?: boolean;
+  /** 位置按规范锁定的图层（如未解除锁定的规范 CTA）：能选中，不能拖。 */
+  pinnedIds?: ReadonlySet<string>;
 }) {
   const k = width / board.w;
   const height = board.h * k;
@@ -237,9 +274,47 @@ export function SceneArtboard({
     } : null;
   });
   const interactive = Boolean(onPatch);
+  const movable = (id: string) => interactive && !pinnedIds?.has(id) && (!fixedLayout || scene.elements.find((item) => item.id === id)?.role === "visual");
   const occlusion = SCENE_OCCLUSION[board.key];
-  const groupIds = new Set(output.group?.ids ?? []);
+  const groupIds = new Set(output.group?.stackIds ?? []);
   const groupActive = selectedId === SCENE_GROUP_ID || (selectedId ? groupIds.has(selectedId) : false);
+  const [snapLines, setSnapLines] = useState<{ x?: number; y?: number } | null>(null);
+
+  /** 拖动时实际挪的对象：文字层和编入组的图层都归到标题组。 */
+  const unitFor = (id: string): DragUnit | null => {
+    const el = scene.elements.find((item) => item.id === id);
+    if (output.group && (id === SCENE_GROUP_ID || (el && (isSceneGroupRole(el.role) || resolveScenePlacement(scene, board, el).attach)))) {
+      const group = resolveSceneGroup(scene, board);
+      return { target: SCENE_GROUP_ID, origin: { x: group.x, y: group.y }, lockX: false, box: output.group.frame };
+    }
+    const layer = output.layers.find((item) => item.id === id);
+    if (!el || !layer) return null;
+    const placement = resolveScenePlacement(scene, board, el);
+    return { target: id, origin: { x: placement.x, y: placement.y }, lockX: Boolean(output.group && placement.follow && placement.follow !== "none"), box: layer.box };
+  };
+  /** 点击标题组里的图层始终选中整个标题组，被点那一层同时高亮、带缩放手柄、展开参数；双击进入文字编辑。 */
+  const pick = (id: string) => {
+    if (id === SCENE_GROUP_ID || unitFor(id)?.target !== SCENE_GROUP_ID) {
+      onSelect?.(id);
+      return;
+    }
+    onSelect?.(SCENE_GROUP_ID);
+    onFocusLayer?.(id);
+  };
+  /** 多选（两个以上对象）时的合并外框，表示这些对象暂时当成一组。 */
+  const selectionBox = (() => {
+    if (!selectedIds?.size) return null;
+    const units = new Map<string, SceneBox>();
+    for (const item of [selectedId, ...selectedIds]) {
+      const unit = item ? unitFor(item) : null;
+      if (unit) units.set(unit.target, unit.box);
+    }
+    if (units.size < 2) return null;
+    const boxes = [...units.values()];
+    const left = Math.min(...boxes.map((item) => item.x));
+    const top = Math.min(...boxes.map((item) => item.y));
+    return { x: left, y: top, w: Math.max(...boxes.map((item) => item.x + item.w)) - left, h: Math.max(...boxes.map((item) => item.y + item.h)) - top };
+  })();
 
   const begin = (event: ReactPointerEvent<HTMLElement>, id: string, kind: DragState["kind"]) => {
     if (!interactive) return;
@@ -249,7 +324,19 @@ export function SceneArtboard({
       onSelect?.(id, true);
       return;
     }
-    onSelect?.(id);
+    if (!movable(id)) {
+      pick(id);
+      return;
+    }
+    /** 按在多选里的对象上拖：所有选中的对象一起挪，选择不变。 */
+    const picked = new Map<string, DragUnit>();
+    for (const item of [selectedId, ...(selectedIds ?? [])]) {
+      const unit = item ? unitFor(item) : null;
+      if (unit && !pinnedIds?.has(unit.target)) picked.set(unit.target, unit);
+    }
+    const pressed = unitFor(id);
+    const multi = kind === "move" && picked.size > 1 && Boolean(pressed && picked.has(pressed.target));
+    if (!multi) pick(id);
     const rect = boardRef.current?.getBoundingClientRect();
     if (!rect) return;
     const el = scene.elements.find((item) => item.id === id);
@@ -258,7 +345,9 @@ export function SceneArtboard({
     let origin: DragState["origin"];
     let lockX = false;
     const boxW = output.layers.find((layer) => layer.id === id)?.box.w ?? 0;
-    if (id === SCENE_GROUP_ID || (el && isSceneGroupRole(el.role) && kind === "move")) {
+    /** 拖文字层或编入组的图层都是挪整个标题组；组内位置锁定，要单独挪先取消编组。 */
+    const rides = Boolean(el && kind === "move" && output.group && resolveScenePlacement(scene, board, el).attach);
+    if (id === SCENE_GROUP_ID || (el && isSceneGroupRole(el.role) && kind === "move") || rides) {
       const group = resolveSceneGroup(scene, board);
       target = SCENE_GROUP_ID;
       origin = { x: group.x, y: group.y, scale: group.scale, w: 0 };
@@ -267,10 +356,30 @@ export function SceneArtboard({
       origin = { x: own.x, y: own.y, scale: own.scale, w: 0 };
     } else if (el) {
       const placement = resolveScenePlacement(scene, board, el);
-      origin = { x: placement.x, y: placement.y, scale: placement.scale, w: boxW };
+      /** 编入标题组的图层从画面上的实际位置起拖。 */
+      const start = placement.attach ? layoutScene(scene, board, lang).laid.find((item) => item.el.id === id)?.placement ?? placement : placement;
+      origin = { x: start.x, y: start.y, scale: start.scale, w: boxW };
       lockX = Boolean(output.group && placement.follow && placement.follow !== "none");
     } else {
       return;
+    }
+    const followers = multi ? [...picked.values()].filter((unit) => unit.target !== target) : [];
+    let box: SceneBox | undefined;
+    let snap: DragState["snap"];
+    if (kind === "move") {
+      const boxes = [(target === SCENE_GROUP_ID ? output.group?.frame : output.layers.find((layer) => layer.id === id)?.box), ...followers.map((unit) => unit.box)].filter((item): item is SceneBox => Boolean(item));
+      if (boxes.length) {
+        const left = Math.min(...boxes.map((item) => item.x));
+        const top = Math.min(...boxes.map((item) => item.y));
+        box = { x: left, y: top, w: Math.max(...boxes.map((item) => item.x + item.w)) - left, h: Math.max(...boxes.map((item) => item.y + item.h)) - top };
+      }
+      const moving = new Set([target, ...followers.map((unit) => unit.target)]);
+      const refs = output.layers.filter((layer) => layer.role !== "visual" && !moving.has(unitFor(layer.id)?.target ?? layer.id)).map((layer) => layer.box);
+      if (output.group && !moving.has(SCENE_GROUP_ID)) refs.push(output.group.frame);
+      snap = {
+        xs: [0, board.w / 2, board.w, ...refs.flatMap((item) => [item.x, item.x + item.w / 2, item.x + item.w])],
+        ys: [0, board.h / 2, board.h, ...refs.flatMap((item) => [item.y, item.y + item.h / 2, item.y + item.h])],
+      };
     }
     dragRef.current = {
       target,
@@ -280,8 +389,12 @@ export function SceneArtboard({
       boardW: rect.width,
       boardH: rect.height,
       layerW: Math.max(8, layerRect?.width ?? rect.width / 4),
+      layerH: Math.max(8, layerRect?.height ?? rect.height / 4),
       lockX,
       origin,
+      followers: followers.map(({ target: item, origin: start, lockX: locked }) => ({ target: item, origin: start, lockX: locked })),
+      box,
+      snap,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
@@ -292,10 +405,36 @@ export function SceneArtboard({
     const dx = event.clientX - drag.startX;
     const dy = event.clientY - drag.startY;
     if (drag.kind === "move") {
-      const y = drag.origin.y + dy / drag.boardH;
-      onPatch(drag.target, drag.lockX ? { y } : { x: drag.origin.x + dx / drag.boardW, y });
+      /** 位移按画板在屏幕上的实际尺寸换成画板像素再吸附（页面可能整体缩放）；按住 Alt 拖不吸附。 */
+      let mx = (dx * board.w) / drag.boardW;
+      let my = (dy * board.h) / drag.boardH;
+      const lines: { x?: number; y?: number } = {};
+      if (drag.box && drag.snap && !event.altKey) {
+        const b = drag.box;
+        const threshold = (SNAP_PX * board.w) / drag.boardW;
+        const hitX = drag.lockX ? null : snapAxis([b.x + mx, b.x + b.w / 2 + mx, b.x + b.w + mx], drag.snap.xs, threshold);
+        const hitY = snapAxis([b.y + my, b.y + b.h / 2 + my, b.y + b.h + my], drag.snap.ys, threshold);
+        if (hitX) {
+          mx += hitX.delta;
+          lines.x = hitX.at;
+        }
+        if (hitY) {
+          my += hitY.delta;
+          lines.y = hitY.at;
+        }
+      }
+      setSnapLines((current) => current?.x === lines.x && current?.y === lines.y ? current : lines.x === undefined && lines.y === undefined ? null : lines);
+      for (const unit of [{ target: drag.target, origin: drag.origin, lockX: drag.lockX }, ...drag.followers]) {
+        const y = unit.origin.y + my / board.h;
+        onPatch(unit.target, unit.lockX ? { y } : { x: unit.origin.x + mx / board.w, y });
+      }
     } else if (drag.kind === "width") {
-      onPatch(drag.target, { w: sceneWidthToUnit(board, Math.max(8, drag.origin.w + (dx * (drag.widthSign ?? 1)) / k)) });
+      onPatch(drag.target, {
+        w: sceneWidthToUnit(board, Math.max(8, drag.origin.w + (dx * (drag.widthSign ?? 1) * board.w) / drag.boardW)),
+        length: undefined,
+      });
+    } else if (drag.kind === "height") {
+      onPatch(drag.target, { scale: drag.origin.scale * Math.max(0.2, (drag.layerH + dy) / drag.layerH) });
     } else {
       onPatch(drag.target, { scale: drag.origin.scale * Math.max(0.2, (drag.layerW + dx) / drag.layerW) });
     }
@@ -304,6 +443,7 @@ export function SceneArtboard({
   const end = (event: ReactPointerEvent<HTMLElement>) => {
     if (!dragRef.current) return;
     dragRef.current = null;
+    setSnapLines(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
@@ -312,6 +452,7 @@ export function SceneArtboard({
   const handleFor = (id: string) => (
     <span
       role="presentation"
+      title="拖动缩放比例"
       onPointerDown={(event) => begin(event, id, "scale")}
       onPointerMove={move}
       onPointerUp={end}
@@ -337,6 +478,18 @@ export function SceneArtboard({
       )}
     />
   );
+  /** 无固定 CTA 规范时，底部手柄独立调整高度；侧边手柄调整长度，角点手柄保持等比缩放。 */
+  const heightHandleFor = (layer: SceneLayerOut) => (
+    <span
+      role="presentation"
+      title="拖动改高度"
+      onPointerDown={(event) => begin(event, layer.id, "height")}
+      onPointerMove={move}
+      onPointerUp={end}
+      onPointerCancel={end}
+      className="absolute bottom-[-3px] left-1/2 h-1.5 w-3 -translate-x-1/2 cursor-ns-resize rounded-[1px] border border-[var(--color-brand)] bg-white"
+    />
+  );
 
   return (
     <div
@@ -350,14 +503,14 @@ export function SceneArtboard({
       }}
     >
       {output.layers.map((layer) => {
-        const selected = selectedId === layer.id;
+        const selected = selectedId === layer.id || (selectedId === SCENE_GROUP_ID && focusId === layer.id);
         const flagged = outlines && issueIds?.has(layer.id);
         const editing = editingId === layer.id;
         const frame = cn(
-          interactive && !editing && "cursor-move",
+          movable(layer.id) && !editing && "cursor-move",
           selected || selectedIds?.has(layer.id) ? "outline outline-1 outline-[var(--color-brand)]" : flagged ? "outline outline-1 outline-dashed outline-[var(--color-warn)]" : interactive && outlines && "hover:outline hover:outline-1 hover:outline-[var(--color-brand-line)]",
         );
-        const handle = selected && interactive && !editing ? handleFor(layer.id) : null;
+        const handle = selected && movable(layer.id) && !editing ? handleFor(layer.id) : null;
         const pointer = {
           onPointerDown: (event: ReactPointerEvent<HTMLElement>) => begin(event, layer.id, "move"),
           onPointerMove: move,
@@ -409,7 +562,7 @@ export function SceneArtboard({
               className={cn("absolute", frame)}
               style={{ left: layer.box.x * k, top: layer.box.y * k, width: layer.box.w * k, height: layer.box.h * k }}
             >
-              <LogoPresetPreview preset={scene.logoPreset} className="pointer-events-none size-full min-h-0" />
+              <LogoPresetPreview preset={output.logoPreset} className="pointer-events-none size-full min-h-0" />
               {handle}
             </div>
           );
@@ -438,7 +591,7 @@ export function SceneArtboard({
             >
               <BadgeView layer={layer} badge={layer.badge} k={k} fontFamily={fontFamily} fontWeight={layer.fontWeight ?? 400} />
               {handle}
-              {selected && interactive && stretchable ? widthHandleFor(layer) : null}
+              {selected && movable(layer.id) && stretchable ? widthHandleFor(layer) : null}
             </div>
           );
         }
@@ -470,7 +623,8 @@ export function SceneArtboard({
             >
               <span className="overflow-hidden text-ellipsis">{layer.text}</span>
               {locked ? null : handle}
-              {selected && interactive && (!locked || board.ctaSpec?.lengths) ? widthHandleFor(layer) : null}
+              {selected && movable(layer.id) && (!locked || board.ctaSpec?.lengths) ? widthHandleFor(layer) : null}
+              {selected && movable(layer.id) && !board.ctaSpec ? heightHandleFor(layer) : null}
             </div>
           );
         }
@@ -532,6 +686,11 @@ export function SceneArtboard({
               : character;
           })
           : chars.join("");
+        const rowStyle = (row: number) => ({
+          fontSize: (layer.lineFontPx![row] ?? layer.fontPx ?? 0) * k,
+          lineHeight: layer.lineHeightPx?.[row] !== undefined ? `${layer.lineHeightPx[row]! * k}px` : "inherit",
+          ...(layer.lineLetterSpacing ? { letterSpacing: (layer.lineLetterSpacing[row] ?? 0) * k } : {}),
+        });
         const lines: Array<{ start: number; chars: string[] }> = [];
         if (layer.lineFontPx) {
           let start = 0;
@@ -568,7 +727,7 @@ export function SceneArtboard({
           >
             {layer.lineFontPx
               ? lines.map((line, row) => (
-                <div key={row} style={{ fontSize: (layer.lineFontPx![row] ?? layer.fontPx ?? 0) * k, lineHeight: "inherit" }}>
+                <div key={row} style={rowStyle(row)}>
                   {line.chars.length ? strokeChars(line.chars, line.start) : "\u200b"}
                 </div>
               ))
@@ -585,7 +744,7 @@ export function SceneArtboard({
             <FrozenEditable label={`编辑${layer.name}`} api={editApi}>
               {layer.lineFontPx
                 ? lines.map((line, row) => (
-                  <div key={row} style={{ fontSize: (layer.lineFontPx![row] ?? layer.fontPx ?? 0) * k, lineHeight: "inherit" }}>
+                  <div key={row} style={rowStyle(row)}>
                     {line.chars.length ? renderChars(line.chars, line.start) : "\u200b"}
                   </div>
                 ))
@@ -610,7 +769,7 @@ export function SceneArtboard({
           >
             {layer.lineFontPx
               ? lines.map((line, row) => (
-                <div key={row} style={{ fontSize: (layer.lineFontPx![row] ?? layer.fontPx ?? 0) * k, lineHeight: "inherit" }}>
+                <div key={row} style={rowStyle(row)}>
                   {line.chars.length ? renderChars(line.chars, line.start) : "\u200b"}
                 </div>
               ))
@@ -625,10 +784,10 @@ export function SceneArtboard({
           data-scene-layer
           className="pointer-events-none absolute outline outline-1 outline-dashed outline-[var(--color-brand-line)]"
           style={{
-            left: output.group.box.x * k - 3,
-            top: output.group.box.y * k - 3,
-            width: output.group.box.w * k + 6,
-            height: output.group.box.h * k + 6,
+            left: output.group.frame.x * k - 3,
+            top: output.group.frame.y * k - 3,
+            width: output.group.frame.w * k + 6,
+            height: output.group.frame.h * k + 6,
           }}
         >
           <span
@@ -636,13 +795,22 @@ export function SceneArtboard({
             onPointerMove={move}
             onPointerUp={end}
             onPointerCancel={end}
-            className="pointer-events-auto absolute -top-4 left-0 cursor-move rounded-[3px] bg-[#111317] px-1 text-[8px] leading-[14px] text-[var(--app-text-2)]"
+            className={cn("pointer-events-auto absolute -top-4 left-0 rounded-[3px] bg-[#111317] px-1 text-[8px] leading-[14px] text-[var(--app-text-2)]", !fixedLayout && "cursor-move")}
           >
             标题组
           </span>
-          {selectedId === SCENE_GROUP_ID ? <span className="pointer-events-auto">{handleFor(SCENE_GROUP_ID)}</span> : null}
+          {selectedId === SCENE_GROUP_ID && !fixedLayout ? <span className="pointer-events-auto">{handleFor(SCENE_GROUP_ID)}</span> : null}
         </div>
       ) : null}
+
+      {selectionBox && interactive ? (
+        <div
+          className="pointer-events-none absolute outline outline-1 outline-dashed outline-[var(--app-text-3)]"
+          style={{ left: selectionBox.x * k - 4, top: selectionBox.y * k - 4, width: selectionBox.w * k + 8, height: selectionBox.h * k + 8 }}
+        />
+      ) : null}
+      {snapLines?.x !== undefined ? <div className="pointer-events-none absolute inset-y-0 w-px bg-[#ff4d94]" style={{ left: snapLines.x * k }} /> : null}
+      {snapLines?.y !== undefined ? <div className="pointer-events-none absolute inset-x-0 h-px bg-[#ff4d94]" style={{ top: snapLines.y * k }} /> : null}
 
       {guides && board.zones?.length ? board.zones.map((zone, index) => (
         <div

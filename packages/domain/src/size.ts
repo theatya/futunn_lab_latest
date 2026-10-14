@@ -3,7 +3,7 @@
  * 具体数据在 `@futu/specs`（会持续录入），这里只定形状。
  */
 
-export type SizeChannel = "inapp" | "web" | "external" | "native" | "custom" | "paid" | "kol" | "partner" | "owned";
+export type SizeChannel = "inapp" | "web" | "external" | "offline" | "native" | "custom" | "paid" | "kol" | "partner" | "owned";
 
 /** 规范标注区，真实 px，相对画板左上角。reserved = 不放内容的保留区；safe = 内容必须落在框内。 */
 export interface SizeZone {
@@ -55,10 +55,17 @@ export interface SizeLayout {
   cta?: SizeAnchor | { afterSubtitle: number };
   /** 主视觉锚点；scale 是相对版式族默认大小的倍数。 */
   visual?: { x: number; y: number; scale?: number };
+  /** Logo 锚点；没给时 Logo 跟随标题组。 */
+  logo?: SizeAnchor;
   /** 只出主视觉的资源位：主视觉居中铺满画板。 */
   visualFill?: boolean;
   /** 示例稿节点，便于回查。 */
   source: string;
+  /**
+   * 首选版式，不锁：锚点只当默认值，族里的位置、对齐照常生效（特殊情况用户手动改居中等）。
+   * 首选版式相同对齐的资源位按画幅族合成一组统一铺，如「横版族 · 左对齐」。
+   */
+  soft?: boolean;
 }
 
 export interface SizeItem {
@@ -76,7 +83,11 @@ export interface SizeItem {
   linked?: SizeLinked;
   /** 规范要求不出现的元素 */
   hide?: SizeHideRole[];
+  /** 规范要求必须出现的元素：默认显示，仍可手动关掉 */
+  show?: SizeHideRole[];
   layout?: SizeLayout;
+  /** 指定版式族，不按宽高比推算（如 300×250 按示例稿归方版族）。 */
+  family?: "strip" | "landscape" | "square" | "portrait";
   /** 选择资源位时跟在命名后的小字备注。 */
   hint?: string;
   /** 两侧会延展成纯色底：左右各留这么宽（px）的过渡，渐变到画板底色。 */
@@ -117,6 +128,8 @@ export interface SizeSpec {
     gapX: number;
     /** 宽度在上下限内可选短/中/长（如弹窗按钮 480–680） */
     lengths?: { short: number; medium: number; long: number };
+    /** 不锁死：解除锁定后高度、字号、宽度都可按比例调整 */
+    soft?: boolean;
   };
   /** 主标题最多几行 */
   maxTitleLines?: number;

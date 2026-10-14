@@ -46,8 +46,8 @@ export const SPECS: Record<string, SizeSpec> = {
   "a-ipo": spec("新股页_新股中心banner", { height: 70, fontPx: 32, paddingX: 30, minWidth: 220, maxWidth: 220, anchor: "left", gapX: 70 }),
   "a-feed": spec("牛牛圈tab_牛牛圈feed", { height: 90, fontPx: 38, paddingX: 40, minWidth: 270, maxWidth: 270, anchor: "left", gapX: 70 }),
   "a-class": spec("课堂banner", { height: 50, fontPx: 26, paddingX: 15, minWidth: 150, maxWidth: 150, anchor: "left", gapX: 40 }),
-  "a-fb": spec("消息推送_活动FB分享图", { height: 88, fontPx: 42, paddingX: 30, minWidth: 280, maxWidth: 280, anchor: "left", gapX: 40 }),
-  "a-desk": spec("新桌面端-底部广告位（18674:179742，示例稿按 1/3 绘制）", { height: 70, fontPx: 32, paddingX: 45, minWidth: 220, maxWidth: 360, anchor: "left", gapX: 72 }, { todo: ["CTA 最大宽度规范未注明，暂按 360"] }),
+  "a-fb": spec("消息推送_活动FB分享图", { height: 88, fontPx: 38, paddingX: 30, minWidth: 280, maxWidth: 280, anchor: "left", gapX: 40 }),
+  "a-desk": spec("新桌面端-底部广告位（18674:179742，示例稿按 1/3 绘制）", { height: 70, fontPx: 32, paddingX: 45, minWidth: 220, maxWidth: 360, anchor: "left", gapX: 72, soft: true }, { todo: ["CTA 最大宽度规范未注明，暂按 360"] }),
   "a-popup": spec("全局_弹窗", {
     height: 120,
     fontPx: 48,
@@ -59,3 +59,27 @@ export const SPECS: Record<string, SizeSpec> = {
     lengths: { short: 480, medium: 580, long: 680 },
   }),
 };
+
+/** 按另一个资源位的 CTA 规范等比换算，字号保留一位小数。 */
+const scaled = (cta: Cta, k: number, gapX: number): Cta => {
+  const px = (value: number) => Math.round(value * k * 10) / 10;
+  return { ...cta, height: px(cta.height), fontPx: px(cta.fontPx), paddingX: px(cta.paddingX), minWidth: px(cta.minWidth), maxWidth: px(cta.maxWidth), gapX };
+};
+
+/** 官网扁条有 CTA 版按 1080×225 等比换算。 */
+for (const [id, w, gapX, source] of [
+  ["w-top-h5", 375, 16, "官网顶部banner-H5"],
+  ["w-iframe-h5", 342, 8, "H5轮播图"],
+  ["w-mid-ipad", 864, 19, "官网首页固定中缝位-iPad"],
+  ["w-ops", 1180, 26, "官网通用运营广告位-Web"],
+] as const) {
+  SPECS[id] = spec(`${source}（按 1080×225 有 CTA 规范等比换算）`, scaled(STRIP, w / 1080, gapX), { maxTitleLines: 3 });
+}
+
+/** 官网中缝位 H5 与牛牛圈 feed 比例一致，规范等比缩小。 */
+SPECS["w-mid-h5"] = spec("官网首页固定中缝位-H5（按牛牛圈 feed 1080×540 等比缩小）", scaled(SPECS["a-feed"]!.cta!, 327 / 1080, 21));
+
+/** 官网弹窗 / 侧边栏同为 810×1110，用户确认先复用站内全局弹窗规范。 */
+for (const id of ["w-popup", "w-side"]) {
+  SPECS[id] = { ...SPECS["a-popup"]!, source: "广告设计规范 / 全局_弹窗（官网弹窗、侧边栏复用）" };
+}

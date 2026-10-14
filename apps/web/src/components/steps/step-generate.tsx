@@ -199,7 +199,7 @@ export function StepGenerate() {
           <Button variant="workflow" size="lg" icon={busy ? undefined : <WorkflowSparkle />} disabled={busy || boards === 0 || hasBlockingIssues} onClick={run}>
             {busy ? (
               <><Loader2 size={14} className="animate-spin" />等待写入 {boards} 块…</>
-            ) : hasBlockingIssues ? "存在阻塞项，暂不可写入" : `写入 Figma · ${boards} 块画板`}
+            ) : hasBlockingIssues ? "存在阻塞项，暂不可写入" : "写入 Figma"}
           </Button>
         </div>
       </Band>

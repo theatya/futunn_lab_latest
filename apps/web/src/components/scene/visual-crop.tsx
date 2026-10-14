@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { SceneBox } from "@futu/domain";
 
 const MAX_W = 264;
@@ -33,12 +33,20 @@ export function VisualCrop({
   onChange: (next: SceneBox) => void;
 }) {
   const drag = useRef<Drag | null>(null);
+  const stage = useRef<HTMLDivElement>(null);
   /** 舞台同时容纳整张主视觉和取景框（画板比主视觉宽时框会伸出图外），单位为画板像素。 */
-  const minX = Math.min(box.x, 0);
-  const minY = Math.min(box.y, 0);
-  const spanW = Math.max(box.x + box.w, board.w) - minX;
-  const spanH = Math.max(box.y + box.h, board.h) - minY;
-  const k = Math.min(MAX_W / spanW, MAX_H / spanH);
+  const live = (() => {
+    const minX = Math.min(box.x, 0);
+    const minY = Math.min(box.y, 0);
+    const spanW = Math.max(box.x + box.w, board.w) - minX;
+    const spanH = Math.max(box.y + box.h, board.h) - minY;
+    return { minX, minY, spanW, spanH, k: Math.min(MAX_W / spanW, MAX_H / spanH) };
+  })();
+  /** 拖框移动期间舞台钉在主视觉上不重排，图不动、取景框跟住指针。 */
+  const [frozen, setFrozen] = useState<{ offX: number; offY: number; spanW: number; spanH: number; k: number } | null>(null);
+  const { minX, minY, spanW, spanH, k } = frozen
+    ? { minX: box.x + frozen.offX, minY: box.y + frozen.offY, spanW: frozen.spanW, spanH: frozen.spanH, k: frozen.k }
+    : live;
   const width = box.w * k;
   const height = box.h * k;
   const image = { left: (box.x - minX) * k, top: (box.y - minY) * k, width, height };
@@ -47,7 +55,10 @@ export function VisualCrop({
   const begin = (event: ReactPointerEvent<HTMLElement>, kind: Drag["kind"], sign = 1) => {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { kind, sign, startX: event.clientX, startY: event.clientY, box, k };
+    /** 页面整体可能被缩放，指针位移按舞台在屏幕上的实际宽度换算。 */
+    const shown = stage.current?.getBoundingClientRect().width;
+    drag.current = { kind, sign, startX: event.clientX, startY: event.clientY, box, k: shown ? shown / spanW : k };
+    if (kind === "move") setFrozen({ offX: minX - box.x, offY: minY - box.y, spanW, spanH, k });
   };
   const move = (event: ReactPointerEvent<HTMLElement>) => {
     const state = drag.current;
@@ -70,12 +81,13 @@ export function VisualCrop({
   };
   const end = (event: ReactPointerEvent<HTMLElement>) => {
     drag.current = null;
+    setFrozen(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
   return (
     <div className="grid place-items-center rounded-[4px] bg-[#0b0c0e] p-2">
-      <div className="relative overflow-hidden" style={{ width: spanW * k, height: spanH * k }}>
+      <div ref={stage} className="relative overflow-hidden" style={{ width: spanW * k, height: spanH * k }}>
         <div className="pointer-events-none absolute" style={image}>
           {kvUrl ? (
             <img src={kvUrl} alt="" draggable={false} className="block size-full select-none" />

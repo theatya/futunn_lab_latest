@@ -28,6 +28,79 @@ const textLeft = (x: number, y: number, w: number, h: number, source: string, ex
 });
 /** 1080×225 无 CTA：文案左对齐，左侧留 70。 */
 const STRIP_LEFT = textLeft(70, 112, 1080, 225, "37153:33347");
+/**
+ * 首选左对齐、不锁死的资源位（规范只写了无按钮、文案＋主视觉，没定死坐标）：
+ * 同画幅族里首选对齐相同的统一铺成一组，特殊情况由用户在族里手动改居中。
+ */
+const preferLeft = (x: number, y: number, w: number, h: number, source: string): SizeLayout => ({ ...textLeft(x, y, w, h, source), soft: true });
+/**
+ * 带 CTA 的标准通栏（以 1080×225 为准）：主视觉在左、CTA 在右，标题组首选居中于两者之间（x 284–796），不锁。
+ */
+const stripCenter = (h: number, w = 1080): SizeLayout => ({ group: { x: Math.round(w / 2), y: Math.round(h / 2), align: "center" }, source: "1080×225 有 CTA 标准版式", soft: true });
+/**
+ * 官网扁条（375×78、342×71、864×216）分有 / 无 CTA 两版：
+ * 有 CTA 按 1080×225 有 CTA 版式等比换算（标题居中、CTA 靠右），无 CTA 按 1080×270 版式等比换算（左对齐、左侧 40）。
+ */
+const stripPair = (base: Pick<SizeItem, "id" | "w" | "h" | "use">, gap: number, ctaGap: number, extra: { zones?: SizeZone[]; notes?: string[]; ctaNotes?: string[] } = {}): SizeItem[] => {
+  const { id, w, h, use } = base;
+  const zones = extra.zones ?? [];
+  return [
+    { id, w, h, use, variant: "有 CTA", layout: { ...stripCenter(h, w), source: "按 1080×225 有 CTA 版式等比换算" }, zones: [...zones, R(w - ctaGap, 0, ctaGap, h, `右侧 ${ctaGap}`)], notes: ["按 1080×225 有 CTA 规范等比换算", ...(extra.notes ?? []), ...(extra.ctaNotes ?? [])] },
+    { id: `${id}-b`, w, h, use, variant: "无 CTA", hide: ["cta"], layout: preferLeft(gap, Math.round(h / 2), w, h, "按 1080×270 无 CTA 版式等比换算"), zones: [...zones, left(gap, h)], notes: ["按 1080×270 无 CTA 规范等比换算", ...(extra.notes ?? [])] },
+  ];
+};
+/**
+ * Partnership 首次排版的参考值，取自《广告设计规范--训练版--AI语料》Partnership-V2版 549:8503。
+ * 只当默认值（soft），CTA 和文案都能自由挪；示例稿里没有 CTA 的尺寸 CTA 按版式族默认。
+ * 250×250 / 300×250 / 336×280 / 640×480 示例稿都是居中排，归方版族。
+ */
+const PARTNER_SOURCE = "Partnership-V2版 549:8503（参考值，不锁）";
+const partner = (group: [number, number, "left" | "center"], cta?: [number, number, "left" | "center" | "right"], extra: Pick<SizeItem, "family"> & Pick<SizeLayout, "visual"> = {}): Pick<SizeItem, "layout" | "family"> => {
+  const { family, visual } = extra;
+  return {
+    ...(family ? { family } : {}),
+    layout: {
+      group: { x: group[0], y: group[1], align: group[2] },
+      ...(cta ? { cta: { x: cta[0], y: cta[1], align: cta[2] } } : {}),
+      ...(visual ? { visual } : {}),
+      source: PARTNER_SOURCE,
+      soft: true,
+    },
+  };
+};
+const PARTNER_LAYOUT: Record<string, Pick<SizeItem, "layout" | "family">> = {
+  "600x400": partner([30, 166, "left"], [349, 279, "left"]),
+  "250x250": partner([125, 137, "center"], undefined, { family: "square" }),
+  "300x50": partner([11, 25, "left"], [289, 28, "right"]),
+  "300x250": partner([150, 153, "center"], undefined, { family: "square" }),
+  "300x300": partner([150, 164, "center"]),
+  "300x600": partner([150, 150, "center"], [158, 507, "center"]),
+  "320x50": partner([14, 25, "left"], [308, 29, "right"]),
+  "320x480": partner([160, 103, "center"], [160, 413, "center"]),
+  "336x280": partner([168, 174, "center"], undefined, { family: "square" }),
+  "480x320": partner([19, 134, "left"], [264, 217, "left"]),
+  "640x480": partner([320, 129, "center"], [320, 405, "center"], { family: "square" }),
+  "728x90": partner([30, 45, "left"], [700, 53, "right"]),
+  "768x1024": partner([384, 205, "center"], [384, 880, "center"]),
+  "970x250": partner([39, 125, "left"], undefined, { visual: { x: 757, y: 172 } }),
+  "1080x1920": partner([540, 508, "center"], [540, 1637, "center"]),
+  "1200x627": partner([52, 221, "left"], [55, 426, "left"]),
+  "1920x1080": partner([94, 388, "left"], [91, 721, "left"]),
+  "600x160": partner([18, 87, "left"], undefined, { visual: { x: 468, y: 110 } }),
+};
+/** 牛牛圈 feed 1080×540 示例稿；官网中缝位 H5 327×164 同比例，等比缩小复用。 */
+const FEED_LAYOUT = textLeft(70, 196, 1080, 540, "230:4246", { cta: { x: 70, y: 385, align: "left" } });
+/** 全局弹窗示例稿 37169:53677：标题组与按钮居中，官网弹窗 / 侧边栏同尺寸复用。 */
+const POPUP_LAYOUT: SizeLayout = { group: { x: 405, y: 212, align: "center" }, cta: { x: 405, y: 990, align: "center" }, source: "37169:53677" };
+/** 把示例稿锚点按画板宽高等比换算到另一个尺寸。 */
+const scaleLayout = (layout: SizeLayout, fromW: number, fromH: number, w: number, h: number): SizeLayout => {
+  const at = <T extends { x: number; y: number }>(anchor: T): T => ({ ...anchor, x: Math.round((anchor.x / fromW) * w), y: Math.round((anchor.y / fromH) * h) });
+  return {
+    ...layout,
+    ...(layout.group ? { group: at(layout.group) } : {}),
+    ...(layout.cta && !("afterSubtitle" in layout.cta) ? { cta: at(layout.cta) } : {}),
+  };
+};
 /** 纯背景图：文案由系统输出，素材只出主视觉。 */
 const BG_ONLY: SizeHideRole[] = ["cta", "logo", "badge", "kicker", "title", "subtitle", "custom", "disclaimer"];
 /** 示例稿只有「视觉」：不放文字，主视觉铺满画板。 */
@@ -64,19 +137,17 @@ const INAPP_PAGE_OF: Record<string, string> = {
   "a-desk": "桌面端",
   "a-sim": "模拟交易", "a-sim-live": "模拟交易", "a-sim-past": "模拟交易",
 };
-const WEB_SECTIONS = ["全市场首页", "吸底CTA组件", "悬浮球", "弹窗", "iframe", "平台侧边栏", "平台顶部Banner", "榜单配图", "首页二屏轮播位", "页中运营广告位", "首页固定中缝位", "其他"];
+const WEB_SECTIONS = ["全市场首页", "弹窗", "iframe", "平台侧边栏", "平台顶部Banner", "榜单配图", "首页二屏轮播位", "页中运营广告位", "首页固定中缝位", "其他"];
 const WEB_SECTION_OF: Record<string, string> = {
   "w-pc-hero": "全市场首页", "w-h5-hero": "全市场首页",
-  "w-sticky": "吸底CTA组件", "w-sticky-h5": "吸底CTA组件",
-  "w-ball": "悬浮球",
   "w-iframe": "弹窗", "w-iframe-r": "弹窗",
-  "w-iframe-h5": "iframe",
+  "w-iframe-h5": "iframe", "w-iframe-h5-b": "iframe",
   "w-popup": "平台侧边栏", "w-side": "平台侧边栏",
-  "w-top": "平台顶部Banner", "w-top-h5": "平台顶部Banner",
+  "w-top": "平台顶部Banner", "w-top-h5": "平台顶部Banner", "w-top-h5-b": "平台顶部Banner",
   "w-rank": "榜单配图",
   "w-second": "首页二屏轮播位", "w-whatnew": "首页二屏轮播位",
-  "w-ops": "页中运营广告位", "w-ops-h5": "页中运营广告位",
-  "w-mid": "首页固定中缝位", "w-mid-h5": "首页固定中缝位", "w-mid-ipad": "首页固定中缝位",};
+  "w-ops": "页中运营广告位", "w-ops-b": "页中运营广告位", "w-ops-h5": "页中运营广告位",
+  "w-mid": "首页固定中缝位", "w-mid-h5": "首页固定中缝位", "w-mid-ipad": "首页固定中缝位", "w-mid-ipad-b": "首页固定中缝位",};
 const subsOf = (names: string[]) => names.map((name) => ({ id: name, name }));
 const withSub = (map: Record<string, string>, fallback: string) => (item: SizeItem): SizeItem => ({ ...item, sub: map[item.id] ?? fallback });
 
@@ -87,22 +158,22 @@ export const SIZE_GROUPS: SizeGroup[] = [
     note: "按 Figma 各页面资源位录入",
     subs: subsOf(INAPP_PAGES),
     items: ([
-      { id: "a-acct", w: 1080, h: 225, use: "账户tab_交易tab banner", zones: STRIP_CTA, notes: ["CTA 200×80 位置固定，字号 30"] },
-      { id: "a-wm-new", ...visualOnly("理财tab-1080*1374"), w: 1080, h: 1374, use: "理财tab_理财首页顶部新客banner" },
-      { id: "a-wm-new-s", w: 1080, h: 225, use: "理财tab_理财首页顶部新客banner", zones: STRIP_CTA, notes: ["规范同账户tab_banner 1080×225"] },
+      { id: "a-acct", layout: stripCenter(225), w: 1080, h: 225, use: "账户tab_交易tab banner", zones: STRIP_CTA, notes: ["CTA 200×80 位置固定，字号 30"] },
+      { id: "a-wm-new", layout: { ...scaleLayout(POPUP_LAYOUT, 810, 1110, 1080, 1374), source: "理财tab-1080*1374（按全局弹窗版式换算）", soft: true }, w: 1080, h: 1374, use: "理财tab_理财首页顶部新客banner", notes: ["规范只画了视觉主要内容，文案自由排：首选与弹窗统一居中（不锁）"] },
+      { id: "a-wm-new-s", layout: stripCenter(225), w: 1080, h: 225, use: "理财tab_理财首页顶部新客banner", zones: STRIP_CTA, notes: ["规范同账户tab_banner 1080×225"] },
       { id: "a-fund", layout: textLeft(70, 143, 1080, 432, "768:15717", { titlePx: 72, cta: { x: 70, y: 317, align: "left" } }), w: 1080, h: 432, use: "理财tab_基金组合页banner", zones: [left(70, 432)], notes: ["CTA 220×80 宽高固定，字号 32"] },
-      { id: "a-fund-s", w: 1080, h: 225, use: "理财tab_基金组合页banner", zones: STRIP_CTA },
+      { id: "a-fund-s", layout: stripCenter(225), w: 1080, h: 225, use: "理财tab_基金组合页banner", zones: STRIP_CTA },
       { id: "a-news", hide: ["cta"], layout: textLeft(40, 132, 1080, 270, "1705:14838"), w: 1080, h: 270, use: "资讯tab_资讯要闻头图", zones: [left(40, 270)] },
       { id: "a-news-ad", ...visualOnly("资讯tab_广告小图-400*300"), w: 400, h: 300, use: "资讯tab_广告小图", zones: [S(0, 25, 400, 250, "安全区域，上下会裁切")] },
-      { id: "a-news-foot", w: 1080, h: 225, use: "资讯tab_资讯详情底部", zones: [left(70, 225), ...STRIP_CTA] },
-      { id: "a-feed", layout: textLeft(70, 196, 1080, 540, "230:4246", { cta: { x: 70, y: 385, align: "left" } }), w: 1080, h: 540, use: "牛牛圈tab_牛牛圈feed", zones: [left(70, 540)], notes: ["CTA 270×90 宽高固定，字号 38"] },
+      { id: "a-news-foot", layout: stripCenter(225), w: 1080, h: 225, use: "资讯tab_资讯详情底部", zones: [left(70, 225), ...STRIP_CTA] },
+      { id: "a-feed", layout: FEED_LAYOUT, w: 1080, h: 540, use: "牛牛圈tab_牛牛圈feed", zones: [left(70, 540)], notes: ["CTA 270×90 宽高固定，字号 38"] },
       { id: "a-live", hide: ["cta"], layout: textLeft(44, 261, 1080, 608, "794:15766", { titlePx: 68 }), w: 1080, h: 608, use: "牛牛圈tab_直播顶部轮播banner", zones: [left(44, 608), R(1040, 0, 40, 608, "右侧 40")], notes: ["文字左对齐，人物放右侧，期数与栏目名右上角，无按钮"] },
       { id: "a-replay", hide: ["cta"], layout: textLeft(44, 362, 1280, 720, "796:15896", { titlePx: 73 }), w: 1280, h: 720, use: "牛牛圈tab_直播回放banner", zones: [left(44, 720), R(1240, 0, 40, 720, "右侧 40")], notes: ["文字左对齐，人物放右侧，期数与栏目名右上角，无按钮"] },
-      { id: "a-topic", w: 1080, h: 225, use: "牛牛圈tab_热点话题详情banner", variant: "有 CTA", zones: STRIP_CTA },
+      { id: "a-topic", layout: stripCenter(225), w: 1080, h: 225, use: "牛牛圈tab_热点话题详情banner", variant: "有 CTA", zones: STRIP_CTA },
       { id: "a-topic-b", hide: ["cta"], layout: STRIP_LEFT, w: 1080, h: 225, use: "牛牛圈tab_热点话题详情banner", variant: "无 CTA", zones: [left(70, 225)] },
       { id: "a-topic-bg", ...visualOnly("牛牛圈社区话题背景"), w: 2048, h: 1040, use: "牛牛圈社区话题背景", notes: ["纯背景图"] },
-      { id: "a-popup", layout: { group: { x: 405, y: 212, align: "center" }, cta: { x: 405, y: 990, align: "center" }, source: "37169:53677" }, w: 810, h: 1110, use: "全局_弹窗", zones: [left(24, 1110), R(786, 0, 24, 1110, "右侧 24")], notes: ["按钮高 120 固定，长度 480–680，距底 60"] },
-      { id: "a-search", w: 1080, h: 288, use: "全局_搜索tab", variant: "有 CTA", zones: [R(1056, 0, 24, 288, "右侧 24"), R(856, 0, 224, 104, "CTA 上方 104")], notes: ["CTA 200×80 位置固定，字号 33（最小 30）"] },
+      { id: "a-popup", layout: POPUP_LAYOUT, w: 810, h: 1110, use: "全局_弹窗", zones: [left(24, 1110), R(786, 0, 24, 1110, "右侧 24")], notes: ["按钮高 120 固定，长度 480–680，距底 60"] },
+      { id: "a-search", layout: stripCenter(288), w: 1080, h: 288, use: "全局_搜索tab", variant: "有 CTA", zones: [R(1056, 0, 24, 288, "右侧 24"), R(856, 0, 224, 104, "CTA 上方 104")], notes: ["CTA 200×80 位置固定，字号 33（最小 30）"] },
       { id: "a-search-b", hide: ["cta"], layout: textLeft(70, 142, 1080, 288, "1689:14301"), w: 1080, h: 288, use: "全局_搜索tab", variant: "无 CTA", zones: [left(70, 288)], notes: ["特殊运营banner，文案左侧留 70"] },
       { id: SPLASH_MASTER, hide: ["cta"], w: 2000, h: 2400, use: "闪屏 2000*2400", hint: "仅需要输出这一张", zones: [S(480, 200, 1040, 1806, "绝对安全区域"), R(480, 2006, 1040, 394, "系统按钮区")], notes: ["系统自带行动按钮，素材不要按钮", "不输出底部富途牛牛 logo"] },
       splash("a-splash-1242", "手机端闪屏 1242x2688", 1242, 2688, { bar: 389, logo: B(389, 2365, 463, 180), skip: B(1003, 197, 205, 86), control: B(231, 1971, 780, 194) }, B(123, 192, 996, 1730)),
@@ -113,34 +184,43 @@ export const SIZE_GROUPS: SizeGroup[] = [
       splash("a-splash-834", "平板端闪屏 iPad Pro 11\" 834*1194", 834, 1194, { bar: 130, logo: B(342, 1096, 150, 58), control: B(237, 920, 360, 84) }, B(187, 89, 461, 801)),
       splash("a-splash-1024", "平板端闪屏 iPad Pro 12.9\" 1024*1366", 1024, 1366, { bar: 130, logo: B(437, 1268, 150, 58), control: B(354, 1085, 360, 84) }, B(244, 103, 536, 930)),
       splash("a-splash-960", "平板端闪屏 Surface Pro 8 960*1440", 960, 1440, { bar: 130, logo: B(405, 1342, 150, 58), control: B(312, 1154, 360, 84) }, B(196, 108, 568, 987)),
-      { id: "a-vip", w: 1080, h: 225, use: "会员页_会员打新专区banner", variant: "有 CTA", zones: STRIP_CTA },
+      { id: "a-vip", layout: stripCenter(225), w: 1080, h: 225, use: "会员页_会员打新专区banner", variant: "有 CTA", zones: STRIP_CTA },
       { id: "a-vip-b", hide: ["cta"], layout: STRIP_LEFT, w: 1080, h: 225, use: "会员页_会员打新专区banner", variant: "无 CTA", zones: [left(70, 225)] },
       { id: "a-class", layout: textLeft(40, 132, 1080, 270, "1705:14982", { cta: { afterSubtitle: 18 } }), w: 1080, h: 270, use: "课堂banner", zones: [left(40, 270)], notes: ["CTA 150×50，字号 26 / 24，跟随文案"] },
       { id: "a-disc-ad", ...visualOnly("发现tab_广告小图-400*300"), w: 400, h: 300, use: "发现tab_广告小图" },
       { id: "a-center", hide: ["cta", "logo"], layout: textLeft(50, 190, 1080, 432, "407:6208", { titlePx: 70 }), w: 1080, h: 432, use: "我的tab_活动中心", zones: [left(48, 432), R(1050, 0, 30, 432, "右侧 30"), R(0, 350, 1080, 82, "底部信息条")], notes: ["不要按钮，不要 logo"] },
-      { id: "a-mine", w: 1080, h: 225, use: "我的tab_banner", zones: STRIP_CTA, notes: ["CTA 200×80 位置固定，字号 30"] },
+      { id: "a-mine", layout: stripCenter(225), w: 1080, h: 225, use: "我的tab_banner", zones: STRIP_CTA, notes: ["CTA 200×80 位置固定，字号 30"] },
       { id: "a-ipo", w: 1080, h: 432, use: "新股页_新股中心banner", zones: [left(70, 432)], notes: ["CTA 220×70 宽高固定，字号 32"] },
-      { id: "a-ipo-stock", w: 1080, h: 225, use: "新股页_新股个股banner", zones: STRIP_CTA },
-      { id: "a-ipo-done", w: 1080, h: 225, use: "新股页_新股申购完成页", variant: "有 CTA", zones: STRIP_CTA },
+      { id: "a-ipo-stock", layout: stripCenter(225), w: 1080, h: 225, use: "新股页_新股个股banner", zones: STRIP_CTA },
+      { id: "a-ipo-done", layout: stripCenter(225), w: 1080, h: 225, use: "新股页_新股申购完成页", variant: "有 CTA", zones: STRIP_CTA },
       { id: "a-ipo-done-b", hide: ["cta"], layout: STRIP_LEFT, w: 1080, h: 225, use: "新股页_新股申购完成页", variant: "无 CTA", zones: [left(70, 225)] },
-      { id: "a-watch", w: 1080, h: 225, use: "自选页_个股banner", zones: STRIP_CTA },
-      { id: "a-box", w: 1080, h: 675, use: "宝箱详情页banner", zones: [left(60, 675), R(1020, 0, 60, 675, "右侧 60"), R(0, 0, 1080, 128, "顶部 128")], notes: ["需要适配黑白肤"] },
+      { id: "a-watch", layout: stripCenter(225), w: 1080, h: 225, use: "自选页_个股banner", zones: STRIP_CTA },
+      { id: "a-box", layout: preferLeft(60, 401, 1080, 675, "宝箱详情页banner"), hide: ["cta"], w: 1080, h: 675, use: "宝箱详情页banner", zones: [left(60, 675), R(1020, 0, 60, 675, "右侧 60"), R(0, 0, 1080, 128, "顶部 128")], notes: ["需要适配黑白肤", "无 CTA，首选左对齐（不锁），文案纵向位置按顶部 128 以下安全区居中推算"] },
       { id: "a-box-icon", ...visualOnly("宝箱详情页icon-252*252"), w: 252, h: 252, use: "宝箱详情页icon", notes: ["满版出图"] },
       { id: "a-push", ...visualOnly("消息推送_push-200*200"), w: 200, h: 200, use: "消息推送_push" },
-      { id: "a-edm", hide: ["cta"], layout: textLeft(70, 232, 1200, 500, "37112:35592", { titlePx: 78 }), w: 1200, h: 500, use: "消息推送_edm", zones: [left(70, 500)], notes: ["不需要按钮"] },
-      { id: "a-fb", w: 1200, h: 630, use: "消息推送_活动FB分享图", zones: [left(40, 630), R(0, 0, 231, 60, "市场 Logo")], notes: ["CTA 280×88，字号 42 / 38；需附带 logo 与按钮"] },
+      { id: "a-edm", hide: ["cta"], show: ["logo"], layout: textLeft(70, 232, 1200, 500, "37112:35592", { titlePx: 78 }), w: 1200, h: 500, use: "消息推送_edm", zones: [left(70, 500)], notes: ["不需要按钮", "需要带市场 Logo；Logo 位置规范未注明，跟随标题组"] },
+      {
+        id: "a-fb",
+        show: ["logo"],
+        layout: textLeft(40, 290, 1200, 630, "消息推送_活动FB分享图（按示例稿推算）", { cta: { x: 40, y: 460, align: "left" }, logo: { x: 40, y: 30, align: "left" } }),
+        w: 1200,
+        h: 630,
+        use: "消息推送_活动FB分享图",
+        zones: [left(40, 630)],
+        notes: ["CTA 280×88，字号 42 / 38；需附带不同市场 Logo（左上角）与按钮", "标题组、按钮与 Logo 的纵向位置按示例稿推算"],
+      },
       {
         id: "a-desk",
-        layout: textLeft(69, 132, 1080, 360, "18674:179742", { titlePx: 60, cta: { x: 72, y: 260, align: "left" } }),
+        layout: { ...textLeft(69, 132, 1080, 360, "18674:179742", { titlePx: 60, cta: { x: 72, y: 260, align: "left" } }), soft: true },
         w: 1080,
         h: 360,
         use: "新桌面端底部广告位",
-        zones: [R(972, 36, 72, 72, "关闭按钮"), R(0, 42, 39, 273, "左翻页"), R(1041, 42, 39, 273, "右翻页"), R(486, 324, 108, 12, "指示器")],
-        notes: ["示例稿按 1/3 绘制（360×120），CTA 约 220×70，字号 32"],
+        zones: [R(0, 42, 39, 273, "左翻页"), R(1041, 42, 39, 273, "右翻页")],
+        notes: ["示例稿按 1/3 绘制（360×120），CTA 约 220×70，字号 32", "排版自由，单独一组；CTA 可解除锁定调整比例"],
       },
-      { id: "a-sim", w: 1080, h: 360, use: "模拟交易首页" },
-      { id: "a-sim-live", w: 1080, h: 225, use: "模拟交易比赛进行中" },
-      { id: "a-sim-past", w: 1080, h: 225, use: "模拟交易历史比赛" },
+      { id: "a-sim", layout: preferLeft(70, 180, 1080, 360, "模拟交易首页"), hide: ["cta"], w: 1080, h: 360, use: "模拟交易首页", notes: ["无按钮，首选左对齐（不锁），左边距沿用站内通栏 70"] },
+      { id: "a-sim-live", layout: preferLeft(70, 112, 1080, 225, "模拟交易比赛进行中"), hide: ["cta"], w: 1080, h: 225, use: "模拟交易比赛进行中", notes: ["无按钮，首选左对齐（不锁），左边距沿用站内通栏 70"] },
+      { id: "a-sim-past", layout: preferLeft(70, 112, 1080, 225, "模拟交易历史比赛"), hide: ["cta"], w: 1080, h: 225, use: "模拟交易历史比赛", notes: ["无按钮，首选左对齐（不锁），左边距沿用站内通栏 70"] },
     ] as SizeItem[]).map(withSub(INAPP_PAGE_OF, "闪屏")),
   },
   {
@@ -154,24 +234,29 @@ export const SIZE_GROUPS: SizeGroup[] = [
       { id: "w-kv", w: 420, h: 170, use: "官网活动页主KVbanner" },
       { id: "w-cover", w: 800, h: 400, use: "官网活动页封面banner" },
       { id: "w-top", edgeFade: 48, w: 1000, h: 160, use: "官网顶部banner-Web", zones: [S(16, 16, 968, 128, "安全范围 16")], notes: ["两侧展示不全时需提供背景单色色值"] },
-      { id: "w-top-h5", w: 375, h: 78, use: "官网顶部banner-H5" },
-      { id: "w-popup", w: 810, h: 1110, use: "官网弹窗" },
-      { id: "w-side", w: 810, h: 1110, use: "官网侧边栏" },
+      ...stripPair({ id: "w-top-h5", w: 375, h: 78, use: "官网顶部banner-H5" }, 16, 16, { zones: [S(16, 16, 343, 46, "安全范围 16")], notes: ["保留 16px 安全范围"] }),
+      { id: "w-popup", layout: POPUP_LAYOUT, w: 810, h: 1110, use: "官网弹窗", zones: [left(24, 1110), R(786, 0, 24, 1110, "右侧 24")], notes: ["复用站内全局弹窗规范：居中，按钮高 120，长度 480–680，距底 60"] },
+      { id: "w-side", layout: POPUP_LAYOUT, w: 810, h: 1110, use: "官网侧边栏", zones: [left(24, 1110), R(786, 0, 24, 1110, "右侧 24")], notes: ["复用站内全局弹窗规范：居中，按钮高 120，长度 480–680，距底 60"] },
       { id: "w-whatnew", w: 440, h: 440, use: "PC首页What New模块" },
       { id: "w-nav", w: 580, h: 326, use: "官网导航栏" },
       { id: "w-iframe", hide: ["cta"], w: 492, h: 560, use: "iframe", notes: ["不要 CTA"] },
-      { id: "w-iframe-h5", w: 342, h: 71, use: "H5轮播图" },
-      { id: "w-ops", w: 1180, h: 295, use: "官网通用运营广告位-Web" },
+      ...stripPair({ id: "w-iframe-h5", w: 342, h: 71, use: "H5轮播图" }, 13, 8),
+      ...stripPair({ id: "w-ops", w: 1180, h: 295, use: "官网通用运营广告位-Web" }, 44, 26, { ctaNotes: ["CTA 位置可自由挪动"] }),
       { id: "w-ops-h5", w: 654, h: 327, use: "官网通用运营广告位-H5" },
       { id: "w-mid", w: 1400, h: 160, use: "官网首页固定中缝位-Web", notes: ["png 透明，按钮位置固定"] },
-      { id: "w-mid-h5", w: 327, h: 164, use: "官网首页固定中缝位-H5", notes: ["png 透明，按钮位置固定"] },
-      { id: "w-mid-ipad", w: 864, h: 216, use: "官网首页固定中缝位-iPad", notes: ["按钮直接做在图里"] },
+      {
+        id: "w-mid-h5",
+        layout: { ...scaleLayout(FEED_LAYOUT, 1080, 540, 327, 164), source: "与牛牛圈 feed 1080×540 同比例，按其规范等比缩小" },
+        w: 327,
+        h: 164,
+        use: "官网首页固定中缝位-H5",
+        zones: [left(21, 164)],
+        notes: ["与牛牛圈 feed 1080×540 比例一致，规范一致，等比缩小", "png 透明，按钮位置固定"],
+      },
+      ...stripPair({ id: "w-mid-ipad", w: 864, h: 216, use: "官网首页固定中缝位-iPad" }, 32, 19, { notes: ["适用于 1024 iPad 画板"], ctaNotes: ["按钮直接做在图里"] }),
       { id: "w-second", hide: ["cta"], w: 440, h: 440, use: "首页二屏轮播位", notes: ["不需要按钮"] },
       { id: "w-iframe-r", w: 888, h: 760, use: "iframe右侧" },
       { id: "w-rank", w: 500, h: 250, use: "榜单配图banner" },
-      { id: "w-ball", w: 120, h: 90, use: "官网悬浮球" },
-      { id: "w-sticky", w: 600, h: 120, use: "吸底CTA-PC", zones: [left(20, 120), R(580, 0, 20, 120, "右侧 20")], notes: ["png 无底色，文案 ≤ 24 字符"] },
-      { id: "w-sticky-h5", w: 375, h: 80, use: "吸底CTA-H5", zones: [left(20, 80), R(355, 0, 20, 80, "右侧 20")], notes: ["png 无底色，文案 ≤ 24 字符"] },
     ] as SizeItem[]).map(withSub(WEB_SECTION_OF, "其他")),
   },
   {
@@ -183,8 +268,6 @@ export const SIZE_GROUPS: SizeGroup[] = [
       { id: "kol", name: "KOL/社媒" },
       { id: "partner", name: "Partnership" },
       { id: "ads", name: "广告投放" },
-      { id: "standee", name: "实体店线下立牌" },
-      { id: "led", name: "实体店LED轮播图" },
     ],
     items: [
       ...([[1200, 628], [1200, 1500], [1080, 1080], [1242, 2688], [1024, 500], [1080, 1920]] as const).map(([w, h]) => ({ id: `e-paid-${w}x${h}`, w, h, use: "Paid Ads", sub: "paid" })),
@@ -192,8 +275,19 @@ export const SIZE_GROUPS: SizeGroup[] = [
       { id: "e-kol-ig-post", w: 1080, h: 1350, use: "Instagram post (4:5)", sub: "kol" },
       { id: "e-kol-ig-story", w: 1080, h: 1920, use: "Instagram story (9:16)", sub: "kol" },
       { id: "e-kol-yt-li", w: 1200, h: 626, use: "Youtube & LinkedIn", sub: "kol" },
-      ...([[600, 400], [250, 250], [300, 50], [300, 250], [300, 300], [300, 600], [320, 50], [320, 480], [336, 280], [480, 320], [640, 480], [728, 90], [768, 1024], [970, 250], [1080, 1920], [1200, 627], [1920, 1080], [600, 160]] as const).map(([w, h]) => ({ id: `e-partner-${w}x${h}`, w, h, use: "Partnership", sub: "partner" })),
+      ...([[600, 400], [250, 250], [300, 50], [300, 250], [300, 300], [300, 600], [320, 50], [320, 480], [336, 280], [480, 320], [640, 480], [728, 90], [768, 1024], [970, 250], [1080, 1920], [1200, 627], [1920, 1080], [600, 160]] as const).map(([w, h]): SizeItem => ({ id: `e-partner-${w}x${h}`, w, h, use: "Partnership", sub: "partner", ...PARTNER_LAYOUT[`${w}x${h}`] })),
       ...([[1200, 628], [1080, 1080], [1200, 1500], [1080, 1920]] as const).map(([w, h]) => ({ id: `e-ads-${w}x${h}`, w, h, use: "广告投放banner", sub: "ads" })),
+    ],
+  },
+  {
+    id: "offline",
+    name: "线下",
+    note: "实体店线下物料",
+    subs: [
+      { id: "standee", name: "实体店线下立牌" },
+      { id: "led", name: "实体店LED轮播图" },
+    ],
+    items: [
       { id: "e-standee-1920x1080", w: 1920, h: 1080, use: "线下立牌banner", sub: "standee" },
       { id: "e-standee-1080x1920", w: 1080, h: 1920, use: "线下立牌banner", sub: "standee" },
       { id: "e-standee-a1", w: 1740, h: 2441, use: "线下立牌banner-A1", sub: "standee", zones: [S(89, 90, 1563, 2261, "安全范围 22mm"), S(20, 20, 1701, 2401, "出血 3mm")], notes: ["注意安全范围，预留出血 Bleed 3mm"] },

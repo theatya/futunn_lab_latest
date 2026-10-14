@@ -13,6 +13,13 @@ import type { NativeState } from "./native";
 import type { SizeAnchor, SizeLayout } from "./size";
 
 export type SceneFamily = "strip" | "landscape" | "square" | "portrait";
+/**
+ * 第三步的编辑分组，族里的调整、文案与预设都按它存：自由排版的画板就是画幅族；
+ * 站内/官网特殊规范按规范模板分组（`族@spec:模板`），闪屏母版单独一组（`族@splash`），
+ * 其余有规范或首选对齐的按「画幅族 × 对齐」分组（`族@align:left`）。
+ * 默认位置、字号系数仍按 @ 前的画幅族取。
+ */
+export type SceneBucket = string;
 export type SceneRole = "visual" | "logo" | "badge" | "kicker" | "title" | "subtitle" | "custom" | "disclaimer" | "cta";
 export type SceneAlign = "left" | "center" | "right";
 /** 与标题组外框对齐：none 时按自身锚点摆放。 */
@@ -38,7 +45,34 @@ export interface ScenePlacement {
   font?: number;
   /** CTA 预设长度，只用于无广告规范的画板；文案放不下时仍按文案加宽。 */
   length?: SceneCtaLength;
+  /** 编入标题组：位置跟标题组外框走，比例为相对标题组整体比例的倍数。 */
+  attach?: SceneAttach;
+  /** 标题组：族里选的对齐方式覆盖规范对齐（外框仍按规范锚点定位）。 */
+  overSpec?: boolean;
+  /** 规范锚点指向的外框边；与 align 不同时，按它定外框、按 align 排各行。 */
+  edge?: SceneAlign;
+  /** 标题组：从上到下的层序（含编入组的图层），缺省按 上方图层→小标题→主标题→副标题→下方图层。 */
+  order?: string[];
+  /**
+   * 相对锚点的纵向偏移：标题组上单位为画板单位长度 × 整体比例（显示/隐藏成员时保持顶边不动、规范画板上在族里挪位置都记在这里），
+   * 其它图层的偏移在代表画板有规范位置时记下，同组画板都按它挪，单位为画板单位长度。单板覆盖了 y 时不生效。
+   */
+  shift?: number;
+  /** 相对锚点的横向偏移，规则同 shift。 */
+  shiftX?: number;
 }
+
+/** 编入标题组的图层相对标题组的位置，单位为画板单位长度 × 标题组整体比例，跟标题组一起缩放。 */
+export interface SceneAttach {
+  /** 上方/下方的图层排进标题组的层序：在主标题上方时 dy 为与下一层的间距，下方时为与上一层的间距；并排时为与标题组的中心差。 */
+  v: "above" | "below" | "beside";
+  dy: number;
+  /** 按自身对齐方式量的左/中/右边差。 */
+  dx: number;
+}
+
+/** 可编入标题组的图层。 */
+export const SCENE_ATTACH_ROLES: readonly SceneRole[] = ["logo", "badge", "disclaimer", "custom"];
 
 export type SceneCtaLength = "short" | "medium" | "long";
 
@@ -91,6 +125,8 @@ export interface SceneState {
   /** 旧版两色自定义高亮，没有 customGradient 时据此换算。 */
   customHighlight: [string, string];
   customGradient?: SceneCustomGradient;
+  /** 自定义纯色高亮（高亮预设 id 为 custom-solid）。 */
+  customSolid?: string;
   logoPreset: LibraryLogoPreset;
   ctaPreset: CtaPresetId | "custom";
   ctaCustom?: SceneCtaCustom;
@@ -101,28 +137,358 @@ export interface SceneState {
   copyStructure?: SceneCopyStructure;
   /** 元素字体覆盖，只能取 SCENE_FONTS 里的公司规范字体。 */
   fonts?: Record<string, Partial<Record<SceneFontScript, string>>>;
+  /** 按语言独立的整层字体选择；日语不复用历史 CJK 通用字体。 */
+  languageFonts?: Partial<Record<Lang, Record<string, string>>>;
   /** 第三步已「保存预设」的布局族，全部保存后才进入批量生成。 */
-  savedFamilies?: SceneFamily[];
+  savedFamilies?: SceneBucket[];
+  /** 按基础语言分别记录已保存的版式族；旧 savedFamilies 仅作兼容回退。 */
+  savedFamiliesByLanguage?: Partial<Record<Lang, SceneBucket[]>>;
   /** 选中的训练版式（去掉语言与对齐后的版式键，如「标题组｜小标题＋主标题两行」）。 */
   copyVariant?: string;
   /** 逐行字号比例，第 1 行为 1；取自训练集「主标题断行」的行比例。 */
   lineRatios?: Record<string, number[]>;
   /** 按版式族单独设置的逐行字号比例，优先于 lineRatios。 */
-  familyLineRatios?: Partial<Record<SceneFamily, Record<string, number[]>>>;
+  familyLineRatios?: Partial<Record<SceneBucket, Record<string, number[]>>>;
   badgeStyle?: SceneBadgeStyle;
   badgeLength?: SceneBadgeLength;
   /** 字间距，按元素 id 存，单位为字号的比例（0.05 = 5%）。 */
   tracking?: Record<string, number>;
+  /** 行间距（行高），按元素 id 存，单位为字号的倍数，缺省 SCENE_LINE_HEIGHT。 */
+  leading?: Record<string, number>;
+  /** 换行后第 2 行起单独设的行高 / 字间距，按元素 id、行号存，单位为该行字号的倍数；缺省跟整体。 */
+  lineLeading?: Record<string, Record<number, number>>;
+  lineTracking?: Record<string, Record<number, number>>;
   /** 用户解除了站内规范对 CTA 字号的锁定（宽高仍按规范）。 */
   ctaFontUnlocked?: boolean;
   /** 用户自定义版本（如「英文版2」「英文无 Logo 版」），基于某个语种，单独保存改过的文案、高亮与显隐。 */
   versions?: SceneVersion[];
   /** 用户记录的文案版式方案，可套用到任意版式族。 */
   layoutSchemes?: SceneLayoutScheme[];
+  /** 某个语言 / 自定义版本里隐藏的共享标题组方案 id；不删除来源方案。 */
+  hiddenLayoutSchemes?: Record<string, string[]>;
+  /** 基础语言的图层显隐隔离：语言 → 版式族或画板 key → 图层 id。 */
+  languageVisibility?: Partial<Record<Lang, Record<string, Record<string, boolean>>>>;
+  /** 基础语言各自的版式参数；标题组方案、位置、比例等不跨语言串改。 */
+  languageFamilyEdits?: Partial<Record<Lang, Partial<Record<SceneBucket, Record<string, ScenePlacementPatch>>>>>;
+  /** 基础语言各自的单板精调参数。 */
+  languageBoardOverrides?: Partial<Record<Lang, Record<string, Record<string, ScenePlacementPatch>>>>;
+  /** 锁定的基础语言；锁定后该语言及其自定义版本不可编辑。 */
+  lockedLanguages?: Lang[];
+  /** 批量生成时跳过的基础语言；语言及内容仍完整保留、可继续编辑。 */
+  hiddenLanguages?: Lang[];
   /** 局部字体：框选的字符区间换字体，按元素、语种存。 */
   fontRuns?: Record<string, Partial<Record<Lang, SceneFontRun[]>>>;
   /** 仿原生资源位的模板、ICON / 配图与各语种文案；不参与主视觉延展。 */
   native?: NativeState;
+  /** 各版式族单独改过的文案、显隐与 Logo 样式，盖在通用内容上。 */
+  familyContent?: Partial<Record<SceneBucket, SceneFamilyContent>>;
+}
+
+/** 版式族自己的内容：只存与通用内容不同的部分。 */
+export interface SceneFamilyContent {
+  texts?: Record<string, Partial<Record<Lang, string>>>;
+  highlights?: Record<string, Partial<Record<Lang, SceneHighlight[]>>>;
+  fontRuns?: Record<string, Partial<Record<Lang, SceneFontRun[]>>>;
+  visibility?: Record<string, boolean>;
+  logoPreset?: LibraryLogoPreset;
+  copyKind?: SceneCopyKind;
+  copyStructure?: SceneCopyStructure;
+  copyVariant?: string;
+  /** 只出现在视图里：该族内容已经叠过，再取视图时原样返回 */
+  viewed?: true;
+}
+
+type LangMap<T> = Record<string, Partial<Record<Lang, T>>>;
+
+function overlayLangMap<T>(base: LangMap<T> | undefined, top: LangMap<T> | undefined): LangMap<T> | undefined {
+  if (!top) return base;
+  const next = { ...base };
+  for (const [id, langs] of Object.entries(top)) next[id] = { ...next[id], ...langs };
+  return next;
+}
+
+/** 某个版式族看到的场景：通用内容叠上该族单独改过的文案、高亮、局部字体、显隐与 Logo 样式。 */
+export function sceneFamilyView(scene: SceneState, family: SceneBucket, show?: readonly SceneRole[]): SceneState {
+  const own = scene.familyContent?.[family];
+  if (own?.viewed || (!own && !show?.length)) return scene;
+  const elements = scene.elements.map((el) => {
+    const texts = own?.texts?.[el.id];
+    const visible = own?.visibility?.[el.id] ?? (show?.includes(el.role) && !el.visible ? true : undefined);
+    if (!texts && visible === undefined) return el;
+    return { ...el, ...(texts ? { texts: { ...el.texts, ...texts } } : {}), ...(visible !== undefined ? { visible } : {}) };
+  });
+  /** 已叠上的这一族内容在视图里换成标记，视图再取一次视图时不会把视图里的改动盖回去。 */
+  const familyContent = { ...scene.familyContent, [family]: { viewed: true as const } };
+  if (!own) return { ...scene, familyContent, elements };
+  const fontRuns = overlayLangMap(scene.fontRuns, own.fontRuns);
+  return {
+    ...scene,
+    familyContent,
+    elements,
+    highlights: overlayLangMap(scene.highlights, own.highlights) ?? {},
+    ...(fontRuns ? { fontRuns } : {}),
+    ...(own.logoPreset ? { logoPreset: own.logoPreset } : {}),
+    ...(own.copyKind ? { copyKind: own.copyKind } : {}),
+    ...(own.copyStructure ? { copyStructure: own.copyStructure } : {}),
+    ...(own.copyVariant ? { copyVariant: own.copyVariant } : {}),
+  };
+}
+
+/** 编辑器与批量生成共用：按语言、版式族、单板精调解析最终场景。 */
+export function sceneLanguageBoardView(scene: SceneState, lang: Lang, board: SceneBoardRef, show?: readonly SceneRole[]): SceneState {
+  const family = sceneBucketOf(board);
+  /** 旧共享显隐只归简体；其它语言从角色默认显隐开始。 */
+  let raw = scene;
+  if (lang !== "sc") {
+    const familyContent = { ...scene.familyContent };
+    const own = familyContent[family];
+    if (own?.visibility) {
+      const { visibility: _visibility, ...rest } = own;
+      if (Object.keys(rest).length) familyContent[family] = rest;
+      else delete familyContent[family];
+    }
+    raw = {
+      ...scene,
+      familyContent,
+      elements: scene.elements.map((el) => {
+        const fallback = el.role === "custom" || el.role === "badge" || el.role === "disclaimer"
+          ? false
+          : sceneDefaultElement(el.role, 0).visible;
+        return { ...el, visible: fallback };
+      }),
+    };
+  }
+  const familyEdit = raw.languageFamilyEdits?.[lang]?.[family];
+  const boardEdit = raw.languageBoardOverrides?.[lang]?.[board.key];
+  const laid = sceneFamilyView({
+    ...raw,
+    familyEdits: familyEdit ? { ...raw.familyEdits, [family]: familyEdit } : raw.familyEdits,
+    boardOverrides: boardEdit ? { ...raw.boardOverrides, [board.key]: boardEdit } : raw.boardOverrides,
+  }, family, show);
+  const applyVisibility = (current: SceneState, scope: string) => {
+    const visibility = current.languageVisibility?.[lang]?.[scope];
+    if (!visibility) return current;
+    return {
+      ...current,
+      elements: current.elements.map((el) => {
+        const value = visibility[el.id];
+        return value === undefined ? el : { ...el, visible: value };
+      }),
+    };
+  };
+  return applyVisibility(applyVisibility(applyVisibility(laid, "*"), family), `board:${board.key}`);
+}
+
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+function langDiff<T>(next: LangMap<T> | undefined, base: LangMap<T> | undefined, empty: T): LangMap<T> | undefined {
+  const out: LangMap<T> = {};
+  for (const id of new Set([...Object.keys(next ?? {}), ...Object.keys(base ?? {})])) {
+    for (const lang of new Set([...Object.keys(next?.[id] ?? {}), ...Object.keys(base?.[id] ?? {})]) as Set<Lang>) {
+      const value = next?.[id]?.[lang] ?? empty;
+      if (!sameJson(value, base?.[id]?.[lang] ?? empty)) out[id] = { ...out[id], [lang]: value };
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * 把在某个版式族视图里改出的结果写回：文案、高亮、局部字体、显隐、Logo 样式与版式选择只记到该族，
+ * 新增的图层只在该族显示，删除只从该族移除；其余（位置、颜色、方案等）照常写入。
+ */
+export function sceneCommitFamily(raw: SceneState, family: SceneBucket, next: SceneState, show?: readonly SceneRole[]): SceneState {
+  const nextById = new Map(next.elements.map((el) => [el.id, el]));
+  const rawIds = new Set(raw.elements.map((el) => el.id));
+  const texts: LangMap<string> = {};
+  const visibility: Record<string, boolean> = {};
+  const removed = new Set<string>();
+  const elements: SceneElement[] = [];
+  for (const base of raw.elements) {
+    const el = nextById.get(base.id);
+    if (!el) {
+      removed.add(base.id);
+      visibility[base.id] = false;
+      elements.push(base);
+      continue;
+    }
+    elements.push(el.name === base.name ? base : { ...base, name: el.name });
+    const diff: Partial<Record<Lang, string>> = {};
+    for (const lang of new Set([...Object.keys(el.texts), ...Object.keys(base.texts)]) as Set<Lang>) {
+      const value = el.texts[lang];
+      if (value !== undefined && value !== base.texts[lang]) diff[lang] = value;
+    }
+    if (Object.keys(diff).length) texts[base.id] = diff;
+    if (el.visible !== (base.visible || Boolean(show?.includes(base.role)))) visibility[base.id] = el.visible;
+  }
+  /** 图层顺序跟视图走（越靠后越在上层）；视图里删掉的层留在原位置。 */
+  const rank = new Map(next.elements.map((el, index) => [el.id, index]));
+  const layered = elements.filter((el) => !removed.has(el.id)).sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+  raw.elements.forEach((base, index) => {
+    if (removed.has(base.id)) layered.splice(Math.min(index, layered.length), 0, elements[index]!);
+  });
+  elements.splice(0, elements.length, ...layered);
+  for (const el of next.elements) {
+    if (rawIds.has(el.id)) continue;
+    elements.push({ ...el, visible: false });
+    if (el.visible) visibility[el.id] = true;
+  }
+  const own: SceneFamilyContent = {};
+  if (Object.keys(texts).length) own.texts = texts;
+  if (Object.keys(visibility).length) own.visibility = visibility;
+  const highlights = langDiff<SceneHighlight[]>(next.highlights, raw.highlights, []);
+  if (highlights) own.highlights = highlights;
+  const fontRuns = langDiff<SceneFontRun[]>(next.fontRuns, raw.fontRuns, []);
+  if (fontRuns) own.fontRuns = fontRuns;
+  if (next.logoPreset !== raw.logoPreset) own.logoPreset = next.logoPreset;
+  if (next.copyKind && next.copyKind !== raw.copyKind) own.copyKind = next.copyKind;
+  if (next.copyStructure && next.copyStructure !== raw.copyStructure) own.copyStructure = next.copyStructure;
+  if (next.copyVariant && next.copyVariant !== raw.copyVariant) own.copyVariant = next.copyVariant;
+  const familyContent = { ...raw.familyContent };
+  if (Object.keys(own).length) familyContent[family] = own;
+  else delete familyContent[family];
+  /** 自定义文字在所有版式族都删掉了才真正删除。 */
+  const buckets = [...new Set([...SCENE_FAMILIES, ...Object.keys(familyContent)])];
+  const shownSomewhere = (el: SceneElement) => buckets.some((item) => familyContent[item]?.visibility?.[el.id] ?? el.visible);
+  const kept = elements.filter((el) => !(removed.has(el.id) && el.role === "custom" && !shownSomewhere(el)));
+  const result: SceneState = {
+    ...next,
+    elements: kept,
+    highlights: raw.highlights,
+    logoPreset: raw.logoPreset,
+    familyContent,
+  };
+  if (raw.fontRuns) result.fontRuns = raw.fontRuns;
+  else delete result.fontRuns;
+  for (const key of ["copyKind", "copyStructure", "copyVariant"] as const) {
+    if (raw[key] === undefined) delete result[key];
+    else (result as unknown as Record<string, unknown>)[key] = raw[key];
+  }
+  if (kept.length !== elements.length) {
+    for (const item of Object.keys(familyContent)) {
+      const entry = familyContent[item];
+      if (!entry?.visibility) continue;
+      const map = Object.fromEntries(Object.entries(entry.visibility).filter(([id]) => kept.some((el) => el.id === id)));
+      familyContent[item] = { ...entry, visibility: map };
+    }
+  }
+  return result;
+}
+
+/** 该图层的文案（含高亮、局部字体）在这个版式族是否单独改过。 */
+export function sceneFamilyCopyEdited(scene: SceneState, family: SceneBucket, id: string) {
+  const own = scene.familyContent?.[family];
+  return Boolean(own?.texts?.[id] || own?.highlights?.[id] || own?.fontRuns?.[id]);
+}
+
+function withoutCopy(own: SceneFamilyContent | undefined, id: string): SceneFamilyContent | undefined {
+  if (!own) return own;
+  const next: SceneFamilyContent = { ...own };
+  for (const key of ["texts", "highlights", "fontRuns"] as const) {
+    const map = next[key];
+    if (!map?.[id]) continue;
+    const rest = { ...map };
+    delete rest[id];
+    if (Object.keys(rest).length) (next as Record<string, unknown>)[key] = rest;
+    else delete next[key];
+  }
+  return Object.keys(next).length ? next : undefined;
+}
+
+function setFamilyContent(scene: SceneState, recipe: (family: SceneBucket, own: SceneFamilyContent | undefined) => SceneFamilyContent | undefined): SceneState {
+  const familyContent: Partial<Record<SceneBucket, SceneFamilyContent>> = {};
+  for (const family of Object.keys(scene.familyContent ?? {})) {
+    const own = recipe(family, scene.familyContent?.[family]);
+    if (own) familyContent[family] = own;
+  }
+  return { ...scene, familyContent };
+}
+
+/** 该族改过的文案恢复成通用文案。 */
+export function sceneResetFamilyCopy(scene: SceneState, family: SceneBucket, id: string): SceneState {
+  return setFamilyContent(scene, (item, own) => item === family ? withoutCopy(own, id) : own);
+}
+
+/** 把该族这一层的文案（全部语种，含高亮、局部字体）设为通用文案，其它版式族的单独修改一并清掉。 */
+export function sceneSyncCopyToAll(scene: SceneState, family: SceneBucket, id: string): SceneState {
+  const view = sceneFamilyView(scene, family);
+  const el = view.elements.find((item) => item.id === id);
+  if (!el) return scene;
+  const synced: SceneState = {
+    ...scene,
+    elements: scene.elements.map((item) => item.id === id ? { ...item, texts: el.texts } : item),
+    highlights: { ...scene.highlights, [id]: view.highlights[id] ?? {} },
+    ...(view.fontRuns?.[id] ? { fontRuns: { ...scene.fontRuns, [id]: view.fontRuns[id]! } } : {}),
+  };
+  return setFamilyContent(synced, (_, own) => withoutCopy(own, id));
+}
+
+/**
+ * 把当前语言视图里的全部内容设成所有版式族的共同内容。
+ * 只同步内容与模块显隐；familyEdits / boardOverrides 等排版数据完全不动。
+ */
+export function sceneSyncLanguageContentToAll(scene: SceneState, source: SceneState, lang: Lang): SceneState {
+  const sourceById = new Map(source.elements.map((el) => [el.id, el]));
+  const rawIds = new Set(scene.elements.map((el) => el.id));
+  const elements = scene.elements.map((el) => {
+    const from = sourceById.get(el.id);
+    const text = from?.texts[lang];
+    return text === undefined ? el : { ...el, texts: { ...el.texts, [lang]: text } };
+  });
+  for (const el of source.elements) {
+    if (rawIds.has(el.id)) continue;
+    elements.push({ ...el, visible: false, texts: { [lang]: el.texts[lang] ?? "" } });
+  }
+  const highlights = { ...scene.highlights };
+  const fontRuns = { ...scene.fontRuns };
+  for (const el of source.elements) {
+    highlights[el.id] = { ...highlights[el.id], [lang]: source.highlights[el.id]?.[lang] ?? [] };
+    const runs = source.fontRuns?.[el.id]?.[lang];
+    if (runs) fontRuns[el.id] = { ...fontRuns[el.id], [lang]: runs };
+    else if (fontRuns[el.id]?.[lang]) {
+      const rest = { ...fontRuns[el.id] };
+      delete rest[lang];
+      if (Object.keys(rest).length) fontRuns[el.id] = rest;
+      else delete fontRuns[el.id];
+    }
+  }
+  const familyContent: SceneState["familyContent"] = {};
+  for (const [key, own] of Object.entries(scene.familyContent ?? {})) {
+    const next: SceneFamilyContent = { ...own };
+    for (const field of ["texts", "highlights", "fontRuns"] as const) {
+      const map = next[field];
+      if (!map) continue;
+      const cleaned = Object.fromEntries(Object.entries(map).flatMap(([id, langs]) => {
+        const rest = { ...langs };
+        delete rest[lang];
+        return Object.keys(rest).length ? [[id, rest]] : [];
+      }));
+      if (Object.keys(cleaned).length) (next as Record<string, unknown>)[field] = cleaned;
+      else delete next[field];
+    }
+    delete next.logoPreset;
+    delete next.copyKind;
+    delete next.copyStructure;
+    delete next.copyVariant;
+    if (Object.keys(next).length) familyContent[key] = next;
+  }
+  const ownVisibility = Object.fromEntries(source.elements.map((el) => [el.id, el.visible]));
+  const languageScopes = Object.fromEntries(Object.entries(scene.languageVisibility?.[lang] ?? {}).filter(([key]) => key.startsWith("board:")));
+  languageScopes["*"] = ownVisibility;
+  return {
+    ...scene,
+    elements,
+    highlights,
+    ...(Object.keys(fontRuns).length ? { fontRuns } : {}),
+    familyContent,
+    logoPreset: source.logoPreset,
+    copyKind: source.copyKind,
+    copyStructure: source.copyStructure,
+    copyVariant: source.copyVariant,
+    languageVisibility: {
+      ...scene.languageVisibility,
+      [lang]: languageScopes,
+    },
+  };
 }
 
 /**
@@ -132,27 +498,37 @@ export interface SceneState {
 export interface SceneLayoutScheme {
   id: string;
   name: string;
+  /** 创建方案时的语言，仅用于记录来源；同一项目内所有语言都可套用。 */
+  lang?: Lang;
+  /** 来源视图：基础语言用语言 id，自定义版本用版本 id。 */
+  sourceKey?: string;
+  sourceLabel?: string;
   /** 记录时所在的版式族与代表画幅，用于缩略图。 */
   family: SceneFamily;
   board: SceneBoardRef;
-  group: Pick<ScenePlacement, "x" | "y" | "align" | "scale"> & { gap?: number };
+  group: Pick<ScenePlacement, "x" | "y" | "align" | "scale"> & { gap?: number; order?: string[] };
   members: Record<string, { scale: number; gap?: number }>;
   lineRatios: Record<string, number[]>;
-  /** 多选时一并记录的其它图层（如 Logo），位置存为相对标题组的偏移。 */
+  /** 编入标题组（或多选）一并记录的图层，如 Logo；套用时编入目标版式族的标题组。 */
   extras?: Record<string, SceneSchemeExtra>;
 }
 
 export interface SceneSchemeExtra {
   name: string;
+  role?: SceneRole;
+  /** 目标里已没有这个图层时，用它重建。 */
+  texts?: Partial<Record<Lang, string>>;
+  logoPreset?: LibraryLogoPreset;
+  attach?: SceneAttach;
   align: SceneAlign;
+  /** 有 attach 时为相对标题组整体比例的倍数；旧格式为图层自身比例。 */
   scale: number;
-  follow?: SceneFollow;
   w?: number;
-  /** 与标题组外框的上下关系：上方/下方存两框之间的空隙，并排存中心差。 */
-  v: "above" | "below" | "beside";
-  /** 单位都是标题组外框高度，换版式族时跟标题组一起缩放。dx 为按自身对齐方式量的左/中/右边差。 */
-  dy: number;
-  dx: number;
+  /** 旧格式：相对位置以标题组外框高度为单位。 */
+  follow?: SceneFollow;
+  v?: "above" | "below" | "beside";
+  dy?: number;
+  dx?: number;
 }
 
 export interface SceneFontRun {
@@ -161,74 +537,204 @@ export interface SceneFontRun {
   font: string;
 }
 
-/** 只叠加族默认值与族调整，不含单板覆盖。 */
-function familyGroup(scene: SceneState, family: SceneFamily) {
-  const [x, y, align] = GROUP_POS[family];
-  const shown = (role: SceneRole) => family === "strip" && scene.elements.some((el) => el.role === role && el.visible);
-  return { x, y: shown("logo") ? 0.6 : shown("badge") ? 0.58 : y, scale: 1, align, ...scene.familyEdits[family]?.[SCENE_GROUP_ID] };
-}
-
 const edgeX = (box: SceneBox, align: SceneAlign) => align === "left" ? box.x : align === "center" ? box.x + box.w / 2 : box.x + box.w;
 
-/** 记录多选的非标题组图层：比例、对齐、跟随，以及外框相对标题组外框的位置。 */
-export function captureSceneSchemeExtras(scene: SceneState, board: SceneBoardRef, lang: Lang, ids: string[]): Record<string, SceneSchemeExtra> {
+/** 某个版式族里编入标题组的图层。 */
+export function sceneAttachedIds(scene: SceneState, family: SceneBucket) {
+  return scene.elements.filter((el) => SCENE_ATTACH_ROLES.includes(el.role) && scene.familyEdits[family]?.[el.id]?.attach).map((el) => el.id);
+}
+
+function attachBetween(group: SceneBox, box: SceneBox, align: SceneAlign, unit: number): SceneAttach {
+  const v = box.y + box.h <= group.y ? "above" : box.y >= group.y + group.h ? "below" : "beside";
+  const dy = v === "above" ? group.y - (box.y + box.h) : v === "below" ? box.y - (group.y + group.h) : (box.y + box.h / 2) - (group.y + group.h / 2);
+  return { v, dy: round(dy / unit, 4), dx: round((edgeX(box, align) - edgeX(group, align)) / unit, 4) };
+}
+
+/** 按当前画面（或拖到的新位置）算出图层编入标题组的参数。 */
+export function sceneAttachOf(
+  scene: SceneState,
+  board: SceneBoardRef,
+  lang: Lang,
+  id: string,
+  at?: Partial<Pick<ScenePlacement, "x" | "y" | "align">>,
+): { attach: SceneAttach; align: SceneAlign; scale: number } | null {
   const layout = layoutScene(scene, board, lang);
   const group = layout.group?.box;
-  if (!group || group.h <= 0) return {};
-  const extras: Record<string, SceneSchemeExtra> = {};
+  const laid = layout.laid.find((item) => item.el.id === id);
+  if (!group || group.h <= 0 || !laid || !SCENE_ATTACH_ROLES.includes(laid.el.role)) return null;
+  const placement = at ? { ...laid.placement, ...at } : laid.placement;
+  const box = at ? sceneBox(scene, board, laid.el, placement, laid.metrics) : laid.box;
+  const groupScale = resolveSceneGroup(scene, board).scale;
+  return { attach: attachBetween(group, box, placement.align, unitOf(board) * groupScale), align: placement.align, scale: round(laid.placement.scale / groupScale, 2) };
+}
+
+/** 层序里的主标题位置（没有主标题时取第一层文字），在它上方的编入图层记为上方。 */
+function groupPivot(roles: SceneRole[]) {
+  const title = roles.indexOf("title");
+  return title >= 0 ? title : roles.findIndex((role) => isSceneGroupRole(role));
+}
+
+/** 编组：把图层按当前位置编入该版式族的标题组，插进层序，与相邻层的间距保持画面上的样子。 */
+export function sceneAttachToGroup(scene: SceneState, family: SceneBucket, board: SceneBoardRef, lang: Lang, ids: string[]): SceneState {
+  const layout = layoutScene(scene, board, lang);
+  if (!layout.group) return scene;
+  const unit = unitOf(board) * resolveSceneGroup(scene, board).scale;
+  const target = { ...scene.familyEdits[family] };
+  const list = layout.group.stackIds.flatMap((id) => layout.laid.filter((item) => item.el.id === id));
+  const fresh: string[] = [];
   for (const id of ids) {
+    const found = sceneAttachOf(scene, board, lang, id);
     const laid = layout.laid.find((item) => item.el.id === id);
-    if (!laid || isSceneGroupRole(laid.el.role) || laid.el.role === "visual") continue;
-    const { box, placement } = laid;
-    const v = box.y + box.h <= group.y ? "above" : box.y >= group.y + group.h ? "below" : "beside";
-    const dy = v === "above" ? group.y - (box.y + box.h) : v === "below" ? box.y - (group.y + group.h) : (box.y + box.h / 2) - (group.y + group.h / 2);
-    extras[id] = {
-      name: laid.el.name,
-      align: placement.align,
-      scale: placement.scale,
-      ...(placement.follow ? { follow: placement.follow } : {}),
-      ...(placement.w !== undefined ? { w: placement.w } : {}),
-      v,
-      dy: round(dy / group.h, 4),
-      dx: round((edgeX(box, placement.align) - edgeX(group, placement.align)) / group.h, 4),
+    if (!found || !laid) continue;
+    const { x: _x, y: _y, follow: _follow, ...rest } = target[id] ?? {};
+    target[id] = roundScenePatch({ ...rest, ...found });
+    if (found.attach.v === "beside") continue;
+    const center = laid.box.y + laid.box.h / 2;
+    const at = list.findIndex((item) => item.box.y + item.box.h / 2 > center);
+    list.splice(at < 0 ? list.length : at, 0, laid);
+    fresh.push(id);
+  }
+  if (!fresh.length) return { ...scene, familyEdits: { ...scene.familyEdits, [family]: target } };
+  const pivot = groupPivot(list.map((item) => item.el.role));
+  const align = layout.group.align;
+  for (const id of fresh) {
+    const index = list.findIndex((item) => item.el.id === id);
+    const item = list[index]!;
+    const above = index < pivot;
+    const neighbor = list[above ? index + 1 : index - 1];
+    const space = neighbor ? (above ? neighbor.box.y - (item.box.y + item.box.h) : item.box.y - (neighbor.box.y + neighbor.box.h)) : 0;
+    const dx = (edgeX(item.box, align) - edgeX(layout.group.box, align)) / unit;
+    target[id] = roundScenePatch({ ...target[id], align, attach: { ...target[id]!.attach!, v: above ? "above" : "below", dy: Math.max(0, space) / unit, dx: round(dx, 4) } });
+  }
+  const shown = list.map((item) => item.el.id);
+  const order = sceneGroupOrder({ ...scene, familyEdits: { ...scene.familyEdits, [family]: target } }, family).filter((id) => !fresh.includes(id));
+  shown.forEach((id, index) => {
+    if (!fresh.includes(id)) return;
+    const before = shown.slice(0, index).reverse().find((item) => order.includes(item));
+    order.splice(before ? order.indexOf(before) + 1 : 0, 0, id);
+  });
+  target[SCENE_GROUP_ID] = { ...target[SCENE_GROUP_ID], order };
+  return { ...scene, familyEdits: { ...scene.familyEdits, [family]: target } };
+}
+
+/** 调整标题组层序：把一层移到另一层的前面或后面；编入组的图层按新位置记为主标题上方或下方，间距沿用。 */
+export function sceneMoveInGroup(scene: SceneState, family: SceneBucket, id: string, targetId: string, place: "before" | "after"): SceneState {
+  const order = sceneGroupOrder(scene, family);
+  if (id === targetId || !order.includes(id) || !order.includes(targetId)) return scene;
+  order.splice(order.indexOf(id), 1);
+  order.splice(order.indexOf(targetId) + (place === "after" ? 1 : 0), 0, id);
+  const pivot = groupPivot(order.map((item) => scene.elements.find((el) => el.id === item)?.role ?? "custom"));
+  const target: Record<string, ScenePlacementPatch> = { ...scene.familyEdits[family], [SCENE_GROUP_ID]: { ...scene.familyEdits[family]?.[SCENE_GROUP_ID], order } };
+  order.forEach((item, at) => {
+    const attach = target[item]?.attach;
+    if (attach && attach.v !== "beside") target[item] = { ...target[item], attach: { ...attach, v: at < pivot ? "above" : "below" } };
+  });
+  return { ...scene, familyEdits: { ...scene.familyEdits, [family]: target } };
+}
+
+/** 编入组图层的间距、偏移所用的单位（px）：画板单位长度 × 标题组整体比例。 */
+export function sceneGroupUnit(scene: SceneState, board: SceneBoardRef) {
+  return unitOf(board) * resolveSceneGroup(scene, board).scale;
+}
+
+/**
+ * 把画面上的最终位置、比例换算成族里要存的调整值：比例去掉规范自带的倍数；
+ * 规范给了位置的画板上，位置记成相对规范锚点的偏移（shiftX / shift）。编入标题组的图层不走这里。
+ */
+export function sceneFamilyPatch(scene: SceneState, board: SceneBoardRef, id: string, patch: ScenePlacementPatch): ScenePlacementPatch {
+  const own = scene.familyEdits[sceneBucketOf(board)]?.[id];
+  const isGroup = id === SCENE_GROUP_ID;
+  const el = isGroup ? undefined : scene.elements.find((item) => item.id === id);
+  if (!isGroup && !el) return patch;
+  const resolved = isGroup ? resolveSceneGroup(scene, board) : resolveScenePlacement(scene, board, el!);
+  const specScale = isGroup ? specGroupScale(board) : (specPosition(scene, board, el!.role)?.scale ?? 1);
+  const positioned = !board.layout?.soft && (isGroup ? Boolean(board.layout?.group) : Boolean(specPosition(scene, board, el!.role)));
+  const next: ScenePlacementPatch = { ...patch };
+  if (patch.scale !== undefined) next.scale = patch.scale / specScale;
+  const u = unitOf(board) * (isGroup ? (patch.scale ?? resolved.scale) : 1);
+  /** 规范画板上换对齐不挪锚点（对齐只决定从锚点往哪边排）。 */
+  if (positioned && patch.align !== undefined) delete next.x;
+  else if (patch.x !== undefined) {
+    if (positioned) {
+      delete next.x;
+      next.shiftX = (own?.shiftX ?? 0) + ((patch.x - resolved.x) * board.w) / u;
+    } else if (isGroup && own?.shiftX) next.shiftX = 0;
+  }
+  if (patch.y !== undefined) {
+    if (positioned) {
+      delete next.y;
+      next.shift = (own?.shift ?? 0) + ((patch.y - resolved.y) * board.h) / u;
+    } else if (isGroup && own?.shift) next.shift = 0;
+  }
+  return next;
+}
+
+/**
+ * 取消编组：图层留在当前位置，回到自己的锚点（规范给了位置的回到规范位置）。
+ * 留在两层文字之间的，把那两层的间距留成现在的样子，文字不挪。
+ */
+export function sceneDetachFromGroup(scene: SceneState, family: SceneBucket, board: SceneBoardRef, lang: Lang, ids: string[]): SceneState {
+  const layout = layoutScene(scene, board, lang);
+  const target = { ...scene.familyEdits[family] };
+  const stays = new Set<string>();
+  for (const id of ids) {
+    const entry = target[id];
+    if (!entry?.attach) continue;
+    const { attach: _attach, ...rest } = entry;
+    const laid = layout.laid.find((item) => item.el.id === id);
+    const specScale = laid ? specPosition(scene, board, laid.el.role)?.scale ?? 1 : 1;
+    target[id] = roundScenePatch(laid
+      ? { ...rest, x: laid.placement.x, y: laid.placement.y, align: laid.placement.align, scale: laid.placement.scale / specScale, follow: "none" }
+      : rest);
+    const placed = laid ? resolveScenePlacement({ ...scene, familyEdits: { ...scene.familyEdits, [family]: target } }, board, laid.el) : null;
+    if (laid && placed && Math.abs(placed.y - laid.placement.y) < 1e-3) stays.add(id);
+  }
+  const stack = (layout.group?.stackIds ?? []).flatMap((id) => layout.laid.filter((item) => item.el.id === id));
+  const kept = stack.filter((item) => !ids.includes(item.el.id) && isSceneGroupRole(item.el.role));
+  const baseGap = sceneGroupBaseGap(board) * resolveSceneGroup(scene, board).scale;
+  kept.slice(1).forEach((lower, index) => {
+    const upper = kept[index]!;
+    const between = stack.slice(stack.indexOf(upper) + 1, stack.indexOf(lower));
+    if (!between.length || !baseGap || between.some((item) => !stays.has(item.el.id))) return;
+    const gap = (lower.box.y - (upper.box.y + upper.box.h)) / baseGap;
+    if (lower.el.role === "subtitle") target[lower.el.id] = roundScenePatch({ ...target[lower.el.id], gap });
+    else if (upper.el.role === "kicker") target[upper.el.id] = roundScenePatch({ ...target[upper.el.id], gap });
+  });
+  return { ...scene, familyEdits: { ...scene.familyEdits, [family]: target } };
+}
+
+/**
+ * 记录方案：标题组的对齐（画板上实际生效的）、整体比例、层间距、成员比例与逐行字号，
+ * 以及编入标题组的图层（另可传入多选的图层，按当前位置一并记录）。
+ */
+export function captureSceneLayoutScheme(scene: SceneState, family: SceneBucket, board: SceneBoardRef, lang: Lang, id: string, name: string, extraIds: string[] = []): SceneLayoutScheme {
+  const resolved = resolveSceneGroup(scene, board);
+  const groupEdit = scene.familyEdits[family]?.[SCENE_GROUP_ID];
+  const group = {
+    x: resolved.x,
+    y: resolved.y,
+    align: resolved.align,
+    scale: groupEdit?.scale ?? 1,
+    ...(groupEdit?.gap !== undefined ? { gap: groupEdit.gap } : {}),
+    order: sceneGroupOrder(scene, family),
+  };
+  const extras: Record<string, SceneSchemeExtra> = {};
+  for (const elId of new Set([...sceneAttachedIds(scene, family), ...extraIds])) {
+    const el = scene.elements.find((item) => item.id === elId);
+    if (!el || !SCENE_ATTACH_ROLES.includes(el.role)) continue;
+    const placement = resolveScenePlacement(scene, board, el);
+    if (!placement.visible) continue;
+    const entry = scene.familyEdits[family]?.[elId];
+    const found = entry?.attach ? { attach: entry.attach, align: placement.align, scale: entry.scale ?? 1 } : sceneAttachOf(scene, board, lang, elId);
+    if (!found) continue;
+    extras[elId] = {
+      name: el.name,
+      role: el.role,
+      ...(el.role === "logo" ? { logoPreset: scene.logoPreset } : { texts: { [lang]: el.texts[lang] ?? "" } }),
+      ...found,
+      ...(entry?.w !== undefined ? { w: entry.w } : {}),
     };
   }
-  return extras;
-}
-
-/** 按方案把一并记录的图层摆到目标画幅：先换比例与对齐，再按记录的相对位置贴到套用后的标题组旁。 */
-export function placeSceneSchemeExtras(scene: SceneState, scheme: SceneLayoutScheme, family: SceneFamily, board: SceneBoardRef, lang: Lang): SceneState {
-  const extras = Object.entries(scheme.extras ?? {}).filter(([id]) => scene.elements.some((el) => el.id === id));
-  if (!extras.length) return scene;
-  const target = { ...scene.familyEdits[family] };
-  for (const [id, extra] of extras) {
-    const entry: ScenePlacementPatch = { ...target[id], align: extra.align, scale: extra.scale };
-    if (extra.follow) entry.follow = extra.follow;
-    else delete entry.follow;
-    if (extra.w !== undefined) entry.w = extra.w;
-    else delete entry.w;
-    target[id] = entry;
-  }
-  const sized = { ...scene, familyEdits: { ...scene.familyEdits, [family]: target } };
-  const layout = layoutScene(sized, board, lang);
-  const group = layout.group?.box;
-  for (const [id, extra] of extras) {
-    const laid = layout.laid.find((item) => item.el.id === id);
-    if (group && laid && typeof extra.dy === "number" && extra.v) {
-      const { box, placement } = laid;
-      const y = extra.v === "above" ? group.y - extra.dy * group.h - box.h
-        : extra.v === "below" ? group.y + group.h + extra.dy * group.h
-          : group.y + group.h / 2 + extra.dy * group.h - box.h / 2;
-      const x = edgeX(group, extra.align) + extra.dx * group.h - (edgeX(box, extra.align) - box.x);
-      target[id] = { ...target[id], x: placement.x + (x - box.x) / board.w, y: placement.y + (y - box.y) / board.h };
-    }
-    target[id] = roundScenePatch(target[id]!);
-  }
-  return { ...sized, familyEdits: { ...sized.familyEdits, [family]: target } };
-}
-
-export function captureSceneLayoutScheme(scene: SceneState, family: SceneFamily, board: SceneBoardRef, id: string, name: string, extras?: Record<string, SceneSchemeExtra>): SceneLayoutScheme {
-  const group = familyGroup(scene, family);
   const members: SceneLayoutScheme["members"] = {};
   const lineRatios: SceneLayoutScheme["lineRatios"] = {};
   for (const el of scene.elements.filter((item) => isSceneGroupRole(item.role))) {
@@ -240,24 +746,27 @@ export function captureSceneLayoutScheme(scene: SceneState, family: SceneFamily,
   return {
     id,
     name,
-    family,
+    lang,
+    family: sceneBucketFamily(family),
     board: { key: board.key, w: board.w, h: board.h, ...(board.ctaSpec ? { ctaSpec: board.ctaSpec } : {}) },
-    group: { x: group.x, y: group.y, align: group.align, scale: group.scale, ...(group.gap !== undefined ? { gap: group.gap } : {}) },
+    group,
     members,
     lineRatios,
-    ...(extras && Object.keys(extras).length ? { extras } : {}),
+    ...(Object.keys(extras).length ? { extras } : {}),
   };
 }
 
 /**
  * 把方案的排版（对齐、比例、间距、逐行字号）套到某个版式族的标题组；成员缺省的项回到自动值。
- * 位置不跟方案走：传 position 时用它（换对齐后保持原区域的锚点），否则保留该版式族原来的位置。
+ * 方案的对齐优先于规范对齐。位置不跟方案走：传 position 时用它（换对齐后保持原区域的锚点），否则保留原来的位置。
  */
-export function applySceneLayoutScheme(scene: SceneState, scheme: SceneLayoutScheme, family: SceneFamily, position?: { x: number; y: number }): SceneState {
+export function applySceneLayoutScheme(scene: SceneState, scheme: SceneLayoutScheme, family: SceneBucket, position?: { x: number; y: number }): SceneState {
   const target = { ...scene.familyEdits[family] };
-  const groupEntry: ScenePlacementPatch = { ...target[SCENE_GROUP_ID], ...position, align: scheme.group.align, scale: scheme.group.scale };
+  const groupEntry: ScenePlacementPatch = { ...target[SCENE_GROUP_ID], ...position, align: scheme.group.align, scale: scheme.group.scale, overSpec: true };
   if (scheme.group.gap !== undefined) groupEntry.gap = scheme.group.gap;
   else delete groupEntry.gap;
+  if (scheme.group.order) groupEntry.order = [...scheme.group.order];
+  else delete groupEntry.order;
   target[SCENE_GROUP_ID] = roundScenePatch(groupEntry);
   const ratios = { ...scene.familyLineRatios?.[family] };
   for (const el of scene.elements.filter((item) => isSceneGroupRole(item.role))) {
@@ -279,21 +788,77 @@ export function applySceneLayoutScheme(scene: SceneState, scheme: SceneLayoutSch
   };
 }
 
-/** 版式族的标题组当前是否就是这套方案。 */
-export function sceneLayoutSchemeMatches(scene: SceneState, scheme: SceneLayoutScheme, family: SceneFamily) {
-  const current = captureSceneLayoutScheme(applySceneLayoutScheme(scene, scheme, family), family, scheme.board, scheme.id, scheme.name);
-  const now = captureSceneLayoutScheme(scene, family, scheme.board, scheme.id, scheme.name);
+/**
+ * 完整套用方案：标题组排版，加上方案里的图层——没有就重建，显示出来、编入标题组，Logo 换成方案里的样式。
+ * 传入的 scene 应是该版式族的视图，显隐与 Logo 样式经 sceneCommitFamily 只记到该族。
+ */
+export function applySceneScheme(scene: SceneState, scheme: SceneLayoutScheme, family: SceneBucket, board: SceneBoardRef, lang: Lang, position?: { x: number; y: number }): SceneState {
+  const next = applySceneLayoutScheme(scene, scheme, family, position);
+  const extras = Object.entries(scheme.extras ?? {});
+  let elements = [...next.elements];
+  const target = { ...next.familyEdits[family] };
+  let logoPreset = next.logoPreset;
+  let legacy: { unit: number; groupScale: number } | null = null;
+  for (const [id, extra] of extras) {
+    let index = elements.findIndex((el) => el.id === id);
+    if (index < 0) {
+      if (!extra.role) continue;
+      const fresh = sceneDefaultElement(extra.role, elements.filter((el) => el.role === "custom").length + 1);
+      elements.push({ ...fresh, id, name: extra.name, ...(extra.texts ? { texts: { ...extra.texts } } : {}) });
+      index = elements.length - 1;
+    }
+    const el = elements[index]!;
+    if (!SCENE_ATTACH_ROLES.includes(el.role)) continue;
+    elements[index] = { ...el, visible: true };
+    let attach = extra.attach;
+    let scale = extra.scale;
+    if (!attach) {
+      if (!legacy) {
+        const laid = layoutScene({ ...next, elements }, board, lang);
+        const groupScale = resolveSceneGroup(next, board).scale;
+        legacy = { unit: (laid.group?.box.h ?? 0) / (unitOf(board) * groupScale), groupScale };
+      }
+      if (!extra.v || extra.dy === undefined || extra.dx === undefined || !legacy.unit) continue;
+      attach = { v: extra.v, dy: round(extra.dy * legacy.unit, 4), dx: round(extra.dx * legacy.unit, 4) };
+      scale = extra.scale / legacy.groupScale;
+    }
+    const { x: _x, y: _y, follow: _follow, w: _w, ...rest } = target[id] ?? {};
+    target[id] = roundScenePatch({ ...rest, attach, align: extra.align, scale, ...(extra.w !== undefined ? { w: extra.w } : {}) });
+    if (el.role === "logo" && extra.logoPreset) logoPreset = extra.logoPreset;
+  }
+  return { ...next, elements, logoPreset, familyEdits: { ...next.familyEdits, [family]: target } };
+}
+
+/** 版式族当前是否就是这套方案：标题组排版一致，方案里的图层都显示并按方案编入标题组。 */
+export function sceneLayoutSchemeMatches(scene: SceneState, scheme: SceneLayoutScheme, family: SceneBucket, board: SceneBoardRef) {
   const close = (a: number, b: number) => Math.abs(a - b) < 1e-3;
-  const sameGroup = close(current.group.scale, now.group.scale)
-    && current.group.align === now.group.align && (current.group.gap ?? 1) === (now.group.gap ?? 1);
-  const sameExtras = Object.entries(scheme.extras ?? {}).every(([id, extra]) => {
-    const entry = scene.familyEdits[family]?.[id];
-    return !scene.elements.some((el) => el.id === id)
-      || (entry?.scale !== undefined && close(entry.scale, extra.scale) && entry.align === extra.align && entry.follow === extra.follow);
+  const edits = scene.familyEdits[family] ?? {};
+  const groupEdit = edits[SCENE_GROUP_ID];
+  const sameGroup = resolveSceneGroup(scene, board).align === scheme.group.align
+    && close(groupEdit?.scale ?? 1, scheme.group.scale)
+    && (groupEdit?.gap ?? 1) === (scheme.group.gap ?? 1);
+  if (!sameGroup) return false;
+  if (scheme.group.order) {
+    const now = sceneGroupOrder(scene, family);
+    const common = scheme.group.order.filter((id) => now.includes(id));
+    if (!sameJson(common, now.filter((id) => common.includes(id)))) return false;
+  }
+  for (const el of scene.elements.filter((item) => isSceneGroupRole(item.role))) {
+    const member = scheme.members[el.id];
+    const own = edits[el.id];
+    if (!close(own?.scale ?? 1, member?.scale ?? 1) || own?.gap !== member?.gap) return false;
+    const ratios = scene.familyLineRatios?.[family]?.[el.id] ?? scene.lineRatios?.[el.id];
+    if (!sameJson(ratios, scheme.lineRatios[el.id] ?? scene.lineRatios?.[el.id])) return false;
+  }
+  return Object.entries(scheme.extras ?? {}).every(([id, extra]) => {
+    const el = scene.elements.find((item) => item.id === id);
+    const entry = edits[id];
+    if (!el?.visible || !entry?.attach) return false;
+    if (el.role === "logo" && extra.logoPreset && extra.logoPreset !== scene.logoPreset) return false;
+    if (!extra.attach) return entry.align === extra.align;
+    return entry.attach.v === extra.attach.v && close(entry.attach.dx, extra.attach.dx) && close(entry.attach.dy, extra.attach.dy)
+      && close(entry.scale ?? 1, extra.scale) && entry.align === extra.align;
   });
-  return sameGroup && sameExtras
-    && JSON.stringify(current.members) === JSON.stringify(now.members)
-    && JSON.stringify(current.lineRatios) === JSON.stringify(now.lineRatios);
 }
 
 /** 旧格式（只记手动改动）的方案无法还原版式，读取时丢弃。 */
@@ -305,6 +870,11 @@ export interface SceneVersion {
   id: string;
   name: string;
   lang: Lang;
+  /** 从基础语言或其它版本复制出的独立副本，不受来源语言锁定影响。 */
+  independent?: boolean;
+  /** 独立版本自己的锁定与批量生成显隐状态。 */
+  locked?: boolean;
+  hidden?: boolean;
   texts?: Record<string, string>;
   highlights?: Record<string, SceneHighlight[]>;
   fontRuns?: Record<string, SceneFontRun[]>;
@@ -344,6 +914,8 @@ export interface SceneCtaSpec {
   maxWidth: number;
   /** 宽度可在上下限内选短/中/长，真实 px */
   lengths?: Record<SceneCtaLength, number>;
+  /** 不锁死：解除锁定后高度、字号、宽度按比例自由调整 */
+  soft?: boolean;
 }
 
 /** 规范标注区，真实 px。只在编辑器里叠加显示，不写入 Figma。 */
@@ -364,10 +936,16 @@ export interface SceneBoardRef {
   zones?: SceneZone[];
   /** 该资源位版式不出现的元素，如「无 CTA」 */
   hide?: SceneRole[];
+  /** 规范要求必须出现的元素（如 Logo）：默认显示，族里或单板仍可关掉 */
+  show?: SceneRole[];
   /** 规范示例稿给出的位置，优先于版式族。 */
   layout?: SizeLayout;
   /** 左右两侧过渡到画板底色的宽度（px），两侧会延展成纯色底的资源位用。 */
   edgeFade?: number;
+  /** 不按画幅归族的画板所在的编辑分组（规范模板、闪屏母版）。 */
+  bucket?: SceneBucket;
+  /** 资源位指定的版式族；没给时按宽高比推算。 */
+  family?: SceneFamily;
 }
 
 export const SCENE_COMPONENT_ASPECT = 1884 / 1096;
@@ -802,46 +1380,57 @@ const TEXT_COLUMN: Record<SceneFamily, number> = {
 function stripTextColumn(scene: SceneState, board: SceneBoardRef, lang: Lang, placement?: ScenePlacement) {
   const gap = (24 / 1080) * board.w;
   let limit = DEFAULT_POS.strip.cta[0] * board.w - 2.5 * SIZE_FACTOR.strip.cta * board.h - gap;
-  const anchor = placement && placement.align !== "right" ? placement.x * board.w : DEFAULT_POS.strip.title[0] * board.w;
+  const spec = board.layout?.group;
+  const fallback = DEFAULT_POS.strip.title[0] * board.w;
   if (placement) {
     const cta = scene.elements.find((item) => item.role === "cta");
-    const ctaPlacement = cta ? resolveScenePlacement(scene, board, cta) : null;
+    const rest = cta ? sceneAtRest(scene, board, cta.id) : scene;
+    const ctaPlacement = cta ? resolveScenePlacement(rest, board, cta) : null;
+    const before = placement.align === "right" ? fallback : spec?.x ?? fallback;
     if (cta && ctaPlacement?.visible && ctaPlacement.align === "right" && sceneText(cta, lang).trim()) {
-      const left = ctaPlacement.x * board.w - sceneMetrics(scene, board, cta, ctaPlacement, lang).w;
-      if (left > anchor) limit = Math.min(limit, left - gap);
+      const left = ctaPlacement.x * board.w - sceneMetrics(rest, board, cta, ctaPlacement, lang).w;
+      if (left > before) limit = Math.min(limit, left - gap);
     }
   }
+  /** 列宽按规范 / 默认位置量，不随拖动变：拖标题组或 CTA 只改位置，不改字号。 */
+  const anchor = !placement || placement.align === "right" ? fallback : spec ? spec.x : placement.align === "center" ? (0.25 * board.w + limit) / 2 : fallback;
   const room = limit - anchor;
   /** 居中时左侧也不越过训练集最靠左的标题组左缘（271/1080），避免压到主视觉。 */
   const leftRoom = anchor - 0.25 * board.w;
   return Math.max(0.25 * board.w, placement?.align === "center" ? Math.min(room, leftRoom) * 2 : room);
 }
 
-/** 左对齐标题组的右边界：不越过右侧主视觉主体的左缘。 */
-function subjectLimit(scene: SceneState, board: SceneBoardRef, lang: Lang, placement: ScenePlacement) {
-  if (placement.align !== "left") return Infinity;
-  const visual = scene.elements.find((item) => item.role === "visual");
-  const visualPlacement = visual ? resolveScenePlacement(scene, board, visual) : null;
-  if (!visual || !visualPlacement?.visible) return Infinity;
-  const vw = sceneMetrics(scene, board, visual, visualPlacement, lang).w;
-  const subjectLeft = visualPlacement.x * board.w - scene.focal.x * vw + scene.safeBox.x * vw;
-  const anchor = placement.x * board.w;
-  return subjectLeft > anchor + 0.25 * board.w ? subjectLeft - (24 / 1080) * board.w - anchor : Infinity;
-}
-
-/** 文字列宽：族默认列宽，再收进规范内容区、避开右侧主视觉主体。 */
-function textColumn(scene: SceneState, board: SceneBoardRef, lang: Lang, el: SceneElement, placement: ScenePlacement) {
-  const family = sceneFamilyOf(board.w, board.h);
+/** 文字列宽：族默认列宽，再收进规范内容区。主视觉在最底层，不影响文字。 */
+function textColumn(scene: SceneState, board: SceneBoardRef, lang: Lang, el: SceneElement, own: ScenePlacement) {
+  const family = sceneBoardFamily(board);
   const group = isSceneGroupRole(el.role);
+  /** 外框按规范锚点的那条边定位时，可用宽度也从那条边量。 */
+  const placement = own.edge ? { ...own, align: own.edge } : own;
   let column = family === "strip" ? stripTextColumn(scene, board, lang, group ? placement : undefined) : TEXT_COLUMN[family] * board.w;
   if (!group) return column;
   if (board.zones?.length) {
     const area = sceneContentArea(board);
-    const anchor = placement.x * board.w;
+    const spec = board.layout?.group;
+    const anchor = spec ? spec.x : placement.align === "left" ? DEFAULT_POS[family].title[0] * board.w : placement.align === "right" ? area.x + area.w : area.x + area.w / 2;
     const room = placement.align === "left" ? area.x + area.w - anchor : placement.align === "right" ? anchor - area.x : 2 * Math.min(anchor - area.x, area.x + area.w - anchor);
     column = Math.min(column, room);
   }
-  return Math.min(column, subjectLimit(scene, board, lang, placement));
+  return column;
+}
+
+/** 去掉某图层在族里和单板上的位置调整，用来量「没拖动时」的可用宽度。 */
+function sceneAtRest(scene: SceneState, board: SceneBoardRef, id: string): SceneState {
+  const bucket = sceneBucketOf(board);
+  const strip = (patch: ScenePlacementPatch | undefined) => {
+    if (!patch) return patch;
+    const { x: _x, y: _y, shift: _shift, shiftX: _shiftX, ...rest } = patch;
+    return rest;
+  };
+  return {
+    ...scene,
+    familyEdits: { ...scene.familyEdits, [bucket]: { ...scene.familyEdits[bucket], [id]: strip(scene.familyEdits[bucket]?.[id]) ?? {} } },
+    boardOverrides: { ...scene.boardOverrides, [board.key]: { ...scene.boardOverrides[board.key], [id]: strip(scene.boardOverrides[board.key]?.[id]) ?? {} } },
+  };
 }
 
 export function sceneFamilyOf(w: number, h: number): SceneFamily {
@@ -852,8 +1441,40 @@ export function sceneFamilyOf(w: number, h: number): SceneFamily {
   return "portrait";
 }
 
+/** 画板的版式族：资源位指定的优先，否则按宽高比。 */
+export function sceneBoardFamily(board: Pick<SceneBoardRef, "w" | "h" | "family">): SceneFamily {
+  return board.family ?? sceneFamilyOf(board.w, board.h);
+}
+
+export function sceneBucketOf(board: Pick<SceneBoardRef, "w" | "h" | "bucket" | "family">): SceneBucket {
+  return board.bucket ?? sceneBoardFamily(board);
+}
+
+/** 分组对应的画幅族，默认位置与字号系数按它取。 */
+export function sceneBucketFamily(bucket: SceneBucket): SceneFamily {
+  return bucket.split("@")[0] as SceneFamily;
+}
+
+/** 规范模板分组：第三步只改内容与样式，版式按规范。 */
+export function sceneBucketLocked(bucket: SceneBucket) {
+  return bucket.includes("@spec:");
+}
+
+/** 画板自身是否按规范锁版式：特殊规范模板，或对齐分组里有规范锚点 / CTA 规范的（首选对齐的不锁）。 */
+export function sceneBoardLocked(board: Pick<SceneBoardRef, "w" | "h" | "bucket" | "family" | "layout" | "ctaSpec">) {
+  const bucket = sceneBucketOf(board);
+  if (sceneBucketLocked(bucket)) return true;
+  if (bucket.includes("@own:")) return false;
+  return bucket.includes("@align:") && Boolean(board.ctaSpec || (board.layout && !board.layout.soft));
+}
+
+/** 画幅族默认的标题组对齐。 */
+export function sceneFamilyAlign(family: SceneFamily): SceneAlign {
+  return GROUP_POS[family][2];
+}
+
 function unitOf(board: SceneBoardRef) {
-  const family = sceneFamilyOf(board.w, board.h);
+  const family = sceneBoardFamily(board);
   return family === "portrait" || family === "square" ? board.w : board.h;
 }
 
@@ -861,7 +1482,13 @@ export function sceneFontScript(lang: Lang): SceneFontScript {
   return lang === "sc" || lang === "tc" || lang === "ja" ? "cjk" : "latin";
 }
 
-export function sceneDefaultFontId(script: SceneFontScript, role: SceneRole) {
+export function sceneDefaultFontId(script: SceneFontScript, role: SceneRole, lang?: Lang) {
+  /** 日语默认使用 M PLUS 1p：主标题 Bold、CTA / 小标题 / 副标题 Medium。 */
+  if (lang === "ja") {
+    if (role === "title") return "mplus-bold";
+    if (role === "cta") return "mplus-medium";
+    return "mplus-medium";
+  }
   const strong = role === "title" || role === "cta";
   if (script === "latin") return strong ? "br-medium" : "br-regular";
   return strong ? "fz-db" : "fz-r";
@@ -869,8 +1496,10 @@ export function sceneDefaultFontId(script: SceneFontScript, role: SceneRole) {
 
 export function sceneFontId(scene: SceneState, el: Pick<SceneElement, "id" | "role">, lang: Lang) {
   const script = sceneFontScript(lang);
-  const chosen = scene.fonts?.[el.id]?.[script];
-  return chosen && SCENE_FONTS.some((font) => font.id === chosen && sceneFontSupports(font, script)) ? chosen : sceneDefaultFontId(script, el.role);
+  /** 历史 fonts 按 CJK 共用，不能让简繁体的方正兰亭覆盖新增日语的 M PLUS 默认值。 */
+  const chosen = scene.languageFonts?.[lang]?.[el.id]
+    ?? (lang === "ja" ? undefined : scene.fonts?.[el.id]?.[script]);
+  return chosen && SCENE_FONTS.some((font) => font.id === chosen && sceneFontSupports(font, script)) ? chosen : sceneDefaultFontId(script, el.role, lang);
 }
 
 export function sceneFont(scene: SceneState, el: Pick<SceneElement, "id" | "role">, lang: Lang) {
@@ -944,9 +1573,31 @@ export function sceneBadgeText(scene: SceneState, el: SceneElement, lang: Lang) 
 }
 
 /** 逐行字号比例，缺省为 1。 */
-export function sceneLineRatios(scene: SceneState, el: Pick<SceneElement, "id">, count: number, family?: SceneFamily) {
+export function sceneLineRatios(scene: SceneState, el: Pick<SceneElement, "id">, count: number, family?: SceneBucket) {
   const ratios = (family ? scene.familyLineRatios?.[family]?.[el.id] : undefined) ?? scene.lineRatios?.[el.id];
   return Array.from({ length: count }, (_, index) => ratios?.[index] ?? 1);
+}
+
+/** 整体行高倍数。 */
+export function sceneLeading(scene: SceneState, el: Pick<SceneElement, "id">) {
+  return scene.leading?.[el.id] ?? SCENE_LINE_HEIGHT;
+}
+
+/** 逐行样式：字号比例（相对第 1 行）、行高与字间距（相对该行字号）；第 1 行和没单独设的行跟整体。 */
+export function sceneLineStyles(scene: SceneState, el: Pick<SceneElement, "id">, count: number, family?: SceneBucket) {
+  const leading = sceneLeading(scene, el);
+  const tracking = scene.tracking?.[el.id] ?? 0;
+  return sceneLineRatios(scene, el, count, family).map((ratio, index) => ({
+    ratio,
+    leading: (index ? scene.lineLeading?.[el.id]?.[index] : undefined) ?? leading,
+    tracking: (index ? scene.lineTracking?.[el.id]?.[index] : undefined) ?? tracking,
+  }));
+}
+
+/** 第 2 行起有单独的字号、行高或字间距。 */
+function sceneLinesStyled(scene: SceneState, el: Pick<SceneElement, "id">, ratios: number[]) {
+  const own = (map?: Record<number, number>) => Object.keys(map ?? {}).some((key) => Number(key) > 0 && Number(key) < ratios.length);
+  return ratios.some((ratio) => ratio !== 1) || own(scene.lineLeading?.[el.id]) || own(scene.lineTracking?.[el.id]);
 }
 
 function round(value: number, digits: number) {
@@ -960,8 +1611,11 @@ export function roundScenePatch(patch: ScenePlacementPatch): ScenePlacementPatch
   if (next.y !== undefined) next.y = round(next.y, 4);
   if (next.scale !== undefined) next.scale = round(Math.max(0.3, Math.min(3, next.scale)), 2);
   if (next.w !== undefined) next.w = round(Math.max(0.1, next.w), 4);
-  if (next.gap !== undefined) next.gap = round(Math.max(0, Math.min(6, next.gap)), 3);
+  if (next.gap !== undefined) next.gap = round(Math.max(0, Math.min(12, next.gap)), 3);
   if (next.font !== undefined) next.font = round(Math.max(0.4, Math.min(2.5, next.font)), 3);
+  if (next.attach) next.attach = { v: next.attach.v, dy: round(next.attach.dy, 4), dx: round(next.attach.dx, 4) };
+  if (next.shift !== undefined) next.shift = round(next.shift, 4);
+  if (next.shiftX !== undefined) next.shiftX = round(next.shiftX, 4);
   return next;
 }
 
@@ -972,7 +1626,7 @@ export function sceneWidthToUnit(board: SceneBoardRef, px: number) {
 
 /** 训练集标题组层间距（像素，整体比例为 1 时）。 */
 export function sceneGroupBaseGap(board: SceneBoardRef) {
-  return GROUP_GAP[sceneFamilyOf(board.w, board.h)] * unitOf(board);
+  return GROUP_GAP[sceneBoardFamily(board)] * unitOf(board);
 }
 
 const anchorOf = (board: SceneBoardRef, anchor: SizeAnchor) => ({ x: anchor.x / board.w, y: anchor.y / board.h, align: anchor.align });
@@ -986,37 +1640,45 @@ function withoutPosition(patch: ScenePlacementPatch | undefined): ScenePlacement
 
 /** 标题组整体的锚点、整体比例与对齐，按族默认值 → 规范版式 → 族调整 → 单板覆盖叠加。 */
 export function resolveSceneGroup(scene: SceneState, board: SceneBoardRef): ScenePlacement {
-  const family = sceneFamilyOf(board.w, board.h);
+  const family = sceneBoardFamily(board);
   const [x, y, align] = GROUP_POS[family];
   const shown = (role: SceneRole) => family === "strip" && scene.elements.some((el) => el.role === role && el.visible);
   const spec = board.layout?.group;
-  const familyEdit = scene.familyEdits[family]?.[SCENE_GROUP_ID];
+  const familyEdit = scene.familyEdits[sceneBucketOf(board)]?.[SCENE_GROUP_ID];
   const override = scene.boardOverrides[board.key]?.[SCENE_GROUP_ID];
   const specScale = specGroupScale(board);
-  return {
+  /** 首选版式的锚点只当默认值，族里的位置、对齐照常覆盖。 */
+  const locked = spec && !board.layout?.soft;
+  const ownAlign = locked && familyEdit?.overSpec && familyEdit.align && familyEdit.align !== spec.align ? familyEdit.align : undefined;
+  const resolved: ScenePlacement = {
     x,
     y: shown("logo") ? 0.6 : shown("badge") ? 0.58 : y,
     align,
     visible: true,
     ...(spec ? anchorOf(board, spec) : {}),
-    ...(spec ? withoutPosition(familyEdit) : familyEdit),
+    ...(locked ? withoutPosition(familyEdit) : familyEdit),
+    ...(spec && ownAlign ? { align: ownAlign, edge: spec.align } : {}),
     ...override,
     scale: override?.scale ?? specScale * (familyEdit?.scale ?? 1),
   };
+  const u = unitOf(board) * resolved.scale;
+  if (override?.x === undefined && resolved.shiftX) resolved.x += (resolved.shiftX * u) / board.w;
+  if (override?.y === undefined && resolved.shift) resolved.y += (resolved.shift * u) / board.h;
+  return resolved;
 }
 
 /** 规范版式里该元素的锚点；Logo 跟随规范标题组的左右位置。 */
 /** 规范主标题字号相对版式族默认字号的倍数；角标、Logo 跟标题组一起按它缩放。 */
 function specGroupScale(board: SceneBoardRef) {
   const titlePx = board.layout?.titlePx;
-  return titlePx ? titlePx / (SIZE_FACTOR[sceneFamilyOf(board.w, board.h)].title * unitOf(board)) : 1;
+  return titlePx ? titlePx / (SIZE_FACTOR[sceneBoardFamily(board)].title * unitOf(board)) : 1;
 }
 
 function specPosition(scene: SceneState, board: SceneBoardRef, role: SceneRole): Partial<ScenePlacement> | null {
   const layout = board.layout;
   if (!layout) return null;
   if (role === "visual" && layout.visualFill) {
-    const baseH = SIZE_FACTOR[sceneFamilyOf(board.w, board.h)].visual * unitOf(board);
+    const baseH = SIZE_FACTOR[sceneBoardFamily(board)].visual * unitOf(board);
     const scale = Math.max(board.h / baseH, board.w / (baseH * scene.visualAspect));
     const w = baseH * scale * scene.visualAspect;
     const h = baseH * scale;
@@ -1024,14 +1686,20 @@ function specPosition(scene: SceneState, board: SceneBoardRef, role: SceneRole):
   }
   if (role === "cta" && layout.cta && !("afterSubtitle" in layout.cta)) return anchorOf(board, layout.cta);
   if (role === "visual" && layout.visual) return { x: layout.visual.x / board.w, y: layout.visual.y / board.h, scale: layout.visual.scale ?? 1 };
+  if (role === "logo" && layout.logo) return { ...anchorOf(board, layout.logo), scale: specGroupScale(board) };
   if (role === "logo" && layout.group) return { x: layout.group.x / board.w, align: layout.group.align, scale: specGroupScale(board) };
   if (role === "badge" && layout.titlePx) return { scale: specGroupScale(board) };
   return null;
 }
 
+/** 图层未做手动调整时的规范比例；比例预设据此相对缩放，不写死素材像素。 */
+export function sceneDefaultScale(scene: SceneState, board: SceneBoardRef, role: SceneRole) {
+  return specPosition(scene, board, role)?.scale ?? 1;
+}
+
 /** 元素自身的调整值；标题组成员只用其中的 scale 与 visible。 */
 export function resolveSceneOwn(scene: SceneState, board: SceneBoardRef, el: SceneElement): ScenePlacement {
-  const family = sceneFamilyOf(board.w, board.h);
+  const family = sceneBoardFamily(board);
   const [x, y, align] = DEFAULT_POS[family][el.role];
   return withBoardHide(board, el, {
     x,
@@ -1039,7 +1707,7 @@ export function resolveSceneOwn(scene: SceneState, board: SceneBoardRef, el: Sce
     scale: 1,
     align,
     visible: el.visible,
-    ...scene.familyEdits[family]?.[el.id],
+    ...scene.familyEdits[sceneBucketOf(board)]?.[el.id],
     ...scene.boardOverrides[board.key]?.[el.id],
   });
 }
@@ -1053,16 +1721,32 @@ export function resolveScenePlacement(scene: SceneState, board: SceneBoardRef, e
   if (isSceneGroupRole(el.role)) {
     const group = resolveSceneGroup(scene, board);
     const own = resolveSceneOwn(scene, board, el);
-    return { x: group.x, y: group.y, scale: group.scale * own.scale, align: group.align, visible: own.visible && group.visible };
+    return { x: group.x, y: group.y, scale: group.scale * own.scale, align: group.align, visible: own.visible && group.visible, ...(group.edge ? { edge: group.edge } : {}) };
   }
-  const family = sceneFamilyOf(board.w, board.h);
+  const family = sceneBoardFamily(board);
   const [x, y, align] = DEFAULT_POS[family][el.role];
   const customIndex = el.role === "custom"
     ? scene.elements.filter((item) => item.role === "custom").findIndex((item) => item.id === el.id)
     : 0;
-  const spec = specPosition(scene, board, el.role);
-  const familyEdit = scene.familyEdits[family]?.[el.id];
+  const bucket = sceneBucketOf(board);
+  const familyEdit = scene.familyEdits[bucket]?.[el.id];
   const override = scene.boardOverrides[board.key]?.[el.id];
+  /** 编入标题组的图层跟组走，不受规范位置约束；单板手动拖过位置的除外。 */
+  if (familyEdit?.attach && SCENE_ATTACH_ROLES.includes(el.role) && override?.x === undefined && override?.y === undefined) {
+    const group = resolveSceneGroup(scene, board);
+    return withBoardHide(board, el, {
+      x,
+      y,
+      align,
+      visible: el.visible,
+      ...familyEdit,
+      ...override,
+      follow: "none",
+      scale: override?.scale ?? group.scale * (familyEdit.scale ?? 1),
+    });
+  }
+  const spec = specPosition(scene, board, el.role);
+  const soft = Boolean(board.layout?.soft);
   const placement: ScenePlacement = {
     x,
     y: y + Math.max(0, customIndex) * 0.06,
@@ -1070,12 +1754,17 @@ export function resolveScenePlacement(scene: SceneState, board: SceneBoardRef, e
     visible: el.visible,
     follow: el.role === "badge" ? "center" : "none",
     ...spec,
-    ...(spec ? withoutPosition(familyEdit) : familyEdit),
+    ...(spec && !soft ? withoutPosition(familyEdit) : familyEdit),
     ...override,
     scale: override?.scale ?? (spec?.scale ?? 1) * (familyEdit?.scale ?? 1),
   };
-  /** 跟随标题组的元素按规范的组对齐方式跟随，单板手动选过的除外。 */
-  const specAlign = board.layout?.group?.align;
+  const u = unitOf(board);
+  /** 族里的位置在规范画板上记成相对锚点的偏移，同组没有锚点的画板也按同样的偏移跟着挪。 */
+  if (override?.x === undefined && familyEdit?.shiftX) placement.x += (familyEdit.shiftX * u) / board.w;
+  if (override?.y === undefined && familyEdit?.shift) placement.y += (familyEdit.shift * u) / board.h;
+  /** 跟随标题组的元素按规范的组对齐方式跟随（族里选的对齐覆盖规范时按它），单板手动选过的除外。 */
+  const groupEdit = scene.familyEdits[bucket]?.[SCENE_GROUP_ID];
+  const specAlign = board.layout?.group ? ((soft || groupEdit?.overSpec) && groupEdit?.align ? groupEdit.align : board.layout.group.align) : undefined;
   if (specAlign && placement.follow && placement.follow !== "none" && !override?.follow) placement.follow = specAlign;
   return withBoardHide(board, el, placement);
 }
@@ -1105,8 +1794,34 @@ function badgeLengthOf(scene: SceneState, style: SceneBadgeStyleSpec, text: stri
   return lineWidth(text, style.fontPx.short[script]) + style.padX * 2 > style.widths.short ? "long" : "short";
 }
 
+function naturalTextWidth(scene: SceneState, board: SceneBoardRef, el: SceneElement, height: number, lang: Lang) {
+  const lines = sceneText(el, lang).split("\n");
+  const styles = sceneLineStyles(scene, el, lines.length, sceneBucketOf(board));
+  return { natural: Math.max(0, ...lines.map((line, index) => trackedWidth(line, height * styles[index]!.ratio, styles[index]!.tracking))), styles };
+}
+
+/** 超出列宽时自动缩小字号，最多缩到一半。 */
+function ownTextFit(scene: SceneState, board: SceneBoardRef, lang: Lang, el: SceneElement, placement: ScenePlacement, natural: number) {
+  const column = textColumn(scene, board, lang, el, placement);
+  return natural > column ? Math.max(0.5, column / natural) : 1;
+}
+
+/** 标题组里最需要缩小的那一层决定整组的倍数。 */
+function groupTextFit(scene: SceneState, board: SceneBoardRef, lang: Lang) {
+  const family = sceneBoardFamily(board);
+  let fit = 1;
+  for (const member of scene.elements) {
+    if (!isSceneGroupRole(member.role) || !sceneText(member, lang).trim()) continue;
+    const placement = resolveScenePlacement(scene, board, member);
+    if (!placement.visible) continue;
+    const height = SIZE_FACTOR[family][member.role] * unitOf(board) * placement.scale;
+    fit = Math.min(fit, ownTextFit(scene, board, lang, member, placement, naturalTextWidth(scene, board, member, height, lang).natural));
+  }
+  return fit;
+}
+
 export function sceneMetrics(scene: SceneState, board: SceneBoardRef, el: SceneElement, placement: ScenePlacement, lang: Lang): SceneMetrics {
-  const family = sceneFamilyOf(board.w, board.h);
+  const family = sceneBoardFamily(board);
   const unit = unitOf(board);
   const height = SIZE_FACTOR[family][el.role] * unit * placement.scale;
   const text = sceneText(el, lang);
@@ -1114,6 +1829,12 @@ export function sceneMetrics(scene: SceneState, board: SceneBoardRef, el: SceneE
   if (el.role === "visual") return { w: height * scene.visualAspect, h: height, fontPx: 0 };
   if (el.role === "cta") {
     const spec = board.ctaSpec;
+    if (spec?.soft && scene.ctaFontUnlocked) {
+      const s = placement.scale;
+      const fontPx = spec.fontPx * s * (placement.font ?? 1);
+      const need = trackedWidth(text, fontPx, tracking) + spec.paddingX * 2 * s;
+      return { w: placement.w ? Math.max(need, placement.w * unit) : Math.max(spec.minWidth * s, need), h: spec.height * s, fontPx };
+    }
     if (spec) {
       const fontPx = scene.ctaFontUnlocked ? spec.fontPx * (placement.font ?? 1) : spec.fontPx;
       const need = trackedWidth(text, fontPx, tracking) + spec.paddingX * 2;
@@ -1123,7 +1844,8 @@ export function sceneMetrics(scene: SceneState, board: SceneBoardRef, el: SceneE
       const w = Math.min(spec.maxWidth, Math.max(spec.minWidth, need, chosen));
       return { w, h: spec.height, fontPx, locked: true, overflow: need > spec.maxWidth };
     }
-    const fontPx = height * 0.325 * (placement.font ?? 1);
+    /** 日语 CTA 参考规格为 200×80、M PLUS 1p Medium 28px；其它语言沿用既有比例。 */
+    const fontPx = height * (lang === "ja" ? 0.35 : 0.325) * (placement.font ?? 1);
     const textW = Math.max(0, ...text.split("\n").map((line) => trackedWidth(line, fontPx, tracking)));
     const hug = Math.max(height * 2.5, textW + height * 0.78);
     if (placement.length) return { w: Math.max(textW + height * 0.78, height * CTA_LENGTH_FACTOR[placement.length]), h: height, fontPx };
@@ -1149,15 +1871,13 @@ export function sceneMetrics(scene: SceneState, board: SceneBoardRef, el: SceneE
     const hug = Math.max(STRETCH_BADGE_MIN_W * k, textW + style.padX * 2 * k);
     return { w: placement.w ? Math.max(textW + 8 * k, placement.w * unit) : hug, h: style.h * k, fontPx };
   }
-  const lines = text.split("\n");
-  const ratios = sceneLineRatios(scene, el, lines.length, family);
-  const natural = Math.max(0, ...lines.map((line, index) => trackedWidth(line, height * ratios[index]!, tracking)));
-  const column = textColumn(scene, board, lang, el, placement);
-  const fit = natural > column ? Math.max(0.5, column / natural) : 1;
+  const { natural, styles } = naturalTextWidth(scene, board, el, height, lang);
+  /** 标题组各层共用一个缩小倍数，层与层的字号比例和对齐关系保持方案里的样子。 */
+  const fit = isSceneGroupRole(el.role) ? groupTextFit(scene, board, lang) : ownTextFit(scene, board, lang, el, placement, natural);
   const fontPx = height * fit;
-  const lineFontPx = ratios.map((ratio) => fontPx * ratio);
-  const h = lineFontPx.reduce((sum, value) => sum + value * SCENE_LINE_HEIGHT, 0);
-  return { w: natural * fit, h, fontPx, fit, ...(ratios.some((ratio) => ratio !== 1) ? { lineFontPx } : {}) };
+  const lineFontPx = styles.map((style) => fontPx * style.ratio);
+  const h = styles.reduce((sum, style, index) => sum + lineFontPx[index]! * style.leading, 0);
+  return { w: natural * fit, h, fontPx, fit, ...(sceneLinesStyled(scene, el, styles.map((style) => style.ratio)) ? { lineFontPx } : {}) };
 }
 
 export interface SceneBox {
@@ -1191,96 +1911,192 @@ export interface SceneLaid {
 }
 
 export interface SceneGroupLayout {
+  /** 小标题、主标题、副标题的外框。 */
   box: SceneBox;
+  /** 连同编入组的图层在内的整组外框。 */
+  frame: SceneBox;
   align: SceneAlign;
   gap: number;
-  /** 相邻两层之间的实际间距，长度为 ids.length - 1。 */
+  /** 相邻两层文字之间的实际间距，长度为 ids.length - 1。 */
   gaps: number[];
   anchor: { x: number; y: number };
   ids: string[];
+  /** 从上到下排进标题组的全部图层，含编入组的图层。 */
+  stackIds: string[];
 }
 
-/** 所有可见元素的最终位置。标题组成员按 小标题→主标题→副标题 纵向堆叠，组中心落在组锚点上。 */
-export function layoutScene(scene: SceneState, board: SceneBoardRef, lang: Lang): { laid: SceneLaid[]; group: SceneGroupLayout | null } {
+function hasSceneContent(scene: SceneState, el: SceneElement, lang: Lang) {
+  return el.role === "visual" || el.role === "logo" || Boolean(sceneText(el, lang).trim()) || (el.role === "badge" && sceneBadgeStyle(scene).id === "earnings");
+}
+
+/** 标题组从上到下的层序，含隐藏的层；新编入或新出现的层按缺省位置插进已存的层序。 */
+export function sceneGroupOrder(scene: SceneState, family: SceneBucket): string[] {
+  const edits = scene.familyEdits[family] ?? {};
+  const riders = (v: SceneAttach["v"]) => scene.elements.filter((el) => SCENE_ATTACH_ROLES.includes(el.role) && edits[el.id]?.attach?.v === v).map((el) => el.id);
+  const core = SCENE_GROUP_ROLES.flatMap((role) => scene.elements.filter((el) => el.role === role).map((el) => el.id));
+  const defaults = [...riders("above"), ...core, ...riders("below")];
+  const order = (edits[SCENE_GROUP_ID]?.order ?? []).filter((id) => defaults.includes(id));
+  if (!order.length) return defaults;
+  defaults.forEach((id, index) => {
+    if (order.includes(id)) return;
+    const before = defaults.slice(0, index).reverse().find((item) => order.includes(item));
+    order.splice(before ? order.indexOf(before) + 1 : 0, 0, id);
+  });
+  return order;
+}
+
+/** 按层序把标题组排好（未做安全区与避让）：文字部分的中心落在组锚点上，编入组的图层排在各自的位置。 */
+function stackSceneGroup(scene: SceneState, board: SceneBoardRef, lang: Lang) {
   const group = resolveSceneGroup(scene, board);
-  const stack: SceneLaid[] = [];
+  const u = unitOf(board) * group.scale;
+  const core: SceneLaid[] = [];
   for (const role of SCENE_GROUP_ROLES) {
     for (const el of scene.elements.filter((item) => item.role === role)) {
       const placement = resolveScenePlacement(scene, board, el);
       if (!placement.visible || !sceneText(el, lang).trim()) continue;
       const metrics = sceneMetrics(scene, board, el, placement, lang);
-      stack.push({ el, placement, metrics, box: { x: 0, y: 0, w: 0, h: 0 } });
+      core.push({ el, placement, metrics, box: { x: 0, y: 0, w: 0, h: 0 } });
     }
   }
+  if (!core.length) return null;
+  /** 族里的对齐覆盖了规范：外框按规范锚点的那条边定位，各行按族里的对齐排。 */
+  let anchorX = group.x;
+  if (group.edge && group.edge !== group.align) {
+    const w = Math.max(...core.map((item) => item.metrics.w));
+    const left = group.x * board.w - (group.edge === "left" ? 0 : group.edge === "center" ? w / 2 : w);
+    anchorX = (left + (group.align === "left" ? 0 : group.align === "center" ? w / 2 : w)) / board.w;
+    for (const item of core) item.placement = { ...item.placement, x: anchorX };
+  }
+  const riders: SceneLaid[] = [];
+  for (const el of scene.elements) {
+    if (!SCENE_ATTACH_ROLES.includes(el.role)) continue;
+    const placement = resolveScenePlacement(scene, board, el);
+    if (!placement.visible || !placement.attach || placement.attach.v === "beside" || !hasSceneContent(scene, el, lang)) continue;
+    riders.push({ el, placement, metrics: sceneMetrics(scene, board, el, placement, lang), box: { x: 0, y: 0, w: 0, h: 0 } });
+  }
+  const order = sceneGroupOrder(scene, sceneBucketOf(board));
+  const rank = (item: SceneLaid) => {
+    const index = order.indexOf(item.el.id);
+    return index < 0 ? order.length : index;
+  };
+  const stack = [...core, ...riders].sort((a, b) => rank(a) - rank(b));
   const baseGap = sceneGroupBaseGap(board) * group.scale;
   const gap = baseGap * (group.gap ?? 1);
-  const gaps = stack.slice(1).map((lower, index) => {
+  const titleAt = stack.findIndex((item) => item.el.role === "title");
+  const pivot = titleAt >= 0 ? titleAt : stack.findIndex((item) => isSceneGroupRole(item.el.role));
+  const between = stack.slice(1).map((lower, index) => {
     const upper = stack[index]!;
+    if (lower.placement.attach && index + 1 > pivot) return lower.placement.attach.dy * u;
+    if (upper.placement.attach && index < pivot) return upper.placement.attach.dy * u;
     const own = upper.el.role === "kicker"
       ? resolveSceneOwn(scene, board, upper.el).gap
       : lower.el.role === "subtitle" ? resolveSceneOwn(scene, board, lower.el).gap : undefined;
     return own === undefined ? gap : baseGap * own;
   });
-  const total = stack.reduce((sum, item) => sum + item.metrics.h, 0) + gaps.reduce((sum, value) => sum + value, 0);
-  let top = group.y * board.h - total / 2;
+  const tops: number[] = [];
+  let cursor = 0;
   stack.forEach((item, index) => {
-    item.placement = { ...item.placement, y: (top + item.metrics.h / 2) / board.h };
-    item.box = sceneBox(scene, board, item.el, item.placement, item.metrics);
-    top += item.metrics.h + (gaps[index] ?? 0);
+    tops.push(cursor);
+    cursor += item.metrics.h + (between[index] ?? 0);
   });
-  const groupBox: SceneBox | null = stack.length ? {
-    x: Math.min(...stack.map((item) => item.box.x)),
-    y: stack[0]!.box.y,
-    w: Math.max(...stack.map((item) => item.box.x + item.box.w)) - Math.min(...stack.map((item) => item.box.x)),
-    h: total,
-  } : null;
-  const byId = new Map(stack.map((item) => [item.el.id, item]));
+  const first = stack.findIndex((item) => isSceneGroupRole(item.el.role));
+  const last = stack.length - 1 - [...stack].reverse().findIndex((item) => isSceneGroupRole(item.el.role));
+  const spanTop = tops[first]!;
+  const spanBottom = tops[last]! + stack[last]!.metrics.h;
+  const offset = group.y * board.h - (spanTop + spanBottom) / 2;
+  const coreX = core.map((item) => sceneBox(scene, board, item.el, item.placement, item.metrics));
+  const left = Math.min(...coreX.map((box) => box.x));
+  const coreBox: SceneBox = { x: left, y: spanTop + offset, w: Math.max(...coreX.map((box) => box.x + box.w)) - left, h: spanBottom - spanTop };
+  stack.forEach((item, index) => {
+    const top = tops[index]! + offset;
+    if (isSceneGroupRole(item.el.role)) {
+      item.placement = { ...item.placement, y: (top + item.metrics.h / 2) / board.h };
+      item.box = sceneBox(scene, board, item.el, item.placement, item.metrics);
+      return;
+    }
+    /** 编入组的上下层跟标题组同一对齐方式。 */
+    const align = group.align;
+    const x = edgeX(coreBox, align) + item.placement.attach!.dx * u - (align === "left" ? 0 : align === "center" ? item.metrics.w / 2 : item.metrics.w);
+    item.box = { x, y: top, w: item.metrics.w, h: item.metrics.h };
+    item.placement = { ...item.placement, align, x: edgeX(item.box, align) / board.w, y: (item.el.role === "badge" ? top : top + item.metrics.h / 2) / board.h };
+  });
+  return { group, u, gap, anchorX, stack, core: stack.filter((item) => isSceneGroupRole(item.el.role)), riders, coreBox };
+}
+
+/**
+ * 显示/隐藏标题组里的一层后，整组顶边在排版上移动的距离，按 ScenePlacement.shift 的单位。
+ * 抵消它就是顶边不动、下面的层顺次让开或补上，和顶部对齐的 Auto Layout 一样。
+ */
+export function sceneGroupDrift(before: SceneState, after: SceneState, board: SceneBoardRef, lang: Lang): number {
+  const family = sceneBucketOf(board);
+  const a = stackSceneGroup(sceneFamilyView(before, family, board.show), board, lang);
+  const b = stackSceneGroup(sceneFamilyView(after, family, board.show), board, lang);
+  if (!a?.stack[0] || !b?.stack[0] || !a.u) return 0;
+  return (b.stack[0].box.y - a.stack[0].box.y) / a.u;
+}
+
+/** 所有可见元素的最终位置。标题组按层序纵向堆叠，文字部分的中心落在组锚点上。 */
+export function layoutScene(input: SceneState, board: SceneBoardRef, lang: Lang): { laid: SceneLaid[]; group: SceneGroupLayout | null } {
+  const scene = sceneFamilyView(input, sceneBucketOf(board), board.show);
+  const stacked = stackSceneGroup(scene, board, lang);
+  const groupBox = stacked?.coreBox ?? null;
+  const core = stacked?.core ?? [];
+  const byId = new Map((stacked?.stack ?? []).map((item) => [item.el.id, item]));
   const laid: SceneLaid[] = [];
+  const attached: SceneLaid[] = [...(stacked?.riders ?? [])];
   for (const el of scene.elements) {
-    if (isSceneGroupRole(el.role)) {
-      const item = byId.get(el.id);
-      if (item) laid.push(item);
+    const item = byId.get(el.id);
+    if (item) {
+      laid.push(item);
       continue;
     }
+    if (isSceneGroupRole(el.role)) continue;
     let placement = resolveScenePlacement(scene, board, el);
-    if (!placement.visible) continue;
-    if (el.role !== "visual" && el.role !== "logo" && !sceneText(el, lang).trim() && !(el.role === "badge" && sceneBadgeStyle(scene).id === "earnings")) continue;
+    if (!placement.visible || !hasSceneContent(scene, el, lang)) continue;
+    if (groupBox && stacked && placement.attach) {
+      const metrics = sceneMetrics(scene, board, el, placement, lang);
+      const a = placement.attach;
+      const y = groupBox.y + groupBox.h / 2 + a.dy * stacked.u - metrics.h / 2;
+      const x = edgeX(groupBox, placement.align) + a.dx * stacked.u - (placement.align === "left" ? 0 : placement.align === "center" ? metrics.w / 2 : metrics.w);
+      const box = { x, y, w: metrics.w, h: metrics.h };
+      placement = { ...placement, x: edgeX(box, placement.align) / board.w, y: (el.role === "badge" ? box.y : box.y + box.h / 2) / board.h };
+      const beside = { el, placement, metrics, box };
+      laid.push(beside);
+      attached.push(beside);
+      continue;
+    }
     if (groupBox && el.role !== "visual" && placement.follow && placement.follow !== "none") {
       placement = { ...placement, x: followX(groupBox, placement.follow) / board.w, align: placement.follow };
     }
     const metrics = sceneMetrics(scene, board, el, placement, lang);
     const ctaRule = board.layout?.cta;
     const own = scene.boardOverrides[board.key]?.[el.id];
-    const subtitle = stack.find((item) => item.el.role === "subtitle");
+    const subtitle = core.find((entry) => entry.el.role === "subtitle");
     if (el.role === "cta" && ctaRule && "afterSubtitle" in ctaRule && subtitle && own?.x === undefined && own?.y === undefined) {
       placement = { ...placement, x: (subtitle.box.x + subtitle.box.w + ctaRule.afterSubtitle) / board.w, y: (subtitle.box.y + subtitle.box.h / 2) / board.h, align: "left" };
     }
     laid.push({ el, placement, metrics, box: sceneBox(scene, board, el, placement, metrics) });
   }
   /** 跟着副标题走的 CTA（课堂）和标题组一起挪。 */
-  const unitIds = new Set(stack.map((item) => item.el.id));
+  const unitIds = new Set([...core, ...attached].map((item) => item.el.id));
   const rider = board.layout?.cta && "afterSubtitle" in board.layout.cta ? laid.find((item) => item.el.role === "cta") : undefined;
   if (rider) unitIds.add(rider.el.id);
   fitSceneZones(board, laid, unitIds);
-  if (avoidTopElements(board, laid, stack, rider, gap)) fitSceneZones(board, laid, unitIds);
+  if (avoidTopElements(board, laid, core, attached, rider, stacked?.gap ?? 0)) fitSceneZones(board, laid, unitIds);
   keepBadgeInside(board, laid);
-  if (!stack.length) return { laid, group: null };
-  const fitted: SceneBox = {
-    x: Math.min(...stack.map((item) => item.box.x)),
-    y: stack[0]!.box.y,
-    w: Math.max(...stack.map((item) => item.box.x + item.box.w)) - Math.min(...stack.map((item) => item.box.x)),
-    h: total,
-  };
-  const shift = { x: fitted.x - groupBox!.x, y: fitted.y - groupBox!.y };
+  if (!stacked || !groupBox) return { laid, group: null };
+  const fitted = stackBox(core);
   return {
     laid,
     group: {
       box: fitted,
-      align: group.align,
-      gap,
-      gaps,
-      anchor: { x: group.x * board.w + shift.x, y: group.y * board.h + shift.y },
-      ids: stack.map((item) => item.el.id),
+      frame: stackBox([...core, ...attached]),
+      align: stacked.group.align,
+      gap: stacked.gap,
+      gaps: core.slice(1).map((item, index) => item.box.y - (core[index]!.box.y + core[index]!.box.h)),
+      anchor: { x: stacked.anchorX * board.w + fitted.x - groupBox.x, y: fitted.y + fitted.h / 2 },
+      ids: core.map((item) => item.el.id),
+      stackIds: stacked.stack.map((item) => item.el.id),
     },
   };
 }
@@ -1344,7 +2160,7 @@ function shiftSceneLaid(board: SceneBoardRef, units: SceneLaid[], dx: number, dy
 /** 角标贴顶边，只做水平收边：贴左边（x≈0）的版本保留，其余收进左右安全边距。 */
 function keepBadgeInside(board: SceneBoardRef, laid: SceneLaid[]) {
   const badge = laid.find((item) => item.el.role === "badge");
-  if (!badge) return;
+  if (!badge || badge.placement.attach) return;
   const pad = (24 / 1080) * board.w;
   const { x, w } = badge.box;
   if (Math.abs(x) <= 1 || w > board.w - pad * 2) return;
@@ -1362,20 +2178,24 @@ function stackBox(stack: SceneLaid[]): SceneBox {
  * 顶部元素压到标题组时让位：贴顶的角标不动，标题组下移到角标下方一个组间距；
  * Logo 放到组上方一个组间距，顶部放不下再把标题组往下让。
  */
-function avoidTopElements(board: SceneBoardRef, laid: SceneLaid[], stack: SceneLaid[], rider: SceneLaid | undefined, gap: number) {
+function avoidTopElements(board: SceneBoardRef, laid: SceneLaid[], stack: SceneLaid[], attached: SceneLaid[], rider: SceneLaid | undefined, gap: number) {
   if (!stack.length) return false;
   let moved = false;
-  const unit = rider ? [...stack, rider] : stack;
-  const badge = laid.find((item) => item.el.role === "badge");
+  /** 标题组连同编入组里的图层是一个整体，组里的角标、Logo 不再单独让位。 */
+  const block = [...stack, ...attached];
+  const unit = rider ? [...block, rider] : block;
+  const free = (role: SceneRole) => laid.find((item) => item.el.role === role && !item.placement.attach);
+  const badge = free("badge");
   /** 通栏族按训练集排，不在这里改。 */
-  const adjustable = Boolean(board.layout?.group) || sceneFamilyOf(board.w, board.h) !== "strip";
-  if (badge && adjustable && overlaps(badge.box, stackBox(stack))) {
-    shiftSceneLaid(board, unit, 0, badge.box.y + badge.box.h + gap - stackBox(stack).y);
+  const adjustable = Boolean(board.layout?.group) || sceneBoardFamily(board) !== "strip";
+  if (badge && adjustable && overlaps(badge.box, stackBox(block))) {
+    shiftSceneLaid(board, unit, 0, badge.box.y + badge.box.h + gap - stackBox(block).y);
     moved = true;
   }
-  const logo = laid.find((item) => item.el.role === "logo");
-  if (logo && overlaps(logo.box, stackBox(stack))) {
-    const groupTop = stackBox(stack).y;
+  const logo = free("logo");
+  /** 只在压到组里某一层时让位；取消编组后留在两层文字之间的 Logo 不动。 */
+  if (logo && block.some((item) => overlaps(logo.box, item.box))) {
+    const groupTop = stackBox(block).y;
     const topBands = (board.zones ?? []).filter((zone) => zone.kind === "reserved" && zone.y <= 0 && zone.w >= board.w * 0.5);
     const top = Math.max(0.04 * board.h, sceneContentArea(board).y, ...topBands.map((zone) => zone.y + zone.h));
     const want = groupTop - gap - logo.box.h;
@@ -1383,13 +2203,13 @@ function avoidTopElements(board: SceneBoardRef, laid: SceneLaid[], stack: SceneL
     if (want < top) shiftSceneLaid(board, unit, 0, top + logo.box.h + gap - groupTop);
     moved = true;
   }
-  /** 规范把 CTA 放在标题组下方时，组变高（多了小标题）就整体上移，底边离 CTA 一个组间距。 */
+  /** 规范把 CTA 放在标题组下方时，组变高（多了小标题）就整体上移，底边离 CTA 一个组间距；排版自由的画板不推，CTA 与标题组各挪各的。 */
   const cta = laid.find((item) => item.el.role === "cta");
-  const group = stackBox(stack);
-  if (board.layout?.group && cta && !rider && cta.box.y > group.y && overlaps(cta.box, group)) {
+  const group = stackBox(block);
+  if (board.layout?.group && !board.layout.soft && cta && !rider && cta.box.y > group.y && overlaps(cta.box, group)) {
     const floor = badge ? badge.box.y + badge.box.h + gap : -Infinity;
-    shiftSceneLaid(board, stack, 0, Math.max(cta.box.y - gap - (group.y + group.h), Math.min(0, floor - group.y)));
-    const after = stackBox(stack);
+    shiftSceneLaid(board, block, 0, Math.max(cta.box.y - gap - (group.y + group.h), Math.min(0, floor - group.y)));
+    const after = stackBox(block);
     if (overlaps(cta.box, after)) shiftSceneLaid(board, [cta], 0, after.y + after.h + gap - cta.box.y);
     moved = true;
   }
@@ -1419,7 +2239,8 @@ export interface SceneIssue {
   text: string;
 }
 
-export function checkSceneBoard(scene: SceneState, board: SceneBoardRef, lang: Lang): SceneIssue[] {
+export function checkSceneBoard(input: SceneState, board: SceneBoardRef, lang: Lang): SceneIssue[] {
+  const scene = sceneFamilyView(input, sceneBucketOf(board), board.show);
   const issues: SceneIssue[] = [];
   const padX = (24 / 1080) * board.w;
   const padY = 0.04 * board.h;
@@ -1427,7 +2248,7 @@ export function checkSceneBoard(scene: SceneState, board: SceneBoardRef, lang: L
   const placed: Array<{ el: SceneElement; box: SceneBox }> = [];
   let subject: SceneBox | null = null;
   const result = layoutScene(scene, board, lang);
-  const specAlign = board.layout?.group?.align;
+  const specAlign = board.layout?.soft ? undefined : board.layout?.group?.align;
   if (specAlign && result.group && result.group.align !== specAlign) {
     const name = { left: "左对齐", center: "居中", right: "右对齐" }[specAlign];
     issues.push({ ids: result.group.ids, text: `标题组对齐与规范不符，规范为${name}` });
@@ -1522,6 +2343,7 @@ export function highlightPaints(scene: SceneState, preset: string): ScenePaint[]
     const custom = sceneCustomGradient(scene);
     return [{ type: custom.type, transform: sceneGradientTransform(custom.angle), stops: custom.stops }];
   }
+  if (preset === "custom-solid") return [{ type: "SOLID", color: scene.customSolid ?? "#FFFFFF" }];
   const found = SCENE_HIGHLIGHT_PRESETS.find((item) => item.id === preset);
   if (found) return found.paints;
   const legacy = LEGACY_HIGHLIGHTS[preset] ?? ["#FFFFFF"];
@@ -1685,6 +2507,9 @@ export interface SceneLayerOut {
   fontRuns?: SceneFontRunOut[];
   /** 逐行字号（真实像素），只在主标题断行有行比例时给出。 */
   lineFontPx?: number[];
+  /** 逐行行高、字间距（真实像素），和 lineFontPx 一起给出。 */
+  lineHeightPx?: number[];
+  lineLetterSpacing?: number[];
   letterSpacing?: number;
   /** 文字描边，粗细为真实像素。 */
   stroke?: { paints: ScenePaint[]; weight: number; align: SceneStrokeAlign };
@@ -1795,13 +2620,17 @@ export interface SceneBoard {
   group: SceneGroupLayout | null;
   /** 左右两侧过渡到底色的宽度（px），压在主视觉上、文字下。 */
   edgeFade?: number;
+  /** 该画板所在版式族用的 Logo 样式。 */
+  logoPreset: LibraryLogoPreset;
 }
 
-export function buildSceneBoard(scene: SceneState, board: SceneBoardRef, lang: Lang): SceneBoard {
+export function buildSceneBoard(input: SceneState, board: SceneBoardRef, lang: Lang): SceneBoard {
+  const scene = sceneFamilyView(input, sceneBucketOf(board), board.show);
   const custom = scene.ctaPreset === "custom" ? scene.ctaCustom ?? SCENE_CTA_CUSTOM_DEFAULT : null;
   const cta = CTA_STYLE_PRESETS.find((item) => item.id === scene.ctaPreset) ?? CTA_STYLE_PRESETS[0]!;
   const layout = layoutScene(scene, board, lang);
-  const ordered = [...layout.laid].sort((a, b) => (a.el.role === "visual" ? -1 : b.el.role === "visual" ? 1 : 0));
+  /** 绘制顺序就是图层顺序（elements 越靠后越在上层），主视觉默认在最底层。 */
+  const ordered = layout.laid;
   const layers: SceneLayerOut[] = [];
   const notes: string[] = [];
   const script = sceneFontScript(lang);
@@ -1816,12 +2645,14 @@ export function buildSceneBoard(scene: SceneState, board: SceneBoardRef, lang: L
     const badgeStyle = el.role === "badge" ? sceneBadgeStyle(scene) : null;
     const font = badgeStyle
       ? { ...sceneFont(scene, { id: el.id, role: "title" }, lang), lineHeight: badgeStyle.lineHeight }
-      : { ...sceneFont(scene, el, lang), lineHeight: SCENE_LINE_HEIGHT };
+      : { ...sceneFont(scene, el, lang), lineHeight: el.role === "cta" ? SCENE_LINE_HEIGHT : sceneLeading(scene, el) };
+    const lineStyles = metrics.lineFontPx ? sceneLineStyles(scene, el, metrics.lineFontPx.length, sceneBucketOf(board)) : [];
     const tracking = scene.tracking?.[el.id];
     const letterSpacing = badgeStyle?.letterSpacing?.[script]
       ? badgeStyle.letterSpacing[script] * (metrics.fontPx / badgeStyle.fontPx.short[script])
       : tracking ? tracking * metrics.fontPx : undefined;
-    const ctaSpec = el.role === "cta" ? board.ctaSpec : undefined;
+    const ctaSpec = el.role === "cta" && metrics.locked ? board.ctaSpec : undefined;
+    const ctaScale = el.role === "cta" && board.ctaSpec && !metrics.locked ? metrics.h / board.ctaSpec.height : 0;
     const stroke = SCENE_TEXT_ROLES.includes(el.role) ? scene.strokes?.[el.id] : undefined;
     const fontRuns = SCENE_TEXT_ROLES.includes(el.role) ? sceneFontRuns(scene, el, lang) : [];
     const strokePx = stroke ? stroke.weight * metrics.fontPx : 0;
@@ -1833,7 +2664,11 @@ export function buildSceneBoard(scene: SceneState, board: SceneBoardRef, lang: L
       anchor: { x: placement.x * board.w, y: el.role === "badge" ? box.y + box.h / 2 : placement.y * board.h },
       align: placement.align,
       ...(el.role !== "visual" && el.role !== "logo" ? { text, fontPx: metrics.fontPx, ...font } : {}),
-      ...(metrics.lineFontPx ? { lineFontPx: metrics.lineFontPx } : {}),
+      ...(metrics.lineFontPx ? {
+        lineFontPx: metrics.lineFontPx,
+        lineHeightPx: metrics.lineFontPx.map((px, index) => px * lineStyles[index]!.leading),
+        lineLetterSpacing: metrics.lineFontPx.map((px, index) => px * lineStyles[index]!.tracking),
+      } : {}),
       ...(letterSpacing ? { letterSpacing } : {}),
       ...(SCENE_TEXT_ROLES.includes(el.role) ? { charColors: sceneCharColors(scene, el, lang), highlightRuns: sceneHighlightRuns(scene, el, lang) } : {}),
       ...(fontRuns.length ? { fontRuns } : {}),
@@ -1845,8 +2680,8 @@ export function buildSceneBoard(scene: SceneState, board: SceneBoardRef, lang: L
           ...(!custom && cta.backgroundImage ? { backgroundImage: cta.backgroundImage } : {}),
           ...(custom ? { paints: sceneFillPaints(custom.fill) } : {}),
           textColor: scene.textColors[el.id] ?? (custom ? custom.textColor : cta.defaultTextColor),
-          paddingX: ctaSpec ? ctaSpec.paddingX : metrics.h * 0.39,
-          minWidth: ctaSpec ? ctaSpec.minWidth : metrics.h * 2.5,
+          paddingX: ctaSpec ? ctaSpec.paddingX : ctaScale ? board.ctaSpec!.paddingX * ctaScale : metrics.h * 0.39,
+          minWidth: ctaSpec ? ctaSpec.minWidth : ctaScale ? board.ctaSpec!.minWidth * ctaScale : metrics.h * 2.5,
           ...(ctaSpec ? { maxWidth: ctaSpec.maxWidth, locked: true } : {}),
           ...((!ctaSpec || ctaSpec.lengths) && (placement.length || placement.w) ? { fixedWidth: metrics.w } : {}),
         },
@@ -1862,6 +2697,7 @@ export function buildSceneBoard(scene: SceneState, board: SceneBoardRef, lang: L
     notes,
     group: layout.group,
     ...(board.edgeFade ? { edgeFade: board.edgeFade } : {}),
+    logoPreset: scene.logoPreset,
   };
 }
 
@@ -1911,10 +2747,10 @@ export function createDefaultScene(copy: Partial<Record<Lang, LangCopy>>): Scene
     elements: [
       { id: "visual", role: "visual", name: "主视觉组件", visible: true, texts: {} },
       { id: "logo", role: "logo", name: "Logo", visible: false, texts: {} },
-      { id: "kicker", role: "kicker", name: "小标题", visible: false, texts: { en: "Market Focus", sc: "市场焦点", tc: "市場焦點" } },
-      { id: "title", role: "title", name: "主标题", visible: true, texts: pick((item) => item.title, { en: "Smart Money's Next Stop", sc: "聪明钱的下一站", tc: "聰明錢的下一站" }) },
-      { id: "subtitle", role: "subtitle", name: "副标题", visible: true, texts: pick((item) => item.sub, { en: "Where big money moves", sc: "AI 狂欢下的大资金动向", tc: "AI 狂歡下的大資金動向" }) },
-      { id: "cta", role: "cta", name: "CTA", visible: true, texts: pick((item) => item.ctaShort || item.ctaLong, { en: "Learn More", sc: "立即查看", tc: "立即查看" }) },
+      { id: "kicker", role: "kicker", name: "小标题", visible: false, texts: { en: "Market Focus", sc: "市场焦点", tc: "市場焦點", ja: "条件達成で必ずもらおう" } },
+      { id: "title", role: "title", name: "主标题", visible: true, texts: pick((item) => item.title, { en: "Smart Money's Next Stop", sc: "聪明钱的下一站", tc: "聰明錢的下一站", ja: "5万円分のNVIDIA株またはSpaceX株" }) },
+      { id: "subtitle", role: "subtitle", name: "副标题", visible: true, texts: pick((item) => item.sub, { en: "Where big money moves", sc: "AI 狂欢下的大资金动向", tc: "AI 狂歡下的大資金動向", ja: "条件達成で必ずもらおう" }) },
+      { id: "cta", role: "cta", name: "CTA", visible: true, texts: pick((item) => item.ctaShort || item.ctaLong, { en: "Learn More", sc: "立即查看", tc: "立即查看", ja: "今すぐ参加" }) },
     ],
     familyEdits: {},
     boardOverrides: {},
@@ -1950,51 +2786,65 @@ const SCENE_FAMILIES: readonly SceneFamily[] = ["strip", "landscape", "square", 
  * 套用训练版式：决定标题组有哪几层、是否用组合 Logo，并按训练稿写入通栏的对齐、主标题逐行字号比例。
  * 角标与免责是否出现只由文案决定；训练稿带免责时按其位置摆放，否则放在默认位置（CTA 下方）。
  */
-export function applySceneCopyVariant(scene: SceneState, key: string, spec: SceneCopyVariantSpec): SceneState {
+export function applySceneCopyVariant(scene: SceneState, key: string, spec: SceneCopyVariantSpec, only?: SceneBucket): SceneState {
   const wanted = new Set<SceneRole>(sceneStructureRoles(spec.structure));
   if (spec.modules.combinedLogo) wanted.add("logo");
   const elements = [...scene.elements];
   for (const role of wanted) {
     if (!elements.some((el) => el.role === role)) elements.push(sceneDefaultElement(role, 0));
   }
+  const families = only ? [only] : SCENE_FAMILIES;
   const title = elements.find((el) => el.role === "title");
+  const ratios = title && spec.mainTitleLines >= 2 && spec.lineRatios ? spec.lineRatios : undefined;
   const lineRatios = { ...scene.lineRatios };
-  if (title) {
-    if (spec.mainTitleLines >= 2 && spec.lineRatios) lineRatios[title.id] = spec.lineRatios;
+  if (title && !only) {
+    if (ratios) lineRatios[title.id] = ratios;
     else delete lineRatios[title.id];
   }
   const familyLineRatios = Object.fromEntries(Object.entries(scene.familyLineRatios ?? {}).map(([family, map]) => {
     const next = { ...map };
-    if (title) delete next[title.id];
+    if (title && (!only || family === only)) delete next[title.id];
     return [family, next];
-  })) as SceneState["familyLineRatios"];
+  })) as NonNullable<SceneState["familyLineRatios"]>;
+  /** 只套到一个版式族时，逐行字号写到该族，不动其它族。 */
+  if (title && only && (ratios || scene.lineRatios?.[title.id])) familyLineRatios[only] = { ...familyLineRatios[only], [title.id]: ratios ?? [] };
   const familyEdits = { ...scene.familyEdits };
-  const patch = (family: SceneFamily, id: string, value: ScenePlacementPatch) => {
+  const patch = (family: SceneBucket, id: string, value: ScenePlacementPatch) => {
     familyEdits[family] = { ...familyEdits[family], [id]: { ...familyEdits[family]?.[id], ...value } };
   };
-  patch("strip", SCENE_GROUP_ID, {
-    align: spec.alignment,
-    x: spec.groupAnchor?.x ?? (spec.alignment === "center" ? 0.54 : GROUP_POS.strip[0]),
-    ...(spec.groupAnchor ? { y: spec.groupAnchor.y } : {}),
-  });
+  for (const family of families) {
+    if (sceneBucketFamily(family) !== "strip") continue;
+    patch(family, SCENE_GROUP_ID, {
+      align: spec.alignment,
+      x: spec.groupAnchor?.x ?? (spec.alignment === "center" ? 0.54 : GROUP_POS.strip[0]),
+      ...(spec.groupAnchor ? { y: spec.groupAnchor.y } : {}),
+    });
+  }
   const logo = elements.find((el) => el.role === "logo");
   if (logo && spec.modules.combinedLogo) {
-    for (const family of SCENE_FAMILIES) patch(family, logo.id, { follow: family === "strip" ? spec.alignment : GROUP_POS[family][2] });
+    for (const family of families) {
+      const shape = sceneBucketFamily(family);
+      if (!familyEdits[family]?.[logo.id]?.attach) patch(family, logo.id, { follow: shape === "strip" ? spec.alignment : GROUP_POS[shape][2] });
+    }
   }
   const disclaimer = elements.find((el) => el.role === "disclaimer");
   if (disclaimer?.visible) {
-    for (const family of SCENE_FAMILIES) {
+    for (const family of families) {
+      const shape = sceneBucketFamily(family);
+      if (familyEdits[family]?.[disclaimer.id]?.attach) continue;
       if (!spec.modules.disclaimer || spec.disclaimerUnderCta) {
-        const [x, y, align] = DEFAULT_POS[family].disclaimer;
+        const [x, y, align] = DEFAULT_POS[shape].disclaimer;
         patch(family, disclaimer.id, { follow: "none", x, y, align });
       } else {
-        patch(family, disclaimer.id, { follow: family === "strip" ? spec.alignment : GROUP_POS[family][2], ...(family === "strip" ? { y: 192 / 225 } : {}) });
+        patch(family, disclaimer.id, { follow: shape === "strip" ? spec.alignment : GROUP_POS[shape][2], ...(shape === "strip" ? { y: 192 / 225 } : {}) });
       }
     }
   }
   const badge = elements.find((el) => el.role === "badge");
   if (badge?.visible) {
-    for (const family of SCENE_FAMILIES) patch(family, badge.id, { follow: "center", y: 0 });
+    for (const family of families) {
+      if (!familyEdits[family]?.[badge.id]?.attach) patch(family, badge.id, { follow: "center", y: 0 });
+    }
   }
   const logoPreset = spec.modules.combinedLogo && !scene.logoPreset.includes("Nasdaq")
     ? (`${scene.logoPreset.startsWith("moomoo") ? "moomoo" : "futu"}Nasdaq${scene.logoPreset.endsWith("Light") ? "Light" : ""}` as LibraryLogoPreset)
@@ -2009,6 +2859,8 @@ export function applySceneCopyVariant(scene: SceneState, key: string, spec: Scen
     familyEdits,
     logoPreset,
     elements: elements.map((el) => {
+      /** 已编入标题组的 Logo 是用户自己组的，换版式时保留。 */
+      if (el.role === "logo" && only && familyEdits[only]?.[el.id]?.attach) return el;
       if (isSceneGroupRole(el.role) || el.role === "logo") return { ...el, visible: wanted.has(el.role) };
       return el;
     }),

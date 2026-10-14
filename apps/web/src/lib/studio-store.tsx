@@ -18,6 +18,7 @@ import {
   createDefaultScene,
   type SceneState,
   emptyLangCopy,
+  initialLangCopy,
   isOverridden,
   nextUnusedLang,
   sizeKey,
@@ -34,7 +35,7 @@ import { ALL_SIZES, slotByKey, slotKey, slotTarget } from "@futu/specs";
 import { createDefaultProject } from "./seed";
 import type { FigmaRecognitionResult } from "./figma-recognition";
 
-export const STEPS = ["准备主视觉", "选择资源位", "配置内容与样式", "批量生成并精调"] as const;
+export const STEPS = ["准备主视觉", "选择资源位", "配置内容与样式", "批量生成并细化"] as const;
 export type StepIndex = 0 | 1 | 2 | 3;
 export type EntryMode = "pick" | "blank";
 export type VisualComponentRecognitionSource = {
@@ -154,8 +155,64 @@ function clone<T>(v: T): T {
   return structuredClone(v);
 }
 
+function isEmptyLanguageCopy(copy?: LangCopy) {
+  return !copy
+    || ![copy.sub, copy.supplement, copy.title, copy.ctaLong, copy.ctaShort, copy.badge].some((value) => value?.trim())
+      && copy.disclaimer.length === 0;
+}
+
+/** 旧项目新增日语时没有写入文案，渲染会回退到英文；只补完全空的初始状态，不覆盖已编辑内容。 */
+function initializeLanguageContent(project: Project, id: Lang): Project {
+  if (id !== "ja") return project;
+
+  const shouldInitializeCopy = isEmptyLanguageCopy(project.content.copy[id]);
+  const copy = shouldInitializeCopy
+    ? { ...project.content.copy, [id]: initialLangCopy(id) }
+    : project.content.copy;
+  const scene = project.content.scene;
+  const hasJapaneseSceneText = scene?.elements.some((element) => Boolean(element.texts[id]?.trim())) ?? false;
+  const shouldInitializeSavedState = Boolean(scene)
+    && !Object.hasOwn(scene?.savedFamiliesByLanguage ?? {}, id);
+  if (!shouldInitializeCopy && hasJapaneseSceneText && !shouldInitializeSavedState) return project;
+
+  const defaults = createDefaultScene(copy);
+  const defaultTexts = new Map(defaults.elements.map((element) => [element.id, element.texts[id]]));
+  const savedFamiliesByLanguage = scene?.savedFamiliesByLanguage
+    ? { ...scene.savedFamiliesByLanguage, [id]: [] }
+    : Object.fromEntries(
+      project.content.langs.map((language) => [
+        language,
+        language === id ? [] : (scene?.savedFamilies ?? []),
+      ]),
+    );
+  const nextScene = scene
+    ? {
+      ...scene,
+      ...(shouldInitializeSavedState ? { savedFamiliesByLanguage } : {}),
+      elements: scene.elements.map((element) => {
+        const text = defaultTexts.get(element.id);
+        return text && !element.texts[id]?.trim()
+          ? { ...element, texts: { ...element.texts, [id]: text } }
+          : element;
+      }),
+    }
+    : scene;
+
+  return {
+    ...project,
+    content: {
+      ...project.content,
+      copy,
+      ...(nextScene ? { scene: nextScene } : {}),
+    },
+  };
+}
+
 function normalizeProjectTargets(project: Project): Project {
-  const normalizedTargets = project.targets.flatMap((target) => {
+  const initializedProject = project.content.langs.includes("ja")
+    ? initializeLanguageContent(project, "ja")
+    : project;
+  const normalizedTargets = initializedProject.targets.flatMap((target) => {
     const catalogItem = slotByKey(target.key)
       ?? ALL_SIZES.find((item) => item.id === target.sizeId)
       ?? slotByKey(sizeKey(target.w, target.h));
@@ -165,10 +222,10 @@ function normalizeProjectTargets(project: Project): Project {
   const targets = [...new Map(normalizedTargets.map((target) => [target.key, target])).values()];
   const targetKeys = new Set(targets.map((target) => target.key));
   return {
-    ...project,
+    ...initializedProject,
     targets,
     overrides: Object.fromEntries(
-      Object.entries(project.overrides).filter(([key]) => targetKeys.has(key)),
+      Object.entries(initializedProject.overrides).filter(([key]) => targetKeys.has(key)),
     ),
   };
 }
@@ -352,7 +409,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     setLang(id);
     update((p) => {
       const langs = p.content.langs.includes(id) ? p.content.langs : [...p.content.langs, id];
-      return {
+      return initializeLanguageContent({
         ...p,
         content: {
           ...p.content,
@@ -360,14 +417,17 @@ export function StudioProvider({ children }: { children: ReactNode }) {
           sourceFrames: { ...p.content.sourceFrames, [id]: frame },
           sourceFrame: frame,
         },
-      };
+      }, id);
     });
   };
 
   const addSourceLang: StudioContext["addSourceLang"] = () => {
     const next = nextUnusedLang(project.content.langs);
     if (!next) return;
-    update((p) => ({ ...p, content: { ...p.content, langs: [...p.content.langs, next] } }));
+    update((p) => initializeLanguageContent({
+      ...p,
+      content: { ...p.content, langs: [...p.content.langs, next] },
+    }, next));
     setLang(next);
   };
 
@@ -443,7 +503,10 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     const langs = has ? project.content.langs.filter((x) => x !== id) : [...project.content.langs, id];
     if (langs.length === 0) return;
     update((p) => {
-      if (!has) return { ...p, content: { ...p.content, langs } };
+      if (!has) return initializeLanguageContent({
+        ...p,
+        content: { ...p.content, langs },
+      }, id);
 
       const ctaStyles = { ...p.content.ctaStyles };
       const copyLayoutPresets = { ...p.content.copyLayoutPresets };

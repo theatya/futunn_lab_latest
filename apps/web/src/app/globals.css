@@ -70,6 +70,7 @@
   color-scheme: light;
 
   --app-page: #f5f5f3;
+  --app-workspace-page: #f5f5f3;
   --app-bg: #f1f1ee;
   --app-surface: #ffffff;
   --app-surface-2: #f7f7f5;
@@ -79,6 +80,8 @@
   --app-nest: #efefec;
   --app-nest-line: #e1e1dd;
   --app-rail: #f7f7f5;
+  --app-primary-nav: #ecece8;
+  --app-primary-nav-active: #d9d9d3;
   --app-rail-2: #ebebe7;
   --app-rail-text: #181817;
   --app-rail-muted: #777772;
@@ -114,6 +117,7 @@
   color-scheme: dark;
 
   --app-page: #080809;
+  --app-workspace-page: #0d0d0f;
   --app-bg: #0b0b0c;
   --app-surface: #101011;
   --app-surface-2: #161618;
@@ -123,6 +127,8 @@
   --app-nest: #131315;
   --app-nest-line: rgb(255 255 255 / 0.08);
   --app-rail: #09090a;
+  --app-primary-nav: #000000;
+  --app-primary-nav-active: #202023;
   --app-rail-2: #171719;
   --app-rail-text: #f3f3f4;
   --app-rail-muted: #8b8b91;
@@ -320,6 +326,14 @@
 
 .mapping-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgb(255 255 255 / 0.42);
+}
+
+.platform-sidebar-resizer {
+  outline: none;
+}
+
+.platform-sidebar-resizer:focus-visible {
+  background: rgb(255 105 0 / 0.7);
 }
 
 /* ==================================================================
