@@ -16,6 +16,7 @@ import {
   BOARD_CONFIG_DEFAULT,
   boardConfigOf,
   createDefaultScene,
+  normalizeSceneModuleNames,
   type SceneState,
   emptyLangCopy,
   initialLangCopy,
@@ -340,7 +341,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     history.future = [];
     history.lastAt = 0;
   }
-  const currentScene = () => project.content.scene ?? createDefaultScene(project.content.copy);
+  const currentScene = () => normalizeSceneModuleNames(project.content.scene ?? createDefaultScene(project.content.copy));
 
   const updateScene: StudioContext["updateScene"] = (recipe) => {
     const now = Date.now();
@@ -352,7 +353,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     history.future = [];
     update((p) => ({
       ...p,
-      content: { ...p.content, scene: recipe(p.content.scene ?? createDefaultScene(p.content.copy)) },
+      content: { ...p.content, scene: recipe(normalizeSceneModuleNames(p.content.scene ?? createDefaultScene(p.content.copy))) },
     }));
     setHistoryTick((tick) => tick + 1);
   };
@@ -720,7 +721,7 @@ function clampStep(value: number): StepIndex {
 export function useScene() {
   const { project, updateScene, undoScene, redoScene, canUndoScene, canRedoScene } = useStudio();
   const scene = useMemo(
-    () => project.content.scene ?? createDefaultScene(project.content.copy),
+    () => normalizeSceneModuleNames(project.content.scene ?? createDefaultScene(project.content.copy)),
     [project.content.copy, project.content.scene],
   );
   return { scene, updateScene, undoScene, redoScene, canUndoScene, canRedoScene };

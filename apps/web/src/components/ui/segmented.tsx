@@ -14,12 +14,14 @@ export function Segmented<T extends string>({
   options,
   size = "md",
   className,
+  disabled = false,
 }: {
   value: T;
   onChange: (v: T) => void;
   options: ReadonlyArray<{ id: T; label: string }>;
   size?: "sm" | "md";
   className?: string;
+  disabled?: boolean;
 }) {
   const id = useId();
   const reduced = useReducedMotion();
@@ -40,10 +42,12 @@ export function Segmented<T extends string>({
             key={o.id}
             role="tab"
             aria-selected={active}
+            disabled={disabled}
             onClick={() => onChange(o.id)}
             className={cn(
               "relative rounded-[var(--radius-sm)] font-medium whitespace-nowrap",
               "transition-colors duration-[var(--dur-fast)]",
+              "disabled:cursor-not-allowed disabled:opacity-45",
               size === "sm" ? "h-6 px-2 text-[11px]" : "h-7 px-3 text-[12px]",
               active ? "text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:text-[var(--app-text-2)]",
             )}

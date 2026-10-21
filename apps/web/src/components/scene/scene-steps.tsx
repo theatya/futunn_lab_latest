@@ -5,7 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { toBlob } from "html-to-image";
 import JSZip from "jszip";
-import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, CopyPlus, Download, Eye, EyeOff, ImageUp, Layers3, Link2, Loader2, Lock, LockOpen, MousePointerClick, X } from "lucide-react";
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Copy, CopyPlus, Download, Eye, EyeOff, ImageUp, Layers3, Link2, Loader2, Lock, LockOpen, MousePointerClick, RotateCcw, X } from "lucide-react";
 import {
   LANGS,
   NATIVE_SKINS,
@@ -38,6 +38,7 @@ import { createWebPorts } from "@futu/adapters-web";
 import { colorToHex } from "@/components/color-control";
 import { Button, WorkflowSparkle } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
+import { parseFigmaUrl } from "@/lib/figma-link";
 import type { FigmaRecognitionResult } from "@/lib/figma-recognition";
 import { buildLogoSvg } from "@/lib/logo-svg";
 import { useFitBoard } from "@/lib/use-fit-board";
@@ -49,7 +50,7 @@ import { SceneEditor } from "./scene-editor";
 import { NativeBanner, NativeEditor, useNative, useNativeMeasure } from "./native-editor";
 
 const ports = createWebPorts();
-const INPUT = "h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] pl-8 pr-2.5 text-[10px] outline-none focus:border-[var(--color-brand)]";
+const INPUT = "h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] pl-8 pr-2.5 text-[10px] outline-none hover:border-[var(--app-line-strong)] focus:border-[var(--app-line-strong)]";
 const GHOST = "h-7 rounded-[4px] px-2.5 text-[10px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]";
 const PILL_TABS = "flex rounded-full bg-[var(--app-surface-2)] p-1 text-[10px]";
 const FEATHER_LABELS = ["关", "弱", "中", "强"] as const;
@@ -59,6 +60,78 @@ const BATCH_ASIDE_STORE = "futu:scene-batch-aside-width";
 const BATCH_ASIDE_LIMITS = [360, 640] as const;
 /** 至少容纳两张 200px 卡片和间距；卡片内部再按实际宽度缩放预览。 */
 const BATCH_BOARD_MIN_WIDTH = 440;
+const FIGMA_ARRANGE_OPTIONS = [
+  { id: "group" as const, label: "按尺寸" },
+  { id: "lang" as const, label: "按语言" },
+  { id: "flat" as const, label: "平铺" },
+] as const;
+
+function InstallGuideVisual({ step }: { step: 3 | 4 }) {
+  if (step === 3) {
+    return (
+      <div role="img" aria-label="在 Figma 开发菜单中选择从清单导入插件" className="relative mt-2 aspect-[2.2/1] w-full max-w-[260px] select-none overflow-hidden rounded-[4px] border border-[#3d3d3d] bg-[#858585] text-[6px] leading-none text-[#e8e8e8]">
+        <div className="flex h-[18%] items-center bg-[#2c2c2c] px-2">
+          <span className="relative block h-3.5 w-2.5" aria-hidden="true">
+            <span className="absolute left-0 top-0 size-[5px] rounded-full bg-[#f24e1e]" />
+            <span className="absolute right-0 top-0 size-[5px] rounded-full bg-[#ff7262]" />
+            <span className="absolute left-0 top-[4px] size-[5px] rounded-full bg-[#a259ff]" />
+            <span className="absolute right-0 top-[4px] size-[5px] rounded-full bg-[#1abcfe]" />
+            <span className="absolute left-0 top-[8px] size-[5px] rounded-full bg-[#0acf83]" />
+          </span>
+          <span className="ml-auto flex size-3 items-center justify-center rounded-[2px] border border-[#8a8a8a]">
+            <span className="h-2 w-px bg-[#8a8a8a]" />
+          </span>
+        </div>
+        <div className="absolute inset-y-[18%] left-0 w-[19%] border-r border-[#454545] bg-[#2b2b2b]" />
+        <div className="absolute left-[3%] top-[24%] w-[37%] rounded-[3px] border border-[#3a3a3a] bg-[#202020] p-1 shadow-lg">
+          {["文件", "编辑", "查看", "对象", "文本"].map((item) => (
+            <div key={item} className="px-1.5 py-px text-[#d8d8d8]">{item}<span className="float-right text-[#8c8c8c]">›</span></div>
+          ))}
+          <div className="rounded-[2px] border border-[#696969] bg-[#3b3b3b] px-1.5 py-px">插件<span className="float-right">›</span></div>
+        </div>
+        <div className="absolute left-[38%] top-[43%] w-[35%] rounded-[3px] border border-[#3a3a3a] bg-[#202020] p-1.5 shadow-lg">
+          <div className="px-1.5 py-[2px] text-[#a8a8a8]">已保存的插件</div>
+          <div className="my-1 h-px bg-[#3a3a3a]" />
+          <div className="rounded-[2px] border border-[#696969] bg-[#3b3b3b] px-1.5 py-[2px]">开发<span className="float-right">›</span></div>
+          <div className="px-1.5 py-[2px] text-[#d8d8d8]">管理插件…</div>
+        </div>
+        <div className="absolute left-[71%] top-[58%] w-[27%] rounded-[3px] border border-[#3a3a3a] bg-[#202020] p-1.5 shadow-lg">
+          <div className="px-1.5 py-[2px] text-[#d8d8d8]">新建插件…</div>
+          <div className="rounded-[2px] border border-[#696969] bg-[#3b3b3b] px-1.5 py-[2px] leading-tight">
+            从清单导入插件…
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div role="img" aria-label="在文件选择窗口中选择 manifest.json" className="mt-2 aspect-[2.2/1] w-full max-w-[260px] select-none overflow-hidden rounded-[4px] border border-[#3d3d3d] bg-[#242424] text-[6px] text-[#dedede]">
+      <div className="flex h-[18%] items-center justify-between border-b border-[#424242] px-2">
+        <span className="font-medium">选择插件清单</span>
+        <span className="text-[#898989]">×</span>
+      </div>
+      <div className="flex h-[62%]">
+        <div className="w-[27%] border-r border-[#3a3a3a] bg-[#202020] p-2 text-[#8f8f8f]">
+          <div className="mb-1.5 text-[#d6d6d6]">最近使用</div>
+          <div className="mb-1">桌面</div>
+          <div>下载</div>
+        </div>
+        <div className="flex-1 p-2">
+          <div className="mb-2 text-[#888]">延展连接器 〉</div>
+          <div className="flex items-center gap-2 rounded-[3px] border border-[#696969] bg-[#343434] px-2 py-1.5">
+            <span className="grid size-4 place-items-center rounded-[2px] bg-[#575757] font-mono text-[6px] text-white">{`{ }`}</span>
+            <span className="font-mono text-[#f1f1f1]">manifest.json</span>
+          </div>
+        </div>
+      </div>
+      <div className="flex h-[20%] items-center justify-end gap-1.5 border-t border-[#424242] px-2">
+        <span className="rounded-[2px] px-2 py-1 text-[#aaa]">取消</span>
+        <span className="rounded-[2px] bg-[#0d66d0] px-2 py-1 font-medium text-white">打开</span>
+      </div>
+    </div>
+  );
+}
 
 export const sceneRef = slotBoardRef;
 
@@ -102,6 +175,12 @@ const boardFileStem = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) 
     ? boardSizeLabel(target)
     : `${boardSizeLabel(target)}_${boardUseLabel(target)}`
 );
+const figmaBoardName = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => (
+  boardUseLabel(target)?.trim() || "未命名画板"
+);
+const figmaFrameName = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">, language: string) => (
+  `${figmaBoardName(target)}｜${boardSizeLabel(target)}｜${language}`
+);
 
 async function imageDataUrl(src?: string) {
   if (!src || src.startsWith("data:")) return src;
@@ -133,7 +212,7 @@ function clampBatchAsideWidth(width: number, layoutMax: number = BATCH_ASIDE_LIM
 }
 
 /** 把角标用到的 SVG 文件读成文本塞进画板数据，插件端直接 createNodeFromSvg。 */
-async function inlineBadgeSvgs(boards: SceneBoard[]) {
+async function inlineBadgeSvgs(boards: SceneBoard[], signal?: AbortSignal) {
   const urls = new Set<string>();
   for (const board of boards) {
     for (const layer of board.layers) {
@@ -143,7 +222,7 @@ async function inlineBadgeSvgs(boards: SceneBoard[]) {
   }
   const texts = new Map<string, string>();
   await Promise.all([...urls].map(async (url) => {
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
     if (!response.ok) throw new Error(`角标素材读取失败：${url}`);
     texts.set(url, await response.text());
   }));
@@ -161,7 +240,7 @@ async function inlineBadgeSvgs(boards: SceneBoard[]) {
 }
 
 /** 仿原生用到的 ICON / 箭头读成 SVG 文本，配图读成 PNG base64，插件端不能访问平台 URL。 */
-async function inlineNativeAssets(boards: NativeBoard[]) {
+async function inlineNativeAssets(boards: NativeBoard[], signal?: AbortSignal) {
   const urls = new Set<string>();
   for (const board of boards) {
     for (const node of board.nodes) {
@@ -171,7 +250,7 @@ async function inlineNativeAssets(boards: NativeBoard[]) {
   }
   const assets: Record<string, string> = {};
   await Promise.all([...urls].map(async (url) => {
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
     if (!response.ok) throw new Error(`仿原生素材读取失败：${url}`);
     if (url.endsWith(".svg")) {
       assets[url] = await response.text();
@@ -434,11 +513,21 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
     const id = `v-${Date.now().toString(36)}`;
     updateScene((current) => {
       const original = source ? current.versions?.find((item) => item.id === source.id) ?? source : null;
-      const view = sceneVersionView(current, original);
+      const languageModules = current.languageModules?.[sourceLang];
+      const languageView = {
+        ...current,
+        elements: languageModules
+          ? current.elements.map((item) => languageModules[item.id] ? { ...item, module: languageModules[item.id] } : item)
+          : current.elements,
+        familyEdits: { ...current.familyEdits, ...current.languageFamilyEdits?.[sourceLang] } as SceneState["familyEdits"],
+        boardOverrides: { ...current.boardOverrides, ...current.languageBoardOverrides?.[sourceLang] } as SceneState["boardOverrides"],
+      };
+      const view = sceneVersionView(languageView, original);
       const elements = view.elements;
       const texts = Object.fromEntries(elements.map((item) => [item.id, item.texts[sourceLang] ?? ""]));
       const highlights = Object.fromEntries(elements.map((item) => [item.id, structuredClone(view.highlights[item.id]?.[sourceLang] ?? [])]));
       const fontRuns = Object.fromEntries(elements.map((item) => [item.id, structuredClone(view.fontRuns?.[item.id]?.[sourceLang] ?? [])]));
+      const modules = Object.fromEntries(elements.flatMap((item) => item.module ? [[item.id, structuredClone(item.module)]] : []));
       const globalVisibility = current.languageVisibility?.[sourceLang]?.["*"] ?? {};
       const visibility = Object.fromEntries(elements.map((item) => [item.id, globalVisibility[item.id] ?? item.visible]));
       const version = {
@@ -450,6 +539,11 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
         highlights,
         fontRuns,
         visibility,
+        modules,
+        removed: structuredClone(original?.removed ?? []),
+        badgeStyles: structuredClone(view.badgeStyles ?? {}),
+        familyEdits: structuredClone(view.familyEdits),
+        boardOverrides: structuredClone(view.boardOverrides),
       };
       const versions = [...(current.versions ?? [])];
       const sourceIndex = source
@@ -534,7 +628,7 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
   };
 
   return (
-    <aside style={{ width: railWidth }} className="relative flex shrink-0 flex-col overflow-y-auto border-r border-[var(--app-line)] py-3 pr-2">
+    <aside style={{ width: railWidth }} className="relative flex shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-[var(--app-line)] py-3 pr-2">
       <div className="mb-2 text-[11px] font-semibold">版本</div>
       <div className="space-y-0.5">
         {langs.map((id) => (
@@ -1212,16 +1306,7 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
           )}
         </div>
       </div>
-      <div className="mt-3 flex shrink-0 items-center justify-between">
-        <div className="text-[10px] text-[var(--app-text-4)]">
-          {required.length ? (
-            <>
-              已保存 {required.length - unsaved.length}/{required.length} 个预设
-              {unsaved.length ? `，还差 ${unsaved.map((item) => item.label).join("、")}` : ""}
-            </>
-          ) : null}
-          {groups.some((item) => item.locked) ? `${required.length ? "；" : ""}带锁的分组按规范生成，无需保存` : ""}
-        </div>
+      <div className="mt-3 flex shrink-0 items-center justify-end">
         <div className="flex gap-2">
           <Button size="lg" onClick={onBack}>上一步</Button>
           {!active ? (
@@ -1273,21 +1358,78 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
   const { project, lang } = useStudio();
   const { scene } = useScene();
   const { version } = useActiveVersion();
+  const projectTargetFigmaUrl = project.content.kv?.figmaUrl
+    ?? project.content.sourceFrames?.[lang]?.figmaUrl
+    ?? project.content.sourceFrame?.figmaUrl
+    ?? "";
   const [openKey, setOpenKey] = useState<string | null>(null);
-  const [page, setPage] = useState<"new" | "current">("new");
+  const [page, setPage] = useState<"new" | "current">("current");
+  const [pageName, setPageName] = useState(project.name);
+  const [targetFigmaUrl, setTargetFigmaUrl] = useState(projectTargetFigmaUrl);
+  const [recognizedTargetFigmaUrl, setRecognizedTargetFigmaUrl] = useState<string | null>(() => {
+    const parsed = parseFigmaUrl(projectTargetFigmaUrl);
+    return parsed.ok && parsed.nodeId ? projectTargetFigmaUrl.trim() : null;
+  });
+  const [targetLinkAttempted, setTargetLinkAttempted] = useState(false);
   const [arrange, setArrange] = useState<"group" | "lang" | "flat">("group");
   const [busy, setBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportProgress, setExportProgress] = useState("");
   const [done, setDone] = useState<FigmaWriteResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
+  const [writeStarted, setWriteStarted] = useState(false);
+  const [writeCancelled, setWriteCancelled] = useState(false);
+  const [writeProgress, setWriteProgress] = useState<{ completed: number; total: number } | null>(null);
   const [bridgeLabel, setBridgeLabel] = useState("");
+  const [pairingCopied, setPairingCopied] = useState(false);
+  const [pluginConnection, setPluginConnection] = useState<{ connected: boolean; compatible: boolean | null; version?: string }>({
+    connected: false,
+    compatible: null,
+  });
+  const [installGuideOpen, setInstallGuideOpen] = useState(false);
   const [asideWidth, setAsideWidth] = useState(400);
   const asideDrag = useRef<{ x: number; width: number } | null>(null);
+  const writeAbortRef = useRef<AbortController | null>(null);
+  const lastWriteRunRef = useRef<string | null>(null);
   const batchRef = useRef<HTMLDivElement>(null);
   const versionRef = useRef<HTMLDivElement>(null);
   const families = useMemo(() => sceneEditGroups(project.targets), [project.targets]);
   const kv = project.content.kv;
+  const targetLink = useMemo(() => parseFigmaUrl(targetFigmaUrl), [targetFigmaUrl]);
+  const sourceFileKeys = useMemo(() => {
+    const keys = new Set<string>();
+    const visualLink = kv?.figmaUrl ? parseFigmaUrl(kv.figmaUrl) : null;
+    if (visualLink?.ok) keys.add(visualLink.fileKey);
+    for (const element of scene.elements) {
+      if (element.role === "module" && element.module?.fileKey) keys.add(element.module.fileKey);
+    }
+    for (const modules of Object.values(scene.languageModules ?? {})) {
+      for (const module of Object.values(modules)) if (module.fileKey) keys.add(module.fileKey);
+    }
+    for (const item of scene.versions ?? []) {
+      for (const module of Object.values(item.modules ?? {})) if (module.fileKey) keys.add(module.fileKey);
+    }
+    return keys;
+  }, [kv?.figmaUrl, scene.elements, scene.languageModules, scene.versions]);
+  const targetMatchesSources = !targetLink.ok
+    || !sourceFileKeys.size
+    || (sourceFileKeys.size === 1 && sourceFileKeys.has(targetLink.fileKey));
+  const targetLinkRecognized = recognizedTargetFigmaUrl === targetFigmaUrl.trim();
+  const writeSettingsReady = targetLinkRecognized
+    && targetLink.ok
+    && Boolean(targetLink.nodeId)
+    && targetMatchesSources
+    && (page === "current" || Boolean(pageName.trim()));
+  const targetLinkErrorMessage = !targetLink.ok
+    ? targetLink.reason
+    : !targetLink.nodeId
+      ? "请粘贴包含 node-id 的 Figma 文件链接"
+      : !targetMatchesSources
+        ? "需与主视觉和自定义元素所在的 Figma 文件一致"
+        : "";
+  const pairingCode = bridgeLabel.includes("·") ? bridgeLabel.split("·").at(-1)?.trim() ?? "" : bridgeLabel.trim();
+  const connectionStage = done ? 4 : writeStarted || pluginConnection.connected ? 3 : pairingCode ? 2 : 1;
   const visualReady = scene.visualMode === "figma"
     ? kv?.source === "figma" && Boolean(kv.figmaUrl)
     : kv?.source === "upload" && Boolean(kv.previewUrl?.startsWith("data:"));
@@ -1299,6 +1441,79 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     const stored = Number(storedValue);
     if (Number.isFinite(stored)) setAsideWidth(clampBatchAsideWidth(stored));
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    let probing = false;
+    if (!/^\d{5}$/.test(pairingCode)) {
+      setPluginConnection({ connected: false, compatible: null });
+      return;
+    }
+    const probe = async () => {
+      if (probing) return;
+      probing = true;
+      try {
+        const response = await fetch(`/api/figma/write?sessionId=${encodeURIComponent(pairingCode)}&probe=1`, { cache: "no-store" });
+        const payload = await response.json() as {
+          connected?: boolean;
+          compatible?: boolean | null;
+          plugin?: { version?: string } | null;
+        };
+        if (!active) return;
+        setPluginConnection({
+          connected: response.ok && Boolean(payload.connected),
+          compatible: response.ok ? payload.compatible ?? null : null,
+          ...(payload.plugin?.version ? { version: payload.plugin.version } : {}),
+        });
+      } catch {
+        if (active) setPluginConnection({ connected: false, compatible: null });
+      } finally {
+        probing = false;
+      }
+    };
+    void probe();
+    const timer = window.setInterval(() => void probe(), 1_500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [pairingCode]);
+
+  useEffect(() => () => writeAbortRef.current?.abort(), []);
+
+  useEffect(() => {
+    const handleProgress = (event: Event) => {
+      if (!writeAbortRef.current) return;
+      const detail = (event as CustomEvent<{ completed?: number; total?: number }>).detail;
+      const completed = Number(detail?.completed);
+      const total = Number(detail?.total);
+      if (!Number.isFinite(completed) || !Number.isFinite(total) || total <= 0) return;
+      setWriteProgress({
+        completed: Math.max(0, Math.min(total, completed)),
+        total: Math.max(1, total),
+      });
+    };
+    window.addEventListener("futu:figma-write-progress", handleProgress);
+    return () => window.removeEventListener("futu:figma-write-progress", handleProgress);
+  }, []);
+
+  useEffect(() => {
+    const activeWrite = writeAbortRef.current;
+    writeAbortRef.current = null;
+    activeWrite?.abort();
+    setBusy(false);
+    setDone(null);
+    setWriteStarted(false);
+    setWriteCancelled(false);
+    setWriteProgress(null);
+    setWriteError(null);
+    setError(null);
+    setPageName(project.name);
+    setTargetFigmaUrl(projectTargetFigmaUrl);
+    const parsed = parseFigmaUrl(projectTargetFigmaUrl);
+    setRecognizedTargetFigmaUrl(parsed.ok && parsed.nodeId ? projectTargetFigmaUrl.trim() : null);
+    setTargetLinkAttempted(false);
+  }, [project.id]);
 
   const asideLayoutMax = () => {
     /** 平台根节点有 1.5× transform；clientWidth 才是 flex 实际使用的 CSS 宽度。 */
@@ -1331,26 +1546,32 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     ...outputLangs.map((id) => ({ id: id as string, lang: id, label: langName(id) })),
     ...(scene.versions ?? []).filter((item) => !item.hidden).map((item) => ({ id: item.id, lang: item.lang, label: item.name, version: item })),
   ], [outputLangs, scene]);
-  const outputLabel = (id: string) => outputs.find((item) => item.id === id)?.label ?? langName(id);
   const boardTargets = useMemo(() => project.targets.filter((target) => !nativeOf(target)), [project.targets]);
   const nativeTargets = useMemo(() => project.targets.filter((target) => nativeOf(target)), [project.targets]);
   const linkedTargets = useMemo(() => boardTargets.filter((target) => linkedOf(target)), [boardTargets]);
   const { state: native } = useNative();
   const { measure, version: fontVersion } = useNativeMeasure();
   /** 仿原生每个语种出深浅两块；key 带上肤色，失败重试按块定位。 */
-  const nativePlans = useMemo<BoardPlan[]>(() => nativeTargets.flatMap((target) => outputLangs.flatMap((lang) => NATIVE_SKINS.map((skin) => {
-    const board = buildNativeBoard(native, skin.id, lang, measure);
+  const nativePlans = useMemo<BoardPlan[]>(() => nativeTargets.flatMap((target) => outputs.flatMap((output) => NATIVE_SKINS.map((skin) => {
+    const board = buildNativeBoard(native, skin.id, output.lang, measure);
     return {
       key: `${target.key}·${skin.id}`,
-      lang,
-      name: `${project.name} / ${target.w}*${target.h}${boardUseLabel(target) ? `-${boardUseLabel(target)}` : ""} / ${langName(lang)} / ${skin.name}`,
+      lang: output.id,
+      name: figmaFrameName(target, `${output.label} · ${skin.name}`),
+      figmaLayout: {
+        boardName: figmaBoardName(target),
+        size: boardSizeLabel(target),
+        language: `${output.label} · ${skin.name}`,
+        languageGroup: output.id,
+        languageSection: output.label,
+      },
       solution: sceneSolution(sceneRef(target)),
       backgroundColor: board.background,
       native: { ...board, assets: {} },
     };
   // fontVersion 变化代表字体加载完成，需要重新量宽度。
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }))), [measure, native, nativeTargets, outputLangs, project.name, fontVersion]);
+  }))), [measure, native, nativeTargets, outputs, project.name, fontVersion]);
   /** 联动画板排在最后：插件先建母版，再用母版组件实例生成设备尺寸。 */
   const boardPlans = useMemo<BoardPlan[]>(() => outputs.flatMap((output) => [
     ...boardTargets.filter((target) => !linkedOf(target)),
@@ -1361,13 +1582,21 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     const ref = sceneRef(masterTarget ?? target);
     const languageScene = sceneLanguageBoardView(scene, output.lang, ref);
     const board = buildSceneBoard(sceneVersionView(languageScene, output.version), ref, output.lang);
-    const name = `${project.name} / ${target.w}*${target.h}${isExternalTarget(target) || !boardUseLabel(target) ? "" : `-${boardUseLabel(target)}`} / ${output.label}`;
+    const name = figmaFrameName(target, output.label);
+    const figmaLayout = {
+      boardName: figmaBoardName(target),
+      size: boardSizeLabel(target),
+      language: output.label,
+      languageGroup: output.id,
+      languageSection: output.label,
+    };
     if (link && masterTarget) {
       const place = linkedPlacement(link.linked, target, masterTarget);
       return {
         key: target.key,
         lang: output.id,
         name,
+        figmaLayout,
         solution: sceneSolution(sceneRef(target)),
         backgroundColor: "#FFFFFF",
         scene: board,
@@ -1378,6 +1607,7 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       key: target.key,
       lang: output.id,
       name,
+      figmaLayout,
       solution: sceneSolution(ref),
       backgroundColor: scene.background,
       scene: board,
@@ -1410,24 +1640,97 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     setDone(null);
+    setWriteStarted(false);
+    setWriteError(null);
+    setWriteProgress(null);
+    lastWriteRunRef.current = null;
   }, [plans]);
 
-  const run = async (only?: FigmaWriteResult["failures"]) => {
-    const failed = (plan: BoardPlan) => Boolean(only?.some((failure) => failure.key === plan.key && failure.lang === plan.lang));
-    const subset = only
-      ? plans.filter((plan) => failed(plan) || plans.some((item) => item.linked?.masterKey === plan.key && item.lang === plan.lang && failed(item)))
-      : plans;
+  const resetWriteStatus = () => {
+    setDone(null);
+    setWriteStarted(false);
+    setWriteError(null);
+    setWriteProgress(null);
+  };
+
+  const recognizeTargetLink = () => {
+    resetWriteStatus();
+    setError(null);
+    if (targetLinkErrorMessage) {
+      setTargetLinkAttempted(true);
+      return;
+    }
+    setRecognizedTargetFigmaUrl(targetFigmaUrl.trim());
+    setTargetLinkAttempted(false);
+  };
+
+  const clearTargetLink = () => {
+    setTargetFigmaUrl("");
+    setRecognizedTargetFigmaUrl(null);
+    setTargetLinkAttempted(false);
+    resetWriteStatus();
+    setError(null);
+  };
+
+  const copyPairingCode = async () => {
+    if (!pairingCode) return;
+    try {
+      await navigator.clipboard.writeText(pairingCode);
+      setError(null);
+      setPairingCopied(true);
+      window.setTimeout(() => setPairingCopied(false), 1400);
+    } catch {
+      setError("复制失败，请手动选择连接码");
+    }
+  };
+
+  const cancelWrite = () => {
+    writeAbortRef.current?.abort();
+  };
+
+  const run = async (only?: FigmaWriteResult["failures"], retryPrevious = false) => {
+    /** 同一任务重试会替换未完成结果，因此必须重新生成整套画板，避免留下缺失的依赖或空位。 */
+    const retryRunId = only?.length || retryPrevious ? lastWriteRunRef.current : null;
+    const runId = retryRunId ?? crypto.randomUUID();
+    const subset = plans;
     if (!subset.length || (subset.some((plan) => !plan.native) && !kv)) return;
+    if (!targetLinkRecognized) {
+      setError("请先识别目标 Figma 文件链接");
+      return;
+    }
+    if (!targetLink.ok) {
+      setError(targetLink.reason);
+      return;
+    }
+    if (!targetLink.nodeId) {
+      setError("请粘贴包含 node-id 的目标文件链接，用于校验插件当前打开的文件");
+      return;
+    }
+    if (!targetMatchesSources) {
+      setError("第一阶段仅支持写入主视觉和自定义元素所在的同一个 Figma 文件");
+      return;
+    }
+    if (page === "new" && !pageName.trim()) {
+      setError("请填写新建页面的名称");
+      return;
+    }
+    const controller = new AbortController();
+    writeAbortRef.current = controller;
+    setWriteStarted(true);
+    setWriteCancelled(false);
+    setWriteProgress(null);
     setBusy(true);
     setDone(null);
+    setWriteError(null);
     setError(null);
+    lastWriteRunRef.current = runId;
     try {
       const presets = [...new Set(subset.flatMap((plan) => plan.logo && plan.scene ? [plan.scene.logoPreset] : []))];
-      const logoSvgs = new Map(await Promise.all(presets.map(async (preset) => [preset, await buildLogoSvg(preset)] as const)));
-      const splashSvg = subset.some((plan) => plan.linked) ? await fetch(splashLogoOf(scene.logoPreset).url).then((res) => res.text()) : undefined;
+      const logoSvgs = new Map(await Promise.all(presets.map(async (preset) => [preset, await buildLogoSvg(preset, controller.signal)] as const)));
+      const splashSvg = subset.some((plan) => plan.linked) ? await fetch(splashLogoOf(scene.logoPreset).url, { signal: controller.signal }).then((res) => res.text()) : undefined;
       const regular = subset.filter((plan) => !plan.native);
-      const scenes = await inlineBadgeSvgs(regular.map((plan) => plan.scene!));
-      const nativeAssets = await inlineNativeAssets(subset.flatMap((plan) => plan.native ? [plan.native] : []));
+      const scenes = await inlineBadgeSvgs(regular.map((plan) => plan.scene!), controller.signal);
+      const nativeAssets = await inlineNativeAssets(subset.flatMap((plan) => plan.native ? [plan.native] : []), controller.signal);
       const boards = subset.map((plan) => plan.native ? { ...plan, native: { ...plan.native, assets: nativeAssets } } : {
         ...plan,
         scene: scenes[regular.indexOf(plan)],
@@ -1435,17 +1738,33 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
         ...(plan.linked ? { linked: { ...plan.linked, logoSvg: splashSvg } } : {}),
       });
       const result = await ports.figma.write(boards, {
+        fileKey: targetLink.fileKey,
+        targetNodeId: targetLink.nodeId,
+        runId,
+        ...(retryRunId ? { replaceRun: true } : {}),
         page,
-        pageName: project.name,
+        pageName: pageName.trim() || project.name,
+        sectionName: project.name,
         arrange,
         ...(kv && regular.length ? { visualComponent: kv } : {}),
         ...(scene.visualMode === "upload" ? { uploadFeather: { level: scene.feather, color: scene.background } } : {}),
-      });
+      }, controller.signal);
+      if (writeAbortRef.current !== controller) return;
       setDone(result);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Figma 写入失败");
+      if (writeAbortRef.current !== controller) return;
+      if (cause instanceof DOMException && cause.name === "AbortError") {
+        setWriteStarted(false);
+        setWriteCancelled(true);
+        setWriteError(null);
+      } else {
+        setWriteError(cause instanceof Error ? cause.message : "Figma 写入失败");
+      }
     } finally {
-      setBusy(false);
+      if (writeAbortRef.current === controller) {
+        writeAbortRef.current = null;
+        setBusy(false);
+      }
     }
   };
 
@@ -1583,14 +1902,15 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
         {exportBusy ? <><Loader2 size={14} className="animate-spin" />{exportProgress || "正在导出…"}</> : needsVisual && !visualReady ? "请先准备主视觉" : "导出图片"}
       </Button>
       <Button
-        variant="workflow"
+        variant={busy ? "secondary" : "workflow"}
         size="lg"
-        aria-label="写入 Figma"
-        icon={busy ? undefined : <WorkflowSparkle />}
-        disabled={busy || exportBusy || !plans.length || (needsVisual && !visualReady)}
-        onClick={() => run()}
+        aria-label={busy ? "取消并回滚本次写入" : "写入 Figma"}
+        icon={busy ? <X size={14} /> : <WorkflowSparkle />}
+        className="min-w-[124px]"
+        disabled={!busy && (exportBusy || !plans.length || !writeSettingsReady || !pluginConnection.connected || pluginConnection.compatible === false || (needsVisual && !visualReady))}
+        onClick={busy ? cancelWrite : () => void run()}
       >
-        {busy ? <><Loader2 size={14} className="animate-spin" />等待写入…</> : needsVisual && !visualReady ? "请先准备主视觉" : "写入 Figma"}
+        {busy ? "取消写入" : needsVisual && !visualReady ? "请先准备主视觉" : !pluginConnection.connected ? "请先连接插件" : pluginConnection.compatible === false ? "请更新插件" : "写入 Figma"}
       </Button>
     </div>
   );
@@ -1761,51 +2081,280 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
             <div className="text-[11px] font-semibold">写入 Figma</div>
             <div className="mt-3 space-y-3">
               <div>
-                <div className="mb-1.5 text-[10px] text-[var(--app-text-3)]">目标页</div>
-                <Segmented value={page} onChange={setPage} options={[{ id: "new", label: "新建一页" }, { id: "current", label: "当前页" }]} />
+                <div className="flex items-center gap-1.5">
+                  <div className="relative min-w-0 flex-1">
+                    <Link2 size={11} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-4)]" />
+                    <input
+                      aria-label="目标 Figma 文件链接"
+                      aria-invalid={targetLinkAttempted && Boolean(targetLinkErrorMessage)}
+                      aria-describedby={targetLinkAttempted && targetLinkErrorMessage ? "figma-target-link-error" : undefined}
+                      value={targetFigmaUrl}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setTargetFigmaUrl(event.target.value);
+                        setTargetLinkAttempted(false);
+                        setError(null);
+                        resetWriteStatus();
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter" || !targetFigmaUrl.trim()) return;
+                        event.preventDefault();
+                        recognizeTargetLink();
+                      }}
+                      placeholder="粘贴figma链接"
+                      className={cn(INPUT, "disabled:cursor-not-allowed disabled:opacity-50")}
+                    />
+                  </div>
+                  {recognizedTargetFigmaUrl ? (
+                    <>
+                      <button
+                        type="button"
+                        aria-label="重新识别目标 Figma 链接"
+                        title="重新识别"
+                        disabled={busy || !targetFigmaUrl.trim()}
+                        onClick={recognizeTargetLink}
+                        className="grid size-5 shrink-0 place-items-center rounded-[3px] text-[var(--app-text-4)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <RotateCcw size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="删除目标 Figma 链接"
+                        title="删除链接"
+                        disabled={busy}
+                        onClick={clearTargetLink}
+                        className="grid size-5 shrink-0 place-items-center rounded-[3px] text-[var(--app-text-4)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <X size={12} />
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={busy || !targetFigmaUrl.trim()}
+                      onClick={recognizeTargetLink}
+                      className={cn(GHOST, "h-8 shrink-0 bg-[var(--app-surface-2)] px-3 hover:bg-[var(--app-surface-3)]")}
+                    >
+                      识别
+                    </button>
+                  )}
+                </div>
+                {targetLinkAttempted && targetLinkErrorMessage ? <p id="figma-target-link-error" role="alert" className="mt-1 text-[9px] text-[var(--color-up)]">{targetLinkErrorMessage}</p> : null}
               </div>
               <div>
-                <div className="mb-1.5 text-[10px] text-[var(--app-text-3)]">排列</div>
-                <Segmented value={arrange} onChange={setArrange} options={[{ id: "group", label: "按尺寸" }, { id: "lang", label: "按语种" }, { id: "flat", label: "平铺" }]} />
+                <div className="flex items-center justify-between gap-3">
+                  <div className="shrink-0 text-[10px] text-[var(--app-text-3)]">目标页</div>
+                  <Segmented
+                    value={page}
+                    disabled={busy}
+                    onChange={(value) => {
+                      setPage(value);
+                      setError(null);
+                      resetWriteStatus();
+                    }}
+                    options={[{ id: "current", label: "当前页" }, { id: "new", label: "新建一页" }]}
+                  />
+                </div>
+                {page === "new" ? (
+                  <input
+                    aria-label="新建 Figma 页面名称"
+                    value={pageName}
+                    disabled={busy}
+                    onChange={(event) => {
+                      setPageName(event.target.value);
+                      setError(null);
+                      resetWriteStatus();
+                    }}
+                    placeholder="输入页面名称"
+                    className="mt-2 h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2.5 text-[10px] outline-none hover:border-[var(--app-line-strong)] focus:border-[var(--app-line-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                ) : null}
               </div>
-              <div className="rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-2)] p-2.5 text-[10px]">
-                <div className="text-[var(--app-text-3)]">在 Figma Desktop 中加载 <code className="text-[var(--color-brand)]">figma-plugin/manifest.json</code>，保持插件开启后填入配对码：</div>
-                <code className="mt-1.5 block select-all text-[12px] text-[var(--app-text)]">{bridgeLabel || "正在生成…"}</code>
+              <div className="flex items-center justify-between gap-3">
+                <div className="shrink-0 text-[10px] text-[var(--app-text-3)]">排列方式</div>
+                <Segmented
+                  value={arrange}
+                  disabled={busy}
+                  onChange={(value) => {
+                    setArrange(value);
+                    setError(null);
+                    resetWriteStatus();
+                  }}
+                  options={FIGMA_ARRANGE_OPTIONS}
+                />
               </div>
-            </div>
-          </div>
+              <div className="rounded-[5px] border border-[var(--app-line)] p-2.5">
+                <div className="grid grid-cols-3 gap-1">
+                  {[
+                    { id: 1, label: "检测插件" },
+                    { id: 2, label: "连接插件" },
+                    { id: 3, label: "校验文件" },
+                  ].map((step) => {
+                    const completed = connectionStage > step.id;
+                    const current = connectionStage === step.id;
+                    return (
+                      <div key={step.id} className={cn("border-t-2 pt-1.5", completed ? "border-[var(--color-down)]" : current ? "border-[var(--color-warn)]" : "border-[var(--app-line)]")}>
+                        <div className={cn("flex items-center gap-1 text-[10px]", current ? "text-[var(--app-text)]" : "text-[var(--app-text-3)]")}>
+                          {completed ? (
+                            <CheckCircle2 size={10} className="shrink-0 text-[var(--color-down)]" />
+                          ) : current ? (
+                            <span className="size-1.5 shrink-0 rounded-full bg-[var(--color-warn)]" />
+                          ) : (
+                            <span className="size-1.5 shrink-0 rounded-full border border-[var(--app-text-4)]" />
+                          )}
+                          <span>{step.id}. {step.label}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
 
-          <div>
-            <div className="text-[11px] font-semibold">本次写入</div>
-            <dl className="mt-2 space-y-1.5 text-[10px]">
-              <div className="flex justify-between"><dt className="text-[var(--app-text-4)]">画板</dt><dd className="tabular-nums">{boardTargets.length} 个尺寸 × {outputs.length} 个版本 = {boardPlans.length} 块</dd></div>
-              {nativePlans.length ? <div className="flex justify-between"><dt className="text-[var(--app-text-4)]">仿原生</dt><dd className="tabular-nums">{outputLangs.length} 个语种 × 深浅 = {nativePlans.length} 块</dd></div> : null}
-              <div className="flex justify-between"><dt className="text-[var(--app-text-4)]">主视觉</dt><dd className="truncate pl-3">{visualReady ? kv?.name : "未准备"}</dd></div>
-              <div className="flex justify-between"><dt className="text-[var(--app-text-4)]">单独调整</dt><dd className="tabular-nums">{Object.values(scene.boardOverrides).filter((item) => Object.keys(item).length).length} 块</dd></div>
-            </dl>
-          </div>
+                <div className="mt-3 rounded-[4px] bg-[var(--app-surface-2)] p-2.5">
+                  {connectionStage === 1 ? (
+                    <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-2)]">
+                      <Loader2 size={12} className="animate-spin text-[var(--color-warn)]" />
+                      正在检测插件
+                    </div>
+                  ) : connectionStage === 2 ? (
+                    <>
+                      <div className="text-[10px] font-medium">在「延展连接器（ExtendLink）」中输入 5 位连接码</div>
+                      <div className="mt-2 flex items-center justify-between gap-2 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2.5 py-2">
+                        <code className="min-w-0 select-all truncate font-mono text-[16px] font-semibold tracking-[0.2em] text-[var(--app-text)]">{pairingCode}</code>
+                        <button
+                          type="button"
+                          aria-label="复制 Figma 插件连接码"
+                          title="复制连接码"
+                          onClick={() => void copyPairingCode()}
+                          className="grid size-6 shrink-0 place-items-center rounded-[3px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]"
+                        >
+                          {pairingCopied ? <CheckCircle2 size={12} className="text-[var(--color-down)]" /> : <Copy size={12} />}
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        aria-expanded={installGuideOpen}
+                        onClick={() => setInstallGuideOpen((open) => !open)}
+                        className={cn(GHOST, "mt-1.5 flex items-center gap-1")}
+                      >
+                        安装方法
+                        <ChevronDown size={11} className={cn("transition-transform", installGuideOpen && "rotate-180")} />
+                      </button>
+                    </>
+                  ) : connectionStage === 3 ? (
+                    <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-2)]">
+                      {writeError ? (
+                        <span className="size-1.5 rounded-full bg-[var(--color-up)]" />
+                      ) : writeStarted ? (
+                        <Loader2 size={12} className="animate-spin text-[var(--color-warn)]" />
+                      ) : (
+                        <CheckCircle2 size={12} className="text-[var(--color-down)]" />
+                      )}
+                      {writeError
+                        ? "文件校验或写入未完成"
+                        : writeStarted
+                          ? writeProgress?.completed
+                            ? "正在写入 Figma"
+                            : "正在校验并准备写入"
+                          : pluginConnection.compatible === false
+                            ? "插件版本不匹配，请安装最新版"
+                            : `插件已连接${pluginConnection.version ? ` · v${pluginConnection.version}` : ""}`}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-2)]">
+                      <CheckCircle2 size={12} className="text-[var(--color-down)]" />
+                      文件校验已完成
+                    </div>
+                  )}
+                </div>
 
-          {error ? <p className="text-[11px] leading-relaxed text-[var(--color-up)]">{error}</p> : null}
-          {done ? (
-            <div className="flex items-start gap-2 rounded-[5px] border border-[var(--app-line)] p-2.5">
-              <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-[var(--color-down)]" />
-              <div className="text-[10px]">
-                <div className="font-medium">{done.ok ? "已写入 Figma" : "写入完成，但有部分画板失败"}</div>
-                <div className="mt-1 text-[var(--app-text-3)]">成功 {done.nodes.length} 块，失败 {done.failures.length} 块</div>
-                {done.failures.slice(0, 4).map((failure) => (
-                  <div key={`${failure.key}-${failure.lang}`} className="mt-1 text-[9px] text-[var(--color-up)]">
-                    {(() => {
-                      const target = [...boardTargets, ...nativeTargets].find((item) => failure.key === item.key || failure.key.startsWith(`${item.key}·`));
-                      return target ? boardDisplayLabel(target) : "未识别资源位";
-                    })()} · {outputLabel(failure.lang)}：{failure.error}
+                {installGuideOpen ? (
+                  <div className="mt-2 space-y-1.5 border-t border-[var(--app-line-soft)] pt-2 text-[9px] text-[var(--app-text-3)]">
+                    {[
+                      "安装并打开 Figma 桌面版（已安装可跳过）",
+                      "下载「延展连接器（ExtendLink）」插件包并解压",
+                      "Figma 桌面版：插件 → 开发 → 从清单导入插件",
+                      "选择插件包中的 manifest.json",
+                      "打开「延展连接器（ExtendLink）」并输入上方 5 位连接码",
+                    ].map((item, index) => (
+                      <div key={item} className="flex items-start gap-2">
+                        <span className="grid size-4 shrink-0 place-items-center rounded-full bg-[var(--app-surface-2)] text-[8px] text-[var(--app-text-2)]">{index + 1}</span>
+                        <div className="min-w-0 flex-1">
+                          <span className="leading-4">{item}</span>
+                          {index === 2 || index === 3 ? <InstallGuideVisual step={(index + 1) as 3 | 4} /> : null}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-                {done.failures.length ? (
-                  <button type="button" disabled={busy} onClick={() => run(done.failures)} className={cn(GHOST, "mt-1.5 -ml-2.5")}>只重试失败的 {done.failures.length} 块</button>
                 ) : null}
               </div>
             </div>
-          ) : null}
+          </div>
+
+          {error ? <p role="alert" className="text-[11px] leading-relaxed text-[var(--color-up)]">{error}</p> : null}
+
+          <div role="status" aria-live="polite" className="rounded-[5px] border border-[var(--app-line)] p-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[10px] font-semibold">任务进度</div>
+              <div className={cn("text-[10px]", done?.ok ? "text-[var(--color-down)]" : done?.failures.length || writeError ? "text-[var(--color-up)]" : busy ? "text-[var(--color-warn)]" : "text-[var(--app-text-3)]")}>
+                {done
+                  ? (done.ok ? "已完成" : "部分失败")
+                  : writeError
+                    ? "需要处理"
+                    : busy
+                      ? writeProgress?.completed ? `写入 ${writeProgress.completed}/${writeProgress.total}` : "等待插件"
+                      : writeCancelled ? "已取消" : pluginConnection.connected ? "插件已连接" : "等待连接"}
+              </div>
+            </div>
+
+            <div className="mt-2.5">
+              {busy ? (
+                <>
+                  <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-2)]">
+                    <Loader2 size={11} className="animate-spin text-[var(--color-warn)]" />
+                    {writeProgress?.completed
+                      ? `正在写入 ${writeProgress.completed} / ${writeProgress.total} 块画板`
+                      : `已提交 ${plans.length} 块画板，等待插件处理`}
+                  </div>
+                  <div className="mt-2 h-1 overflow-hidden rounded-full bg-[var(--app-surface-3)]">
+                    <div
+                      className={cn("h-full rounded-full bg-[var(--color-brand)] opacity-60", writeProgress?.completed ? "transition-[width] duration-200" : "w-full animate-pulse")}
+                      style={writeProgress?.completed ? { width: `${Math.max(4, (writeProgress.completed / writeProgress.total) * 100)}%` } : undefined}
+                    />
+                  </div>
+                </>
+              ) : done ? (
+                <>
+                  <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-2)]">
+                    <CheckCircle2 size={11} className={done.ok ? "text-[var(--color-down)]" : "text-[var(--color-warn)]"} />
+                    成功 {done.nodes.length} 块 · 失败 {done.failures.length} 块
+                  </div>
+                  <div className="mt-2 h-1 overflow-hidden rounded-full bg-[var(--app-surface-3)]">
+                    <div className={cn("h-full w-full rounded-full", done.ok ? "bg-[var(--color-down)]" : "bg-[var(--color-warn)]")} />
+                  </div>
+                  {done.failures.length ? (
+                    <button type="button" disabled={busy} onClick={() => run(done.failures)} className={cn(GHOST, "mt-1.5 -ml-2.5")}>
+                      重新生成本次任务
+                    </button>
+                  ) : null}
+                </>
+              ) : writeError ? (
+                <div className="flex items-start justify-between gap-2">
+                  <p role="alert" className="min-w-0 flex-1 text-[9px] leading-4 text-[var(--color-up)]">{writeError}</p>
+                  <button type="button" disabled={busy} onClick={() => void run(undefined, true)} className={cn(GHOST, "shrink-0")}>重试</button>
+                </div>
+              ) : writeCancelled ? (
+                <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-3)]">
+                  <X size={11} />
+                  已取消本次写入
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-3)]">
+                  <span className={cn("size-1.5 rounded-full", pluginConnection.connected ? "bg-[var(--color-down)]" : "bg-[var(--color-warn)]")} />
+                  {pluginConnection.connected ? "插件已连接，可以开始写入" : "等待连接插件"}
+                </div>
+              )}
+            </div>
+          </div>
           </div>
         </aside>
       </div>

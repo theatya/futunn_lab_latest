@@ -2,69 +2,638 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { margin: 0; padding: 20px; background: #1d1d1f; color: #f4f4f5; font: 12px Inter, sans-serif; }
-    h2 { margin: 0 0 8px; font-size: 15px; } p { color: #a1a1aa; line-height: 1.6; }
-    label { display: block; margin: 18px 0 6px; color: #d4d4d8; font-weight: 600; }
-    input { box-sizing: border-box; width: 100%; border: 1px solid #3f3f46; border-radius: 6px; padding: 10px; background: #27272a; color: #fff; }
-    button { width: 100%; margin-top: 14px; border: 0; border-radius: 6px; padding: 10px; background: #ff6900; color: #fff; font-weight: 700; cursor: pointer; }
-    #status { margin-top: 14px; min-height: 18px; color: #a1a1aa; } .ok { color: #49d17d !important; } .error { color: #ff7875 !important; }
-    code { color: #ff9b4a; }
+    :root {
+      color-scheme: dark;
+      --bg: #0c0c0d;
+      --surface: #121214;
+      --surface-2: #18181b;
+      --line: #29292e;
+      --line-strong: #3b3b42;
+      --text: #f4f4f5;
+      --text-2: #c8c8cc;
+      --text-3: #85858d;
+      --brand: #ff6900;
+      --brand-hover: #ff8124;
+      --green: #49d17d;
+      --yellow: #ffbd4a;
+      --red: #ff7875;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 12px Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    button, input { font: inherit; }
+    button:focus-visible, input:focus-visible {
+      outline: 1px solid rgba(255,255,255,.65);
+      outline-offset: 2px;
+    }
+    .shell { min-height: 560px; display: flex; flex-direction: column; }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 20px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .product { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+    .product-en { margin-top: 4px; color: var(--text-3); font-size: 11px; }
+    .header-actions { display: flex; align-items: center; gap: 12px; }
+    .version { color: var(--text-3); font-variant-numeric: tabular-nums; }
+    .platform-link {
+      min-height: 30px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text-2);
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .platform-link:hover { color: var(--text); }
+    .content { flex: 1; padding: 28px 24px 20px; text-align: center; }
+    .state-icon {
+      display: grid;
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 18px;
+      place-items: center;
+      border-radius: 50%;
+      background: #1c1c20;
+    }
+    .state-mark { width: 18px; height: 18px; border-radius: 50%; background: var(--yellow); }
+    .state-mark.ok {
+      position: relative;
+      background: var(--green);
+    }
+    .state-mark.ok::after {
+      content: "";
+      position: absolute;
+      left: 5px;
+      top: 3px;
+      width: 5px;
+      height: 8px;
+      border: solid #0d1a12;
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+    .state-mark.error { background: var(--red); }
+    .state-mark.spin {
+      border: 2px solid rgba(255,255,255,.18);
+      border-top-color: var(--yellow);
+      background: transparent;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { margin: 0; font-size: 18px; line-height: 1.4; }
+    .description { min-height: 34px; margin: 6px auto 20px; color: var(--text-3); line-height: 1.55; }
+    .code-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 0 auto; }
+    .digit {
+      width: 100%;
+      height: 58px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 22px;
+      font-weight: 700;
+      text-align: center;
+      caret-color: var(--brand);
+    }
+    .digit:hover { border-color: #55555d; }
+    .digit:focus { border-color: #696971; outline: none; box-shadow: 0 0 0 1px #696971; }
+    .digit:disabled { color: var(--text-2); opacity: .72; }
+    .primary, .secondary {
+      width: 100%;
+      height: 44px;
+      margin-top: 20px;
+      border: 0;
+      border-radius: 6px;
+      color: white;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .primary { background: var(--brand); }
+    .primary:hover { background: var(--brand-hover); }
+    .primary:disabled { cursor: not-allowed; opacity: .38; }
+    .secondary { border: 1px solid var(--line-strong); background: var(--surface-2); color: var(--text-2); }
+    .secondary:hover { background: #202024; color: var(--text); }
+    .progress {
+      height: 4px;
+      margin-top: 18px;
+      overflow: hidden;
+      border-radius: 99px;
+      background: var(--surface-2);
+    }
+    .progress > span {
+      display: block;
+      height: 100%;
+      width: var(--progress, 0%);
+      border-radius: inherit;
+      background: var(--yellow);
+      transition: width .2s ease;
+    }
+    .meta {
+      margin-top: 14px;
+      color: var(--text-3);
+      font-size: 10px;
+      line-height: 1.5;
+    }
+    .footer {
+      display: flex;
+      min-height: 50px;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-top: 1px solid var(--line);
+      color: var(--text-3);
+      font-size: 10px;
+    }
+    .footer-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); }
+    .footer-dot.ok { background: var(--green); }
+    .footer-dot.error { background: var(--red); }
+    .hidden { display: none !important; }
+    @media (prefers-reduced-motion: reduce) {
+      .state-mark.spin { animation: none; }
+      .progress > span { transition: none; }
+    }
   </style>
 </head>
 <body>
-  <h2>Futu Banner Bridge</h2>
-  <p>保持此插件打开。平台生成任务会在这里领取，并写入当前打开的 Figma 文件。</p>
-  <label for="origin">平台地址</label>
-  <input id="origin" value="http://127.0.0.1:3210" />
-  <label for="pair">平台配对码</label>
-  <input id="pair" placeholder="从平台第 4 步复制" />
-  <button id="connect">连接并等待任务</button>
-  <div id="status">尚未连接</div>
+  <main class="shell">
+    <header class="header">
+      <div>
+        <div class="product">延展连接器</div>
+        <div class="product-en">ExtendLink</div>
+      </div>
+      <div class="header-actions">
+        <button id="open-platform" class="platform-link" type="button" aria-label="在浏览器中打开素材延展平台">打开平台 ↗</button>
+        <div id="version" class="version">1.0.0</div>
+      </div>
+    </header>
+
+    <section class="content">
+      <div class="state-icon" aria-hidden="true"><span id="state-mark" class="state-mark"></span></div>
+      <h1 id="state-title">等待连接平台</h1>
+      <div id="state-description" class="description">粘贴或输入平台显示的 5 位连接码</div>
+
+      <form id="connect-form">
+        <div id="code-grid" class="code-grid" aria-label="5 位平台连接码">
+          <input class="digit" aria-label="连接码第 1 位" inputmode="numeric" autocomplete="one-time-code" maxlength="1" />
+          <input class="digit" aria-label="连接码第 2 位" inputmode="numeric" maxlength="1" />
+          <input class="digit" aria-label="连接码第 3 位" inputmode="numeric" maxlength="1" />
+          <input class="digit" aria-label="连接码第 4 位" inputmode="numeric" maxlength="1" />
+          <input class="digit" aria-label="连接码第 5 位" inputmode="numeric" maxlength="1" />
+        </div>
+        <button id="connect" class="primary" type="submit" disabled>连接平台</button>
+      </form>
+
+      <div id="progress" class="progress hidden" aria-hidden="true"><span id="progress-bar"></span></div>
+      <button id="disconnect" class="secondary hidden" type="button">断开连接</button>
+      <div id="meta" class="meta">连接后将自动等待平台写入任务</div>
+    </section>
+
+    <footer class="footer" role="status" aria-live="polite">
+      <span id="footer-dot" class="footer-dot"></span>
+      <span id="footer-status">待连接</span>
+    </footer>
+  </main>
+
   <script>
-    const origin = document.getElementById("origin");
-    const pair = document.getElementById("pair");
-    const status = document.getElementById("status");
-    let timer;
-    function show(text, kind) { status.textContent = text; status.className = kind || ""; }
+    const BASE = "http://localhost:3210";
+    const SAVED_CODE_KEY = "extendlink-pairing-code";
+    const POLL_INTERVAL = 2000;
+    const RECONNECT_GRACE = 60_000;
+    const digits = [...document.querySelectorAll(".digit")];
+    const form = document.getElementById("connect-form");
+    const connectButton = document.getElementById("connect");
+    const disconnectButton = document.getElementById("disconnect");
+    const openPlatformButton = document.getElementById("open-platform");
+    const stateMark = document.getElementById("state-mark");
+    const stateTitle = document.getElementById("state-title");
+    const stateDescription = document.getElementById("state-description");
+    const footerDot = document.getElementById("footer-dot");
+    const footerStatus = document.getElementById("footer-status");
+    const progress = document.getElementById("progress");
+    const progressBar = document.getElementById("progress-bar");
+    const meta = document.getElementById("meta");
+    const version = document.getElementById("version");
+    let timer = null;
+    let connected = false;
+    let writing = false;
+    let fileKey = "";
+    let pluginVersion = "1.0.0";
+    let activeJob = null;
+    let leaseFailures = 0;
+    let cancelRequested = false;
+    let pollInFlight = false;
+    let terminalReporting = false;
+    let rollbackErrorMessage = "";
+    let reconnectStartedAt = 0;
+
+    const code = () => digits.map((input) => input.value).join("");
+    const validCode = () => /^\d{5}$/.test(code());
+    const setHidden = (node, hidden) => node.classList.toggle("hidden", hidden);
+    const setState = (kind, title, description, footer) => {
+      stateMark.className = `state-mark ${kind === "connected" || kind === "success" ? "ok" : kind === "error" ? "error" : kind === "working" || kind === "connecting" ? "spin" : ""}`.trim();
+      footerDot.className = `footer-dot ${kind === "connected" || kind === "success" ? "ok" : kind === "error" ? "error" : ""}`.trim();
+      stateTitle.textContent = title;
+      stateDescription.textContent = description;
+      footerStatus.textContent = footer;
+    };
+    const updateEntry = () => {
+      connectButton.disabled = !validCode();
+      digits.forEach((input) => { input.disabled = connected || writing; });
+    };
+    const distribute = (value, start = 0) => {
+      const values = value.replace(/\D/g, "").slice(0, 5 - start).split("");
+      values.forEach((digit, offset) => { digits[start + offset].value = digit; });
+      updateEntry();
+      digits[Math.min(start + values.length, 4)]?.focus();
+    };
+
+    digits.forEach((input, index) => {
+      input.addEventListener("input", () => {
+        input.value = input.value.replace(/\D/g, "").slice(-1);
+        if (input.value && index < digits.length - 1) digits[index + 1].focus();
+        updateEntry();
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Backspace" && !input.value && index > 0) digits[index - 1].focus();
+        if (event.key === "ArrowLeft" && index > 0) digits[index - 1].focus();
+        if (event.key === "ArrowRight" && index < digits.length - 1) digits[index + 1].focus();
+      });
+      input.addEventListener("paste", (event) => {
+        event.preventDefault();
+        const pasted = event.clipboardData.getData("text").replace(/\D/g, "");
+        distribute(pasted, pasted.length >= 5 ? 0 : index);
+      });
+    });
+    openPlatformButton.addEventListener("click", () => {
+      if (window.parent === window) {
+        window.open(BASE, "_blank", "noopener,noreferrer");
+      } else {
+        parent.postMessage({ pluginMessage: { type: "open-platform" } }, "*");
+      }
+    });
+
+    function stopPolling() {
+      clearInterval(timer);
+      timer = null;
+    }
+
+    function showConnected() {
+      connected = true;
+      writing = false;
+      activeJob = null;
+      leaseFailures = 0;
+      cancelRequested = false;
+      rollbackErrorMessage = "";
+      reconnectStartedAt = 0;
+      localStorage.setItem(SAVED_CODE_KEY, code());
+      setState("connected", "平台已连接", "连接后将自动等待写入任务", "已连接 · 等待任务");
+      setHidden(form, true);
+      setHidden(progress, true);
+      setHidden(disconnectButton, false);
+      meta.textContent = "请保持连接器开启，并回到素材延展平台开始写入";
+      updateEntry();
+    }
+
+    function showCancelled() {
+      stopPolling();
+      connected = true;
+      writing = false;
+      activeJob = null;
+      leaseFailures = 0;
+      cancelRequested = false;
+      rollbackErrorMessage = "";
+      reconnectStartedAt = 0;
+      setState("connected", "写入已取消", "未完成的写入内容已移除", "已连接 · 等待任务");
+      setHidden(form, true);
+      setHidden(progress, true);
+      setHidden(disconnectButton, false);
+      meta.textContent = "连接器将继续等待下一次写入任务";
+      updateEntry();
+      timer = setInterval(poll, POLL_INTERVAL);
+    }
+
+    function showError(message) {
+      connected = false;
+      writing = false;
+      activeJob = null;
+      leaseFailures = 0;
+      cancelRequested = false;
+      rollbackErrorMessage = "";
+      reconnectStartedAt = 0;
+      stopPolling();
+      setState("error", "连接失败", message || "请确认平台已打开后重试", "连接异常");
+      setHidden(form, false);
+      setHidden(progress, true);
+      setHidden(disconnectButton, true);
+      meta.textContent = "请检查连接码，或确认平台已打开后重试";
+      updateEntry();
+    }
+
+    function showWriteError(message) {
+      stopPolling();
+      connected = true;
+      writing = false;
+      activeJob = null;
+      leaseFailures = 0;
+      cancelRequested = false;
+      rollbackErrorMessage = "";
+      reconnectStartedAt = 0;
+      setState("error", "写入失败", message || "请回到平台检查后重试", "已连接 · 写入失败");
+      setHidden(form, true);
+      setHidden(progress, true);
+      setHidden(disconnectButton, false);
+      meta.textContent = "连接器仍保持连接，可回到平台重新写入";
+      updateEntry();
+      timer = setInterval(poll, POLL_INTERVAL);
+    }
+
+    function requestRollback(job, message) {
+      if (!job || cancelRequested) return;
+      cancelRequested = true;
+      rollbackErrorMessage = message || "任务状态异常，请回到平台重试";
+      setState("working", "正在回滚写入", "正在移除本次写入的内容", "正在回滚");
+      setHidden(progress, false);
+      setHidden(disconnectButton, true);
+      parent.postMessage({
+        pluginMessage: { type: "cancel", jobId: job.id, claimToken: job.claimToken },
+      }, "*");
+    }
+
+    async function postJobUpdate(body, attempts = 30) {
+      let lastError = null;
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        try {
+          const response = await fetch(`${BASE}/api/figma/write`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (response.ok || response.status === 409) return { response, payload };
+          lastError = new Error(payload.error || "任务状态回传失败");
+        } catch (error) {
+          lastError = error;
+        }
+        if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+      }
+      throw lastError || new Error("任务状态回传失败");
+    }
+
     async function poll() {
+      if (!validCode() || pollInFlight || terminalReporting) return;
+      pollInFlight = true;
+      const polledJob = activeJob;
       try {
-        const base = origin.value.replace(/\/$/, "");
-        const response = await fetch(`${base}/api/figma/write?sessionId=${encodeURIComponent(pair.value.trim())}`);
+        if (writing && activeJob) {
+          const query = new URLSearchParams({
+            jobId: activeJob.id,
+            claimToken: activeJob.claimToken,
+            client: "plugin",
+            version: pluginVersion,
+            ...(fileKey ? { fileKey } : {}),
+          });
+          const response = await fetch(`${BASE}/api/figma/write?${query}`);
+          const payload = await response.json();
+          if (terminalReporting || activeJob !== polledJob) return;
+          if (!response.ok) {
+            const error = new Error(payload.error || "写入任务连接已中断");
+            error.permanent = response.status < 500 && response.status !== 408 && response.status !== 429;
+            throw error;
+          }
+          leaseFailures = 0;
+          if (reconnectStartedAt) {
+            reconnectStartedAt = 0;
+            setState("working", "正在写入 Figma", "连接已恢复，正在继续处理画板", "正在执行写入任务");
+          }
+          if (payload.status === "cancelled" && !cancelRequested) {
+            cancelRequested = true;
+            setState("working", "正在取消写入", "正在移除本次未完成的内容", "正在取消");
+            parent.postMessage({ pluginMessage: { type: "cancel", jobId: activeJob.id, claimToken: activeJob.claimToken } }, "*");
+          }
+          return;
+        }
+        const query = new URLSearchParams({
+          sessionId: code(),
+          client: "plugin",
+          version: pluginVersion,
+          ...(fileKey ? { fileKey } : {}),
+        });
+        const response = await fetch(`${BASE}/api/figma/write?${query}`);
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "连接失败");
+        if (!response.ok || payload.compatible === false) {
+          const error = new Error(payload.error || "连接器版本不匹配，请重新安装最新版");
+          error.permanent = payload.compatible === false
+            || (response.status < 500 && response.status !== 408 && response.status !== 429);
+          throw error;
+        }
+        const restoredConnection = Boolean(reconnectStartedAt);
+        reconnectStartedAt = 0;
         if (payload.status === "job") {
-          show(`正在写入 ${payload.job.boards.length} 块画板…`);
+          writing = true;
+          activeJob = { id: payload.job.id, claimToken: payload.job.claimToken };
+          leaseFailures = 0;
+          cancelRequested = false;
+          rollbackErrorMessage = "";
+          stopPolling();
+          setState("working", "正在写入 Figma", `正在处理 ${payload.job.boards.length} 块画板`, "正在执行写入任务");
+          setHidden(disconnectButton, true);
+          setHidden(progress, false);
+          progressBar.style.setProperty("--progress", "4%");
+          meta.textContent = "写入期间请勿关闭连接器或切换 Figma 文件";
           parent.postMessage({ pluginMessage: { type: "write", job: payload.job } }, "*");
-        } else {
-          show("已连接，等待平台生成任务", "ok");
+          timer = setInterval(poll, POLL_INTERVAL);
+        } else if (!connected || restoredConnection) {
+          showConnected();
         }
       } catch (error) {
-        show(error.message || "连接失败", "error");
+        if (terminalReporting || (polledJob && activeJob !== polledJob)) return;
+        if (!error.permanent) {
+          if (!reconnectStartedAt) reconnectStartedAt = Date.now();
+          if (Date.now() - reconnectStartedAt < RECONNECT_GRACE) {
+            setState("connecting", writing ? "正在恢复写入连接" : "正在重新连接", "连接器会自动重试，无需重新输入连接码", "正在重新连接");
+            setHidden(form, true);
+            setHidden(disconnectButton, writing);
+            if (!writing) setHidden(progress, false);
+            return;
+          }
+        }
+        if (writing && activeJob) {
+          leaseFailures += 1;
+          if (leaseFailures < 3) return;
+          const interruptedJob = activeJob;
+          parent.postMessage({ pluginMessage: { type: "cancel", jobId: interruptedJob.id, claimToken: interruptedJob.claimToken } }, "*");
+          void fetch(`${BASE}/api/figma/write`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ action: "cancel", jobId: interruptedJob.id, claimToken: interruptedJob.claimToken }),
+          }).catch(() => undefined);
+        }
+        showError(error.message || "连接失败");
+      } finally {
+        pollInFlight = false;
       }
     }
-    document.getElementById("connect").onclick = () => {
-      if (!pair.value.trim()) return show("请输入平台配对码", "error");
-      clearInterval(timer);
-      poll();
-      timer = setInterval(poll, 1000);
-    };
+
+    function startPolling() {
+      stopPolling();
+      if (!validCode()) return;
+      connected = false;
+      writing = false;
+      activeJob = null;
+      leaseFailures = 0;
+      cancelRequested = false;
+      rollbackErrorMessage = "";
+      reconnectStartedAt = 0;
+      localStorage.setItem(SAVED_CODE_KEY, code());
+      setState("connecting", "正在连接平台", "正在校验 5 位连接码", "连接中");
+      setHidden(form, true);
+      setHidden(disconnectButton, true);
+      setHidden(progress, false);
+      progressBar.style.setProperty("--progress", "18%");
+      void poll();
+      timer = setInterval(poll, POLL_INTERVAL);
+    }
+
+    function disconnect() {
+      stopPolling();
+      connected = false;
+      writing = false;
+      reconnectStartedAt = 0;
+      localStorage.removeItem(SAVED_CODE_KEY);
+      digits.forEach((input) => { input.value = ""; });
+      setState("", "等待连接平台", "粘贴或输入平台显示的 5 位连接码", "待连接");
+      setHidden(form, false);
+      setHidden(progress, true);
+      setHidden(disconnectButton, true);
+      meta.textContent = "连接后将自动等待平台写入任务";
+      updateEntry();
+      digits[0].focus();
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (validCode()) startPolling();
+    });
+    disconnectButton.addEventListener("click", disconnect);
+
     window.onmessage = async (event) => {
       const message = event.data.pluginMessage;
-      if (!message || !message.jobId) return;
-      const base = origin.value.replace(/\/$/, "");
-      const action = message.type === "completed" ? "complete" : "fail";
-      try {
-        await fetch(`${base}/api/figma/write`, {
+      if (!message) return;
+      if (message.type === "context") {
+        fileKey = message.fileKey || "";
+        pluginVersion = message.version || pluginVersion;
+        version.textContent = pluginVersion;
+        const savedCode = localStorage.getItem(SAVED_CODE_KEY) || "";
+        if (/^\d{5}$/.test(savedCode)) {
+          distribute(savedCode);
+          startPolling();
+        }
+        return;
+      }
+      const isActiveMessage = Boolean(
+        activeJob
+        && message.jobId === activeJob.id
+        && message.claimToken === activeJob.claimToken,
+      );
+      if (message.type === "started") {
+        if (!isActiveMessage) return;
+        progressBar.style.setProperty("--progress", "8%");
+        return;
+      }
+      if (message.type === "progress") {
+        if (!isActiveMessage) return;
+        progressBar.style.setProperty("--progress", `${Math.max(8, Math.round((message.completed / Math.max(1, message.total)) * 88))}%`);
+        stateDescription.textContent = `已处理 ${message.completed} / ${message.total} 块画板`;
+        void fetch(`${BASE}/api/figma/write`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action, jobId: message.jobId, result: message.result, error: message.error }),
+          body: JSON.stringify({
+            action: "progress",
+            jobId: activeJob.id,
+            claimToken: activeJob.claimToken,
+            completed: message.completed,
+            total: message.total,
+          }),
+        }).catch(() => undefined);
+        return;
+      }
+      if (message.type === "cancelled") {
+        if (!isActiveMessage) return;
+        if (rollbackErrorMessage) {
+          const messageAfterRollback = rollbackErrorMessage;
+          showWriteError(messageAfterRollback);
+        } else {
+          showCancelled();
+        }
+        return;
+      }
+      if (message.type === "failed" && isActiveMessage && rollbackErrorMessage) {
+        const messageAfterRollback = `${rollbackErrorMessage}；${message.error || "回滚未完成"}`;
+        showWriteError(messageAfterRollback);
+        return;
+      }
+      if (!["completed", "failed"].includes(message.type) || !isActiveMessage) return;
+      const action = message.type === "completed" ? "complete" : "fail";
+      const terminalJob = activeJob;
+      terminalReporting = true;
+      stopPolling();
+      try {
+        const { response, payload } = await postJobUpdate({
+          action,
+          jobId: message.jobId,
+          claimToken: activeJob.claimToken,
+          result: message.result,
+          error: message.error,
         });
-        show(message.type === "completed" ? `写入完成：${message.result.nodes.length} 块` : message.error, message.type === "completed" ? "ok" : "error");
+        if (!response.ok) {
+          if (payload.cancelled) {
+            cancelRequested = true;
+            setState("working", "正在取消写入", "正在移除本次未完成的内容", "正在取消");
+            parent.postMessage({
+              pluginMessage: { type: "cancel", jobId: message.jobId, claimToken: terminalJob.claimToken },
+            }, "*");
+            return;
+          }
+          requestRollback(terminalJob, payload.error || "任务状态回传失败");
+          return;
+        }
+        writing = false;
+        connected = true;
+        activeJob = null;
+        leaseFailures = 0;
+        cancelRequested = false;
+        rollbackErrorMessage = "";
+        if (message.type === "completed") {
+          progressBar.style.setProperty("--progress", "100%");
+          if (message.result.ok) {
+            setState("success", "写入完成", `成功写入 ${message.result.nodes.length} 块画板`, "已连接 · 写入完成");
+          } else {
+            setState("partial", "部分完成", `成功 ${message.result.nodes.length} 块 · 失败 ${message.result.failures.length} 块`, "已连接 · 部分完成");
+          }
+          setHidden(disconnectButton, false);
+          meta.textContent = message.result.failures.length ? `${message.result.failures.length} 块未完成，可在平台重试` : "连接器将继续等待下一次写入任务";
+          timer = setInterval(poll, POLL_INTERVAL);
+        } else {
+          showWriteError(message.error || "Figma 写入失败，请回平台重试");
+        }
       } catch (error) {
-        show(error.message || "回传结果失败", "error");
+        requestRollback(terminalJob, error.message || "回传结果失败");
+      } finally {
+        terminalReporting = false;
       }
     };
+
+    updateEntry();
+    digits[0].focus();
   </script>
 </body>
 </html>

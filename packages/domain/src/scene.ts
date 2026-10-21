@@ -20,8 +20,10 @@ export type SceneFamily = "strip" | "landscape" | "square" | "portrait";
  * 默认位置、字号系数仍按 @ 前的画幅族取。
  */
 export type SceneBucket = string;
-export type SceneRole = "visual" | "logo" | "badge" | "kicker" | "title" | "subtitle" | "custom" | "disclaimer" | "cta";
+export type SceneRole = "visual" | "logo" | "badge" | "kicker" | "title" | "subtitle" | "custom" | "module" | "disclaimer" | "cta";
 export type SceneAlign = "left" | "center" | "right";
+export type SceneCustomPlacementMode = "title-backdrop" | "above-title" | "below-title" | "free";
+export type SceneCustomBackdropTarget = "kicker" | "title" | "subtitle";
 /** 与标题组外框对齐：none 时按自身锚点摆放。 */
 export type SceneFollow = "none" | SceneAlign;
 export type SceneCopyKind = "single" | "group" | "complex";
@@ -37,7 +39,7 @@ export interface ScenePlacement {
   align: SceneAlign;
   visible: boolean;
   follow?: SceneFollow;
-  /** 手动宽度，按画板单位长度（通栏/横版为高，方版/竖版为宽）存比例；只对 CTA 与可拉伸角标生效。 */
+  /** 手动宽度，按画板单位长度（通栏/横版为高，方版/竖版为宽）存比例；对 CTA、可拉伸角标与自定义元素生效。 */
   w?: number;
   /** 层间距相对训练集默认值的倍数：标题组上为整组间距；小标题上为它与下一层的间距，副标题上为它与上一层的间距。 */
   gap?: number;
@@ -45,6 +47,12 @@ export interface ScenePlacement {
   font?: number;
   /** CTA 预设长度，只用于无广告规范的画板；文案放不下时仍按文案加宽。 */
   length?: SceneCtaLength;
+  /** 自定义元素在当前族或画板采用的放置模式。 */
+  customMode?: SceneCustomPlacementMode;
+  /** 标题底层模式对应的小标题、主标题或副标题。 */
+  backdropTarget?: SceneCustomBackdropTarget;
+  /** 单板明确解除从族继承的标题组编入关系。 */
+  detached?: boolean;
   /** 编入标题组：位置跟标题组外框走，比例为相对标题组整体比例的倍数。 */
   attach?: SceneAttach;
   /** 标题组：族里选的对齐方式覆盖规范对齐（外框仍按规范锚点定位）。 */
@@ -72,7 +80,7 @@ export interface SceneAttach {
 }
 
 /** 可编入标题组的图层。 */
-export const SCENE_ATTACH_ROLES: readonly SceneRole[] = ["logo", "badge", "disclaimer", "custom"];
+export const SCENE_ATTACH_ROLES: readonly SceneRole[] = ["logo", "badge", "disclaimer", "custom", "module"];
 
 export type SceneCtaLength = "short" | "medium" | "long";
 
@@ -94,6 +102,30 @@ export interface SceneElement {
   name: string;
   visible: boolean;
   texts: Partial<Record<Lang, string>>;
+  /** 从 Figma 节点导入的复合元素；与“自定义文字”走独立渲染和写入链路。 */
+  module?: SceneCustomModule;
+}
+
+export interface SceneCustomModule {
+  figmaUrl: string;
+  fileKey: string;
+  nodeId: string;
+  nodeType: string;
+  previewUrl?: string;
+  width: number;
+  height: number;
+  /** 单个矩形允许宽高分别调整；复合节点只等比缩放。 */
+  stretchable: boolean;
+  /** 用户清除了来源链接，保留元素槽位等待重新识别。 */
+  cleared?: boolean;
+  placementMode: SceneCustomPlacementMode;
+  /** 标题底层模式默认作用的文字层。 */
+  backdropTarget?: SceneCustomBackdropTarget;
+}
+
+export interface SceneCustomModuleScopeSnapshot {
+  visibility: Record<string, boolean>;
+  removedScopes: string[];
 }
 
 /** 图片本身只存在 content.kv.previewUrl，这里只记元信息，避免本地存储里存两份大图。 */
@@ -117,6 +149,8 @@ export interface SceneState {
   /** 主体不可裁区域，组件内 0..1 坐标。 */
   safeBox: { x: number; y: number; w: number; h: number };
   elements: SceneElement[];
+  /** 下一个自定义元素编号；删除或跨语言隐藏后也不回收旧编号。 */
+  nextModuleNumber?: number;
   familyEdits: ScenePatchMap;
   boardOverrides: ScenePatchMap;
   background: string;
@@ -150,6 +184,8 @@ export interface SceneState {
   /** 按版式族单独设置的逐行字号比例，优先于 lineRatios。 */
   familyLineRatios?: Partial<Record<SceneBucket, Record<string, number[]>>>;
   badgeStyle?: SceneBadgeStyle;
+  /** 多角标实例各自的样式；badgeStyle 仅用于兼容旧项目。 */
+  badgeStyles?: Record<string, SceneBadgeStyle>;
   badgeLength?: SceneBadgeLength;
   /** 字间距，按元素 id 存，单位为字号的比例（0.05 = 5%）。 */
   tracking?: Record<string, number>;
@@ -162,12 +198,18 @@ export interface SceneState {
   ctaFontUnlocked?: boolean;
   /** 用户自定义版本（如「英文版2」「英文无 Logo 版」），基于某个语种，单独保存改过的文案、高亮与显隐。 */
   versions?: SceneVersion[];
+  /** 基础语言各自的自定义元素来源与放置模式，避免刷新源元素时串改其它语言。 */
+  languageModules?: Partial<Record<Lang, Record<string, SceneCustomModule>>>;
+  /** 自定义元素应用到全部版式前的语言级范围快照，用于刷新后仍能精确撤销且不串语言。 */
+  customModuleScopeSnapshots?: Partial<Record<Lang, Record<string, SceneCustomModuleScopeSnapshot>>>;
   /** 用户记录的文案版式方案，可套用到任意版式族。 */
   layoutSchemes?: SceneLayoutScheme[];
   /** 某个语言 / 自定义版本里隐藏的共享标题组方案 id；不删除来源方案。 */
   hiddenLayoutSchemes?: Record<string, string[]>;
   /** 基础语言的图层显隐隔离：语言 → 版式族或画板 key → 图层 id。 */
   languageVisibility?: Partial<Record<Lang, Record<string, Record<string, boolean>>>>;
+  /** 基础语言里真正删除的图层：与“隐藏”分开，删除后图层栏和参数栏都不再显示。 */
+  languageRemoved?: Partial<Record<Lang, Record<string, string[]>>>;
   /** 基础语言各自的版式参数；标题组方案、位置、比例等不跨语言串改。 */
   languageFamilyEdits?: Partial<Record<Lang, Partial<Record<SceneBucket, Record<string, ScenePlacementPatch>>>>>;
   /** 基础语言各自的单板精调参数。 */
@@ -251,7 +293,7 @@ export function sceneLanguageBoardView(scene: SceneState, lang: Lang, board: Sce
       ...scene,
       familyContent,
       elements: scene.elements.map((el) => {
-        const fallback = el.role === "custom" || el.role === "badge" || el.role === "disclaimer"
+        const fallback = el.role === "custom" || el.role === "module" || el.role === "badge" || el.role === "disclaimer"
           ? false
           : sceneDefaultElement(el.role, 0).visible;
         return { ...el, visible: fallback };
@@ -260,18 +302,23 @@ export function sceneLanguageBoardView(scene: SceneState, lang: Lang, board: Sce
   }
   const familyEdit = raw.languageFamilyEdits?.[lang]?.[family];
   const boardEdit = raw.languageBoardOverrides?.[lang]?.[board.key];
+  const languageModules = raw.languageModules?.[lang];
   const laid = sceneFamilyView({
     ...raw,
+    elements: languageModules
+      ? raw.elements.map((el) => languageModules[el.id] ? { ...el, module: languageModules[el.id] } : el)
+      : raw.elements,
     familyEdits: familyEdit ? { ...raw.familyEdits, [family]: familyEdit } : raw.familyEdits,
     boardOverrides: boardEdit ? { ...raw.boardOverrides, [board.key]: boardEdit } : raw.boardOverrides,
   }, family, show);
   const applyVisibility = (current: SceneState, scope: string) => {
     const visibility = current.languageVisibility?.[lang]?.[scope];
-    if (!visibility) return current;
+    const removed = new Set(current.languageRemoved?.[lang]?.[scope] ?? []);
+    if (!visibility && !removed.size) return current;
     return {
       ...current,
-      elements: current.elements.map((el) => {
-        const value = visibility[el.id];
+      elements: current.elements.filter((el) => !removed.has(el.id)).map((el) => {
+        const value = visibility?.[el.id];
         return value === undefined ? el : { ...el, visible: value };
       }),
     };
@@ -311,7 +358,8 @@ export function sceneCommitFamily(raw: SceneState, family: SceneBucket, next: Sc
       elements.push(base);
       continue;
     }
-    elements.push(el.name === base.name ? base : { ...base, name: el.name });
+    const moduleChanged = !sameJson(el.module, base.module);
+    elements.push(el.name === base.name && !moduleChanged ? base : { ...base, name: el.name, ...(el.module ? { module: el.module } : {}) });
     const diff: Partial<Record<Lang, string>> = {};
     for (const lang of new Set([...Object.keys(el.texts), ...Object.keys(base.texts)]) as Set<Lang>) {
       const value = el.texts[lang];
@@ -329,7 +377,9 @@ export function sceneCommitFamily(raw: SceneState, family: SceneBucket, next: Sc
   elements.splice(0, elements.length, ...layered);
   for (const el of next.elements) {
     if (rawIds.has(el.id)) continue;
-    elements.push({ ...el, visible: false });
+    const nextRank = rank.get(el.id) ?? Number.MAX_SAFE_INTEGER;
+    const insertAt = elements.findIndex((item) => (rank.get(item.id) ?? Number.MAX_SAFE_INTEGER) > nextRank);
+    elements.splice(insertAt < 0 ? elements.length : insertAt, 0, { ...el, visible: false });
     if (el.visible) visibility[el.id] = true;
   }
   const own: SceneFamilyContent = {};
@@ -346,10 +396,10 @@ export function sceneCommitFamily(raw: SceneState, family: SceneBucket, next: Sc
   const familyContent = { ...raw.familyContent };
   if (Object.keys(own).length) familyContent[family] = own;
   else delete familyContent[family];
-  /** 自定义文字在所有版式族都删掉了才真正删除。 */
+  /** 自定义文字和自定义元素在所有版式族都删掉了才真正删除。 */
   const buckets = [...new Set([...SCENE_FAMILIES, ...Object.keys(familyContent)])];
   const shownSomewhere = (el: SceneElement) => buckets.some((item) => familyContent[item]?.visibility?.[el.id] ?? el.visible);
-  const kept = elements.filter((el) => !(removed.has(el.id) && el.role === "custom" && !shownSomewhere(el)));
+  const kept = elements.filter((el) => !(removed.has(el.id) && (el.role === "custom" || el.role === "module") && !shownSomewhere(el)));
   const result: SceneState = {
     ...next,
     elements: kept,
@@ -518,6 +568,7 @@ export interface SceneSchemeExtra {
   role?: SceneRole;
   /** 目标里已没有这个图层时，用它重建。 */
   texts?: Partial<Record<Lang, string>>;
+  module?: SceneCustomModule;
   logoPreset?: LibraryLogoPreset;
   attach?: SceneAttach;
   align: SceneAlign;
@@ -587,7 +638,9 @@ export function sceneAttachToGroup(scene: SceneState, family: SceneBucket, board
     const laid = layout.laid.find((item) => item.el.id === id);
     if (!found || !laid) continue;
     const { x: _x, y: _y, follow: _follow, ...rest } = target[id] ?? {};
-    target[id] = roundScenePatch({ ...rest, ...found });
+    target[id] = laid.el.role === "module"
+      ? roundSceneModulePatch({ ...rest, ...found })
+      : roundScenePatch({ ...rest, ...found });
     if (found.attach.v === "beside") continue;
     const center = laid.box.y + laid.box.h / 2;
     const at = list.findIndex((item) => item.box.y + item.box.h / 2 > center);
@@ -604,7 +657,8 @@ export function sceneAttachToGroup(scene: SceneState, family: SceneBucket, board
     const neighbor = list[above ? index + 1 : index - 1];
     const space = neighbor ? (above ? neighbor.box.y - (item.box.y + item.box.h) : item.box.y - (neighbor.box.y + neighbor.box.h)) : 0;
     const dx = (edgeX(item.box, align) - edgeX(layout.group.box, align)) / unit;
-    target[id] = roundScenePatch({ ...target[id], align, attach: { ...target[id]!.attach!, v: above ? "above" : "below", dy: Math.max(0, space) / unit, dx: round(dx, 4) } });
+    const patch = { ...target[id], align, attach: { ...target[id]!.attach!, v: above ? "above" as const : "below" as const, dy: Math.max(0, space) / unit, dx: round(dx, 4) } };
+    target[id] = item.el.role === "module" ? roundSceneModulePatch(patch) : roundScenePatch(patch);
   }
   const shown = list.map((item) => item.el.id);
   const order = sceneGroupOrder({ ...scene, familyEdits: { ...scene.familyEdits, [family]: target } }, family).filter((id) => !fresh.includes(id));
@@ -683,9 +737,10 @@ export function sceneDetachFromGroup(scene: SceneState, family: SceneBucket, boa
     const { attach: _attach, ...rest } = entry;
     const laid = layout.laid.find((item) => item.el.id === id);
     const specScale = laid ? specPosition(scene, board, laid.el.role)?.scale ?? 1 : 1;
-    target[id] = roundScenePatch(laid
-      ? { ...rest, x: laid.placement.x, y: laid.placement.y, align: laid.placement.align, scale: laid.placement.scale / specScale, follow: "none" }
-      : rest);
+    const patch = laid
+      ? { ...rest, x: laid.placement.x, y: laid.placement.y, align: laid.placement.align, scale: laid.placement.scale / specScale, follow: "none" as const }
+      : rest;
+    target[id] = laid?.el.role === "module" ? roundSceneModulePatch(patch) : roundScenePatch(patch);
     const placed = laid ? resolveScenePlacement({ ...scene, familyEdits: { ...scene.familyEdits, [family]: target } }, board, laid.el) : null;
     if (laid && placed && Math.abs(placed.y - laid.placement.y) < 1e-3) stays.add(id);
   }
@@ -730,7 +785,11 @@ export function captureSceneLayoutScheme(scene: SceneState, family: SceneBucket,
     extras[elId] = {
       name: el.name,
       role: el.role,
-      ...(el.role === "logo" ? { logoPreset: scene.logoPreset } : { texts: { [lang]: el.texts[lang] ?? "" } }),
+      ...(el.role === "logo"
+        ? { logoPreset: scene.logoPreset }
+        : el.role === "module"
+          ? { module: el.module }
+          : { texts: { [lang]: el.texts[lang] ?? "" } }),
       ...found,
       ...(entry?.w !== undefined ? { w: entry.w } : {}),
     };
@@ -804,7 +863,13 @@ export function applySceneScheme(scene: SceneState, scheme: SceneLayoutScheme, f
     if (index < 0) {
       if (!extra.role) continue;
       const fresh = sceneDefaultElement(extra.role, elements.filter((el) => el.role === "custom").length + 1);
-      elements.push({ ...fresh, id, name: extra.name, ...(extra.texts ? { texts: { ...extra.texts } } : {}) });
+      elements.push({
+        ...fresh,
+        id,
+        name: extra.name,
+        ...(extra.texts ? { texts: { ...extra.texts } } : {}),
+        ...(extra.module ? { module: extra.module } : {}),
+      });
       index = elements.length - 1;
     }
     const el = elements[index]!;
@@ -823,7 +888,8 @@ export function applySceneScheme(scene: SceneState, scheme: SceneLayoutScheme, f
       scale = extra.scale / legacy.groupScale;
     }
     const { x: _x, y: _y, follow: _follow, w: _w, ...rest } = target[id] ?? {};
-    target[id] = roundScenePatch({ ...rest, attach, align: extra.align, scale, ...(extra.w !== undefined ? { w: extra.w } : {}) });
+    const patch = { ...rest, attach, align: extra.align, scale, ...(extra.w !== undefined ? { w: extra.w } : {}) };
+    target[id] = el.role === "module" ? roundSceneModulePatch(patch) : roundScenePatch(patch);
     if (el.role === "logo" && extra.logoPreset) logoPreset = extra.logoPreset;
   }
   return { ...next, elements, logoPreset, familyEdits: { ...next.familyEdits, [family]: target } };
@@ -879,6 +945,11 @@ export interface SceneVersion {
   highlights?: Record<string, SceneHighlight[]>;
   fontRuns?: Record<string, SceneFontRun[]>;
   visibility?: Record<string, boolean>;
+  modules?: Record<string, SceneCustomModule>;
+  familyEdits?: ScenePatchMap;
+  boardOverrides?: ScenePatchMap;
+  removed?: string[];
+  badgeStyles?: Record<string, SceneBadgeStyle>;
 }
 
 /** 把自定义版本叠到场景上：版本里改过的文案、高亮、显隐覆盖基础语种，其余沿用。 */
@@ -886,23 +957,34 @@ export function sceneVersionView(scene: SceneState, version?: SceneVersion | nul
   if (!version) return scene;
   const highlights = { ...scene.highlights };
   const fontRuns = { ...scene.fontRuns };
-  const elements = scene.elements.map((el) => {
+  const removed = new Set(version.removed ?? []);
+  const elements = scene.elements.filter((el) => !removed.has(el.id)).map((el) => {
     const text = version.texts?.[el.id];
     const visible = version.visibility?.[el.id];
+    const module = version.modules?.[el.id];
     if (text !== undefined || version.highlights?.[el.id]) {
       highlights[el.id] = { ...highlights[el.id], [version.lang]: version.highlights?.[el.id] ?? [] };
     }
     if (text !== undefined || version.fontRuns?.[el.id]) {
       fontRuns[el.id] = { ...fontRuns[el.id], [version.lang]: version.fontRuns?.[el.id] ?? [] };
     }
-    if (text === undefined && visible === undefined) return el;
+    if (text === undefined && visible === undefined && !module) return el;
     return {
       ...el,
       ...(text !== undefined ? { texts: { ...el.texts, [version.lang]: text } } : {}),
       ...(visible !== undefined ? { visible } : {}),
+      ...(module ? { module } : {}),
     };
   });
-  return { ...scene, elements, highlights, fontRuns };
+  return {
+    ...scene,
+    elements,
+    highlights,
+    fontRuns,
+    badgeStyles: version.badgeStyles ? { ...scene.badgeStyles, ...version.badgeStyles } : scene.badgeStyles,
+    familyEdits: version.familyEdits ? { ...scene.familyEdits, ...version.familyEdits } : scene.familyEdits,
+    boardOverrides: version.boardOverrides ? { ...scene.boardOverrides, ...version.boardOverrides } : scene.boardOverrides,
+  };
 }
 
 /** 站内规范 CTA：有规范时高度、字号、内边距与宽度上下限全部锁定。 */
@@ -972,12 +1054,80 @@ export const SCENE_ROLE_LABEL: Record<SceneRole, string> = {
   title: "主标题",
   subtitle: "副标题",
   custom: "自定义文字",
+  module: "元素",
   disclaimer: "免责声明",
   cta: "CTA",
 };
 
 export const SCENE_TEXT_ROLES: readonly SceneRole[] = ["kicker", "title", "subtitle", "custom", "disclaimer"];
-export const SCENE_REMOVABLE_ROLES: readonly SceneRole[] = ["custom", "cta"];
+export const SCENE_REMOVABLE_ROLES: readonly SceneRole[] = ["badge", "disclaimer", "custom", "module", "cta"];
+
+/** 自定义元素使用稳定编号；旧数据按当前图层顺序补成元素1、元素2…… */
+export function sceneModuleName(scene: Pick<SceneState, "elements">, el: Pick<SceneElement, "id" | "role" | "name">) {
+  if (el.role !== "module") return el.name;
+  if (/^元素\d+$/.test(el.name)) return el.name;
+  const modules = scene.elements.filter((item) => item.role === "module");
+  const used = new Set(modules.flatMap((item) => {
+    const match = /^元素(\d+)$/.exec(item.name);
+    return match ? [Number(match[1])] : [];
+  }));
+  let number = 1;
+  for (const item of modules) {
+    const match = /^元素(\d+)$/.exec(item.name);
+    if (match) continue;
+    while (used.has(number)) number += 1;
+    if (item.id === el.id) return `元素${number}`;
+    used.add(number);
+    number += 1;
+  }
+  return "元素1";
+}
+
+/** 按当前语言版本里实际存在的元素分配编号；空版本始终从元素1开始。 */
+export function sceneNextModuleNumber(scene: Pick<SceneState, "elements">) {
+  const used = new Set(scene.elements
+    .filter((item) => item.role === "module")
+    .map((item) => Number(sceneModuleName(scene, item).replace(/^元素/, "")))
+    .filter((number) => Number.isFinite(number) && number > 0));
+  let next = 1;
+  while (used.has(next)) next += 1;
+  return next;
+}
+
+/** 将旧项目中的模块名称稳定为“元素N”，避免不同语种或版式过滤后编号漂移。 */
+export function normalizeSceneModuleNames(scene: SceneState): SceneState {
+  const used = new Set<number>();
+  const assigned = new Map<string, number>();
+
+  for (const el of scene.elements) {
+    if (el.role !== "module") continue;
+    const match = /^元素(\d+)$/.exec(el.name.trim());
+    const number = match ? Number(match[1]) : 0;
+    if (number > 0) {
+      used.add(number);
+      assigned.set(el.id, number);
+    }
+  }
+
+  let candidate = 1;
+  for (const el of scene.elements) {
+    if (el.role !== "module" || assigned.has(el.id)) continue;
+    while (used.has(candidate)) candidate += 1;
+    assigned.set(el.id, candidate);
+    used.add(candidate);
+  }
+
+  let changed = false;
+  const elements = scene.elements.map((el) => {
+    const number = assigned.get(el.id);
+    if (!number) return el;
+    const name = `元素${number}`;
+    if (el.name === name) return el;
+    changed = true;
+    return { ...el, name };
+  });
+  return changed ? { ...scene, elements } : scene;
+}
 
 /** 标题组：小标题、主标题、副标题共用一个锚点和对齐方式，纵向堆叠。 */
 export const SCENE_GROUP_ID = "titleGroup";
@@ -1079,8 +1229,9 @@ export const SCENE_BADGE_STYLES: readonly SceneBadgeStyleSpec[] = [
   },
 ];
 
-export function sceneBadgeStyle(scene: Pick<SceneState, "badgeStyle">) {
-  return SCENE_BADGE_STYLES.find((item) => item.id === scene.badgeStyle) ?? SCENE_BADGE_STYLES[0]!;
+export function sceneBadgeStyle(scene: Pick<SceneState, "badgeStyle" | "badgeStyles">, elementId?: string) {
+  const selected = (elementId ? scene.badgeStyles?.[elementId] : undefined) ?? scene.badgeStyle;
+  return SCENE_BADGE_STYLES.find((item) => item.id === selected) ?? SCENE_BADGE_STYLES[0]!;
 }
 
 /** 财报季角标的固定版式（文字 + moomoo 标），中英文各一套，坐标为 1080×225 训练像素。 */
@@ -1283,10 +1434,10 @@ export const SCENE_BACKGROUND_PRESETS: ReadonlyArray<{ id: string; name: string;
 ];
 
 const SIZE_FACTOR: Record<SceneFamily, Record<SceneRole, number>> = {
-  strip: { visual: 419 / 225, logo: 34 / 225, badge: 1 / 225, kicker: 37.65 / 225, title: 47 / 225, subtitle: 24 / 225, custom: 24 / 225, disclaimer: 18 / 225, cta: 80 / 225 },
-  landscape: { visual: 1, logo: 0.07, badge: 0, kicker: 0.08, title: 0.14, subtitle: 0.07, custom: 0.06, disclaimer: 0.04, cta: 0.14 },
-  square: { visual: 0.62, logo: 0.055, badge: 0, kicker: 0.05, title: 0.085, subtitle: 0.045, custom: 0.04, disclaimer: 0.025, cta: 0.1 },
-  portrait: { visual: 0.8, logo: 0.06, badge: 0, kicker: 0.055, title: 0.1, subtitle: 0.05, custom: 0.045, disclaimer: 0.025, cta: 0.12 },
+  strip: { visual: 419 / 225, logo: 34 / 225, badge: 1 / 225, kicker: 37.65 / 225, title: 47 / 225, subtitle: 24 / 225, custom: 24 / 225, module: 32 / 225, disclaimer: 18 / 225, cta: 80 / 225 },
+  landscape: { visual: 1, logo: 0.07, badge: 0, kicker: 0.08, title: 0.14, subtitle: 0.07, custom: 0.06, module: 0.08, disclaimer: 0.04, cta: 0.14 },
+  square: { visual: 0.62, logo: 0.055, badge: 0, kicker: 0.05, title: 0.085, subtitle: 0.045, custom: 0.04, module: 0.06, disclaimer: 0.025, cta: 0.1 },
+  portrait: { visual: 0.8, logo: 0.06, badge: 0, kicker: 0.055, title: 0.1, subtitle: 0.05, custom: 0.045, module: 0.06, disclaimer: 0.025, cta: 0.12 },
 };
 
 /** 角标按训练像素换算：其它族跟主标题相对通栏的缩放走，保证角标与标题的比例不变。 */
@@ -1319,6 +1470,7 @@ const DEFAULT_POS: Record<SceneFamily, Record<SceneRole, [number, number, SceneA
     title: [0.353, 0.42, "left"],
     subtitle: [0.353, 0.66, "left"],
     custom: [0.353, 0.84, "left"],
+    module: [0.353, 0.78, "left"],
     /** 免责放在 CTA 正下方。 */
     disclaimer: [1056 / 1080, 178.5 / 225, "right"],
     /** 规范 1677:15954：CTA 200×80 距右 24、距顶 72。 */
@@ -1332,6 +1484,7 @@ const DEFAULT_POS: Record<SceneFamily, Record<SceneRole, [number, number, SceneA
     title: [0.07, 0.4, "left"],
     subtitle: [0.07, 0.53, "left"],
     custom: [0.07, 0.62, "left"],
+    module: [0.07, 0.66, "left"],
     disclaimer: [0.07, 0.92, "left"],
     cta: [0.07, 0.74, "left"],
   },
@@ -1343,6 +1496,7 @@ const DEFAULT_POS: Record<SceneFamily, Record<SceneRole, [number, number, SceneA
     title: [0.5, 0.22, "center"],
     subtitle: [0.5, 0.3, "center"],
     custom: [0.5, 0.35, "center"],
+    module: [0.5, 0.38, "center"],
     disclaimer: [0.5, 0.95, "center"],
     cta: [0.5, 0.88, "center"],
   },
@@ -1354,6 +1508,7 @@ const DEFAULT_POS: Record<SceneFamily, Record<SceneRole, [number, number, SceneA
     title: [0.5, 0.21, "center"],
     subtitle: [0.5, 0.28, "center"],
     custom: [0.5, 0.33, "center"],
+    module: [0.5, 0.37, "center"],
     disclaimer: [0.5, 0.95, "center"],
     cta: [0.5, 0.87, "center"],
   },
@@ -1568,7 +1723,7 @@ export function sceneText(el: SceneElement, lang: Lang) {
 
 /** 财报季角标文字固定为规范文案，其余样式用元素自身文案。 */
 export function sceneBadgeText(scene: SceneState, el: SceneElement, lang: Lang) {
-  if (sceneBadgeStyle(scene).id === "earnings") return EARNINGS_TEXT[lang] ?? EARNINGS_TEXT.en!;
+  if (sceneBadgeStyle(scene, el.id).id === "earnings") return EARNINGS_TEXT[lang] ?? EARNINGS_TEXT.en!;
   return sceneText(el, lang);
 }
 
@@ -1616,6 +1771,13 @@ export function roundScenePatch(patch: ScenePlacementPatch): ScenePlacementPatch
   if (next.attach) next.attach = { v: next.attach.v, dy: round(next.attach.dy, 4), dx: round(next.attach.dx, 4) };
   if (next.shift !== undefined) next.shift = round(next.shift, 4);
   if (next.shiftX !== undefined) next.shiftX = round(next.shiftX, 4);
+  return next;
+}
+
+/** 自定义元素以 Figma 原始节点为 1×，内部换算值可能远大于普通图层的 3× 上限。 */
+export function roundSceneModulePatch(patch: ScenePlacementPatch): ScenePlacementPatch {
+  const next = roundScenePatch(patch);
+  if (patch.scale !== undefined) next.scale = round(Math.max(0.001, Math.min(1000, patch.scale)), 4);
   return next;
 }
 
@@ -1730,19 +1892,31 @@ export function resolveScenePlacement(scene: SceneState, board: SceneBoardRef, e
     : 0;
   const bucket = sceneBucketOf(board);
   const familyEdit = scene.familyEdits[bucket]?.[el.id];
+  const moduleAttach = el.role === "module" && el.module?.placementMode !== "free" && !familyEdit?.attach
+    ? {
+      attach: {
+        v: el.module?.placementMode === "above-title" ? "above" as const : el.module?.placementMode === "below-title" ? "below" as const : "beside" as const,
+        dy: el.module?.placementMode === "title-backdrop" ? 0 : GROUP_GAP[family],
+        dx: 0,
+      },
+      align: resolveSceneGroup(scene, board).align,
+    }
+    : {};
+  const ownEdit = { ...moduleAttach, ...familyEdit };
   const override = scene.boardOverrides[board.key]?.[el.id];
+  const effectiveOwnEdit = override?.detached ? { ...ownEdit, attach: undefined } : ownEdit;
   /** 编入标题组的图层跟组走，不受规范位置约束；单板手动拖过位置的除外。 */
-  if (familyEdit?.attach && SCENE_ATTACH_ROLES.includes(el.role) && override?.x === undefined && override?.y === undefined) {
+  if (effectiveOwnEdit.attach && SCENE_ATTACH_ROLES.includes(el.role) && override?.x === undefined && override?.y === undefined) {
     const group = resolveSceneGroup(scene, board);
     return withBoardHide(board, el, {
       x,
       y,
       align,
       visible: el.visible,
-      ...familyEdit,
+      ...effectiveOwnEdit,
       ...override,
       follow: "none",
-      scale: override?.scale ?? group.scale * (familyEdit.scale ?? 1),
+      scale: override?.scale ?? group.scale * (effectiveOwnEdit.scale ?? 1),
     });
   }
   const spec = specPosition(scene, board, el.role);
@@ -1754,14 +1928,14 @@ export function resolveScenePlacement(scene: SceneState, board: SceneBoardRef, e
     visible: el.visible,
     follow: el.role === "badge" ? "center" : "none",
     ...spec,
-    ...(spec && !soft ? withoutPosition(familyEdit) : familyEdit),
+    ...(spec && !soft ? withoutPosition(effectiveOwnEdit) : effectiveOwnEdit),
     ...override,
-    scale: override?.scale ?? (spec?.scale ?? 1) * (familyEdit?.scale ?? 1),
+    scale: override?.scale ?? (spec?.scale ?? 1) * (effectiveOwnEdit.scale ?? 1),
   };
   const u = unitOf(board);
   /** 族里的位置在规范画板上记成相对锚点的偏移，同组没有锚点的画板也按同样的偏移跟着挪。 */
-  if (override?.x === undefined && familyEdit?.shiftX) placement.x += (familyEdit.shiftX * u) / board.w;
-  if (override?.y === undefined && familyEdit?.shift) placement.y += (familyEdit.shift * u) / board.h;
+  if (override?.x === undefined && effectiveOwnEdit.shiftX) placement.x += (effectiveOwnEdit.shiftX * u) / board.w;
+  if (override?.y === undefined && effectiveOwnEdit.shift) placement.y += (effectiveOwnEdit.shift * u) / board.h;
   /** 跟随标题组的元素按规范的组对齐方式跟随（族里选的对齐覆盖规范时按它），单板手动选过的除外。 */
   const groupEdit = scene.familyEdits[bucket]?.[SCENE_GROUP_ID];
   const specAlign = board.layout?.group ? ((soft || groupEdit?.overSpec) && groupEdit?.align ? groupEdit.align : board.layout.group.align) : undefined;
@@ -1827,6 +2001,11 @@ export function sceneMetrics(scene: SceneState, board: SceneBoardRef, el: SceneE
   const text = sceneText(el, lang);
   const tracking = scene.tracking?.[el.id] ?? 0;
   if (el.role === "visual") return { w: height * scene.visualAspect, h: height, fontPx: 0 };
+  if (el.role === "module") {
+    const aspect = el.module && el.module.height > 0 ? el.module.width / el.module.height : 3;
+    const width = el.module?.stretchable && placement.w ? placement.w * unit : height * aspect;
+    return { w: width, h: height, fontPx: 0 };
+  }
   if (el.role === "cta") {
     const spec = board.ctaSpec;
     if (spec?.soft && scene.ctaFontUnlocked) {
@@ -1853,7 +2032,7 @@ export function sceneMetrics(scene: SceneState, board: SceneBoardRef, el: SceneE
   }
   if (el.role === "logo") return { w: height * sceneLogoAspect(scene.logoPreset), h: height, fontPx: 0 };
   if (el.role === "badge") {
-    const style = sceneBadgeStyle(scene);
+    const style = sceneBadgeStyle(scene, el.id);
     const script = sceneFontScript(lang);
     const k = badgeUnitFactor(family) * unit * placement.scale;
     if (style.id === "earnings") {
@@ -1917,7 +2096,7 @@ export interface SceneGroupLayout {
   frame: SceneBox;
   align: SceneAlign;
   gap: number;
-  /** 相邻两层文字之间的实际间距，长度为 ids.length - 1。 */
+  /** 标题组 Auto Layout 相邻成员之间的实际间距，长度为 stackIds.length - 1。 */
   gaps: number[];
   anchor: { x: number; y: number };
   ids: string[];
@@ -1926,13 +2105,22 @@ export interface SceneGroupLayout {
 }
 
 function hasSceneContent(scene: SceneState, el: SceneElement, lang: Lang) {
-  return el.role === "visual" || el.role === "logo" || Boolean(sceneText(el, lang).trim()) || (el.role === "badge" && sceneBadgeStyle(scene).id === "earnings");
+  return el.role === "visual" || el.role === "logo" || (el.role === "module" && Boolean(el.module) && !el.module?.cleared) || Boolean(sceneText(el, lang).trim()) || (el.role === "badge" && sceneBadgeStyle(scene, el.id).id === "earnings");
 }
 
 /** 标题组从上到下的层序，含隐藏的层；新编入或新出现的层按缺省位置插进已存的层序。 */
-export function sceneGroupOrder(scene: SceneState, family: SceneBucket): string[] {
+export function sceneGroupOrder(scene: SceneState, family: SceneBucket, boardKey?: string): string[] {
   const edits = scene.familyEdits[family] ?? {};
-  const riders = (v: SceneAttach["v"]) => scene.elements.filter((el) => SCENE_ATTACH_ROLES.includes(el.role) && edits[el.id]?.attach?.v === v).map((el) => el.id);
+  const boardEdits = boardKey ? (scene.boardOverrides[boardKey] ?? {}) : {};
+  const riders = (v: SceneAttach["v"]) => scene.elements.filter((el) => {
+    if (!SCENE_ATTACH_ROLES.includes(el.role)) return false;
+    const attached = boardEdits[el.id]?.detached ? undefined : (boardEdits[el.id]?.attach?.v ?? edits[el.id]?.attach?.v);
+    if (attached) return attached === v;
+    if (el.role !== "module") return false;
+    const customMode = boardEdits[el.id]?.customMode ?? edits[el.id]?.customMode ?? el.module?.placementMode;
+    return (customMode === "above-title" && v === "above")
+      || (customMode === "below-title" && v === "below");
+  }).map((el) => el.id);
   const core = SCENE_GROUP_ROLES.flatMap((role) => scene.elements.filter((el) => el.role === role).map((el) => el.id));
   const defaults = [...riders("above"), ...core, ...riders("below")];
   const order = (edits[SCENE_GROUP_ID]?.order ?? []).filter((id) => defaults.includes(id));
@@ -1974,7 +2162,7 @@ function stackSceneGroup(scene: SceneState, board: SceneBoardRef, lang: Lang) {
     if (!placement.visible || !placement.attach || placement.attach.v === "beside" || !hasSceneContent(scene, el, lang)) continue;
     riders.push({ el, placement, metrics: sceneMetrics(scene, board, el, placement, lang), box: { x: 0, y: 0, w: 0, h: 0 } });
   }
-  const order = sceneGroupOrder(scene, sceneBucketOf(board));
+  const order = sceneGroupOrder(scene, sceneBucketOf(board), board.key);
   const rank = (item: SceneLaid) => {
     const index = order.indexOf(item.el.id);
     return index < 0 ? order.length : index;
@@ -2056,8 +2244,17 @@ export function layoutScene(input: SceneState, board: SceneBoardRef, lang: Lang)
     if (groupBox && stacked && placement.attach) {
       const metrics = sceneMetrics(scene, board, el, placement, lang);
       const a = placement.attach;
-      const y = groupBox.y + groupBox.h / 2 + a.dy * stacked.u - metrics.h / 2;
-      const x = edgeX(groupBox, placement.align) + a.dx * stacked.u - (placement.align === "left" ? 0 : placement.align === "center" ? metrics.w / 2 : metrics.w);
+      const customMode = placement.customMode ?? el.module?.placementMode;
+      const backdrop = el.role === "module" && customMode === "title-backdrop";
+      const backdropTarget = backdrop
+        ? core.find((item) => item.el.role === (placement.backdropTarget ?? el.module?.backdropTarget ?? "title"))
+          ?? core.find((item) => item.el.role === "title")
+          ?? core[0]
+        : undefined;
+      /** 标题底层的偏移以选中的文字层为基准；其它编组元素仍以标题组整体为基准。 */
+      const anchorBox = backdropTarget?.box ?? groupBox;
+      const y = anchorBox.y + anchorBox.h / 2 + a.dy * stacked.u - metrics.h / 2;
+      const x = edgeX(anchorBox, placement.align) + a.dx * stacked.u - (placement.align === "left" ? 0 : placement.align === "center" ? metrics.w / 2 : metrics.w);
       const box = { x, y, w: metrics.w, h: metrics.h };
       placement = { ...placement, x: edgeX(box, placement.align) / board.w, y: (el.role === "badge" ? box.y : box.y + box.h / 2) / board.h };
       const beside = { el, placement, metrics, box };
@@ -2093,7 +2290,7 @@ export function layoutScene(input: SceneState, board: SceneBoardRef, lang: Lang)
       frame: stackBox([...core, ...attached]),
       align: stacked.group.align,
       gap: stacked.gap,
-      gaps: core.slice(1).map((item, index) => item.box.y - (core[index]!.box.y + core[index]!.box.h)),
+      gaps: stacked.stack.slice(1).map((item, index) => item.box.y - (stacked.stack[index]!.box.y + stacked.stack[index]!.box.h)),
       anchor: { x: stacked.anchorX * board.w + fitted.x - groupBox.x, y: fitted.y + fitted.h / 2 },
       ids: core.map((item) => item.el.id),
       stackIds: stacked.stack.map((item) => item.el.id),
@@ -2159,13 +2356,13 @@ function shiftSceneLaid(board: SceneBoardRef, units: SceneLaid[], dx: number, dy
 
 /** 角标贴顶边，只做水平收边：贴左边（x≈0）的版本保留，其余收进左右安全边距。 */
 function keepBadgeInside(board: SceneBoardRef, laid: SceneLaid[]) {
-  const badge = laid.find((item) => item.el.role === "badge");
-  if (!badge || badge.placement.attach) return;
   const pad = (24 / 1080) * board.w;
-  const { x, w } = badge.box;
-  if (Math.abs(x) <= 1 || w > board.w - pad * 2) return;
-  const dx = x < pad ? pad - x : x + w > board.w - pad ? board.w - pad - (x + w) : 0;
-  if (dx) shiftSceneLaid(board, [badge], dx, 0);
+  for (const badge of laid.filter((item) => item.el.role === "badge" && !item.placement.attach)) {
+    const { x, w } = badge.box;
+    if (Math.abs(x) <= 1 || w > board.w - pad * 2) continue;
+    const dx = x < pad ? pad - x : x + w > board.w - pad ? board.w - pad - (x + w) : 0;
+    if (dx) shiftSceneLaid(board, [badge], dx, 0);
+  }
 }
 
 function stackBox(stack: SceneLaid[]): SceneBox {
@@ -2490,6 +2687,7 @@ export interface SceneLayerOut {
   box: SceneBox;
   anchor: { x: number; y: number };
   align: SceneAlign;
+  module?: SceneCustomModule;
   text?: string;
   fontPx?: number;
   fontFamily?: string;
@@ -2570,8 +2768,8 @@ export function sceneBadgeStyle1Svg(w: number, h: number, k: number) {
     + `<path d="${path}" fill="#E7C281"/><path d="${path}" fill="url(#b1a)"/><path d="${path}" fill="url(#b1b)"/></svg>`;
 }
 
-function badgeOut(scene: SceneState, metrics: SceneMetrics, placement: ScenePlacement, box: SceneBox, board: SceneBoardRef, lang: Lang): SceneBadgeOut {
-  const style = sceneBadgeStyle(scene);
+function badgeOut(scene: SceneState, elementId: string, metrics: SceneMetrics, placement: ScenePlacement, box: SceneBox, board: SceneBoardRef, lang: Lang): SceneBadgeOut {
+  const style = sceneBadgeStyle(scene, elementId);
   const script = sceneFontScript(lang);
   const k = metrics.h / (style.id === "earnings" ? EARNINGS_BADGE[script].h : style.h);
   const full = { x: 0, y: 0, w: box.w, h: box.h };
@@ -2630,7 +2828,17 @@ export function buildSceneBoard(input: SceneState, board: SceneBoardRef, lang: L
   const cta = CTA_STYLE_PRESETS.find((item) => item.id === scene.ctaPreset) ?? CTA_STYLE_PRESETS[0]!;
   const layout = layoutScene(scene, board, lang);
   /** 绘制顺序就是图层顺序（elements 越靠后越在上层），主视觉默认在最底层。 */
-  const ordered = layout.laid;
+  const backdrops = layout.laid.filter(({ el, placement }) => (
+    el.role === "module"
+    && (placement.customMode ?? el.module?.placementMode) === "title-backdrop"
+  ));
+  const ordered = layout.laid.filter((item) => !backdrops.includes(item));
+  for (const item of backdrops) {
+    /** 目标只决定几何位置；层序始终放在整个标题组下面，避免覆盖任一层文字。 */
+    const groupIndex = ordered.findIndex((candidate) => isSceneGroupRole(candidate.el.role));
+    const insertAt = groupIndex >= 0 ? groupIndex : ordered.length;
+    ordered.splice(insertAt, 0, item);
+  }
   const layers: SceneLayerOut[] = [];
   const notes: string[] = [];
   const script = sceneFontScript(lang);
@@ -2642,7 +2850,7 @@ export function buildSceneBoard(input: SceneState, board: SceneBoardRef, lang: L
     if (metrics.locked && el.role === "cta") {
       notes.push(scene.ctaFontUnlocked && Math.round(metrics.fontPx) !== board.ctaSpec!.fontPx ? `CTA 字号已解除规范锁定（${Math.round(metrics.fontPx)}px，规范 ${board.ctaSpec!.fontPx}px）` : "CTA 尺寸按站内规范锁定（高度、字号、内边距与宽度上下限）");
     }
-    const badgeStyle = el.role === "badge" ? sceneBadgeStyle(scene) : null;
+    const badgeStyle = el.role === "badge" ? sceneBadgeStyle(scene, el.id) : null;
     const font = badgeStyle
       ? { ...sceneFont(scene, { id: el.id, role: "title" }, lang), lineHeight: badgeStyle.lineHeight }
       : { ...sceneFont(scene, el, lang), lineHeight: el.role === "cta" ? SCENE_LINE_HEIGHT : sceneLeading(scene, el) };
@@ -2659,11 +2867,18 @@ export function buildSceneBoard(input: SceneState, board: SceneBoardRef, lang: L
     layers.push({
       id: el.id,
       role: el.role,
-      name: el.name,
+      name: sceneModuleName(scene, el),
       box,
       anchor: { x: placement.x * board.w, y: el.role === "badge" ? box.y + box.h / 2 : placement.y * board.h },
       align: placement.align,
-      ...(el.role !== "visual" && el.role !== "logo" ? { text, fontPx: metrics.fontPx, ...font } : {}),
+      ...(el.role === "module" && el.module ? {
+        module: {
+          ...el.module,
+          placementMode: placement.customMode ?? el.module.placementMode,
+          backdropTarget: placement.backdropTarget ?? el.module.backdropTarget,
+        },
+      } : {}),
+      ...(el.role !== "visual" && el.role !== "logo" && el.role !== "module" ? { text, fontPx: metrics.fontPx, ...font } : {}),
       ...(metrics.lineFontPx ? {
         lineFontPx: metrics.lineFontPx,
         lineHeightPx: metrics.lineFontPx.map((px, index) => px * lineStyles[index]!.leading),
@@ -2672,7 +2887,7 @@ export function buildSceneBoard(input: SceneState, board: SceneBoardRef, lang: L
       ...(letterSpacing ? { letterSpacing } : {}),
       ...(SCENE_TEXT_ROLES.includes(el.role) ? { charColors: sceneCharColors(scene, el, lang), highlightRuns: sceneHighlightRuns(scene, el, lang) } : {}),
       ...(fontRuns.length ? { fontRuns } : {}),
-      ...(badgeStyle ? { badge: badgeOut(scene, metrics, placement, box, board, lang) } : {}),
+      ...(badgeStyle ? { badge: badgeOut(scene, el.id, metrics, placement, box, board, lang) } : {}),
       ...(stroke?.visible && strokePx > 0 ? { stroke: { paints: sceneFillPaints(stroke.fill, stroke.opacity), weight: strokePx, align: stroke.align } } : {}),
       ...(el.role === "cta" ? {
         cta: {
@@ -2765,6 +2980,7 @@ export function createDefaultScene(copy: Partial<Record<Lang, LangCopy>>): Scene
 
 export function sceneDefaultElement(role: SceneRole, index: number): SceneElement {
   if (role === "custom") return { id: `custom-${index}-${role}`, role, name: `自定义文字 ${index}`, visible: true, texts: { en: "Custom text", sc: "自定义文案", tc: "自定義文案" } };
+  if (role === "module") return { id: `module-${index}`, role, name: `元素${index}`, visible: true, texts: {} };
   if (role === "disclaimer") {
     return { id: "disclaimer", role, name: "免责声明", visible: true, texts: { en: "Investing involves risks.", sc: "投资有风险，入市需谨慎", tc: "投資涉及風險，入市需謹慎" } };
   }
@@ -2827,8 +3043,7 @@ export function applySceneCopyVariant(scene: SceneState, key: string, spec: Scen
       if (!familyEdits[family]?.[logo.id]?.attach) patch(family, logo.id, { follow: shape === "strip" ? spec.alignment : GROUP_POS[shape][2] });
     }
   }
-  const disclaimer = elements.find((el) => el.role === "disclaimer");
-  if (disclaimer?.visible) {
+  for (const disclaimer of elements.filter((el) => el.role === "disclaimer" && el.visible)) {
     for (const family of families) {
       const shape = sceneBucketFamily(family);
       if (familyEdits[family]?.[disclaimer.id]?.attach) continue;
@@ -2840,8 +3055,7 @@ export function applySceneCopyVariant(scene: SceneState, key: string, spec: Scen
       }
     }
   }
-  const badge = elements.find((el) => el.role === "badge");
-  if (badge?.visible) {
+  for (const badge of elements.filter((el) => el.role === "badge" && el.visible)) {
     for (const family of families) {
       if (!familyEdits[family]?.[badge.id]?.attach) patch(family, badge.id, { follow: "center", y: 0 });
     }
@@ -2876,7 +3090,7 @@ export function sceneFilledCopy(scene: SceneState, lang: Lang): Set<SceneRole> {
   for (const role of SCENE_COPY_SLOTS) {
     const el = scene.elements.find((item) => item.role === role);
     if (!el?.visible) continue;
-    if (sceneText(el, lang).trim() || (role === "badge" && sceneBadgeStyle(scene).id === "earnings")) filled.add(role);
+    if (sceneText(el, lang).trim() || (role === "badge" && sceneBadgeStyle(scene, el.id).id === "earnings")) filled.add(role);
   }
   return filled;
 }

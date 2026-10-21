@@ -11,12 +11,13 @@ function fileOf(preset: LibraryLogoPreset) {
 }
 
 /** 返回可直接交给 figma.createNodeFromSvg 的 SVG 文本，失败返回 undefined（写入端退回组件或文字）。 */
-export async function buildLogoSvg(preset: LibraryLogoPreset): Promise<string | undefined> {
+export async function buildLogoSvg(preset: LibraryLogoPreset, signal?: AbortSignal): Promise<string | undefined> {
   try {
-    const response = await fetch(fileOf(preset));
+    const response = await fetch(fileOf(preset), { signal });
     if (!response.ok) throw new Error(preset);
     return await response.text();
-  } catch {
+  } catch (cause) {
+    if (signal?.aborted) throw cause;
     return undefined;
   }
 }

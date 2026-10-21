@@ -1,10 +1,11 @@
 {
-  "name": "Futu Banner Platform Bridge",
+  "name": "延展连接器（ExtendLink）",
   "id": "futu-banner-platform-bridge-local",
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
   "editorType": ["figma"],
+  "enablePrivatePluginApi": true,
   "documentAccess": "dynamic-page",
   "networkAccess": {
     "allowedDomains": ["none"],

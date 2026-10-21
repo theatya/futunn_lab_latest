@@ -327,13 +327,13 @@ async function figmaFetch<T>(url: string, token: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function fetchNodeImages(fileKey: string, ids: string[], token: string) {
+async function fetchNodeImages(fileKey: string, ids: string[], token: string, useAbsoluteBounds = false) {
   const images: Record<string, string | null> = {};
   const uniqueIds = [...new Set(ids)];
   for (let index = 0; index < uniqueIds.length; index += 60) {
     const chunk = uniqueIds.slice(index, index + 60);
     const data = await figmaFetch<{ images?: Record<string, string | null> }>(
-      `https://api.figma.com/v1/images/${fileKey}?ids=${encodeURIComponent(chunk.join(","))}&format=png&scale=2`,
+      `https://api.figma.com/v1/images/${fileKey}?ids=${encodeURIComponent(chunk.join(","))}&format=png&scale=2${useAbsoluteBounds ? "&use_absolute_bounds=true" : ""}`,
       token,
     );
     Object.assign(images, data.images ?? {});
@@ -343,7 +343,7 @@ async function fetchNodeImages(fileKey: string, ids: string[], token: string) {
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { url?: string; token?: string; target?: "frame" | "visual-component" };
+    const body = (await request.json()) as { url?: string; token?: string; target?: "frame" | "visual-component" | "custom-element" };
     const parsed = parseFigmaUrl(body.url ?? "");
     if (!parsed.ok) return NextResponse.json({ error: parsed.reason }, { status: 400 });
     if (!parsed.nodeId) return NextResponse.json({ error: "请粘贴具体画板的链接，需要包含 node-id" }, { status: 400 });
@@ -367,6 +367,12 @@ export async function POST(request: Request) {
     if (body.target === "visual-component" && root.type !== "COMPONENT" && root.type !== "INSTANCE") {
       return NextResponse.json(
         { error: "主视觉链接必须指向 Figma Component 或 Instance；普通 Frame、Group 和图片不能用于延展" },
+        { status: 400 },
+      );
+    }
+    if (body.target === "custom-element" && !["RECTANGLE", "GROUP", "FRAME", "COMPONENT", "INSTANCE"].includes(root.type)) {
+      return NextResponse.json(
+        { error: "自定义元素链接需指向单个矩形、Group、Frame、Component 或 Instance" },
         { status: 400 },
       );
     }
@@ -402,7 +408,11 @@ export async function POST(request: Request) {
       ...(root.children ?? []).filter((node) => node.visible !== false).map((node) => node.id),
       ...renderUnits.filter((unit) => !unit.background).map((unit) => unit.id),
     ];
-    const images = await fetchNodeImages(parsed.fileKey, renderIds, token);
+    /**
+     * 自定义元素以用户链接节点的外框为边界。Frame 未开启 clipsContent 时，Figma 默认导出会把
+     * 外框外的子层一起算进 PNG，导致 PNG 比例与节点 width/height 不同，前端再按节点比例铺满就会压扁。
+     */
+    const images = await fetchNodeImages(parsed.fileKey, renderIds, token, body.target === "custom-element");
     const box = root.absoluteBoundingBox;
     const result: FigmaRecognitionResult = {
       schemaVersion: 2,

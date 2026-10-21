@@ -16,9 +16,9 @@ import { arrowStep, ScrubField } from "@/components/ui/field";
 import { Segmented } from "@/components/ui/segmented";
 import { cn } from "@/lib/utils";
 
-const SELECT = "h-7 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 text-[10px] outline-none focus:border-[var(--color-brand)]";
+const SELECT = "h-7 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 text-[10px] outline-none hover:border-[var(--app-line-strong)] focus:border-white/40";
 const ICON = "grid size-7 place-items-center rounded-[4px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]";
-const NUM = "h-7 w-full rounded-[4px] bg-[var(--app-field)] px-1.5 text-right text-[10px] tabular-nums outline-none focus:ring-1 focus:ring-[var(--color-brand)]";
+const NUM = "h-7 w-full rounded-[4px] bg-[var(--app-field)] px-1.5 text-right text-[10px] tabular-nums outline-none focus:ring-1 focus:ring-white/25";
 
 function rgba(stop: SceneGradientStop) {
   const value = stop.color.replace("#", "");
@@ -104,8 +104,8 @@ export function GradientEditor({ value, onChange }: { value: SceneCustomGradient
             onPointerMove={onHandleMove}
             onPointerUp={() => { dragging.current = null; }}
             className={cn(
-              "absolute top-0 z-10 size-4 -translate-x-1/2 cursor-ew-resize rounded-[3px] border-2",
-              index === current ? "border-[var(--color-brand)]" : "border-white/70",
+              "absolute top-0 z-10 size-4 -translate-x-1/2 cursor-ew-resize rounded-[3px] border-2 outline-none focus-visible:ring-1 focus-visible:ring-white/60",
+              index === current ? "border-white" : "border-white/50",
             )}
             style={{ left: `${item.pos * 100}%`, background: `linear-gradient(${rgba(item)}, ${rgba(item)}), ${CHECKER}` }}
           />

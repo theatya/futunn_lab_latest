@@ -21,9 +21,10 @@ export function parseFigmaUrl(raw: string):
   }
 
   const parts = parsed.pathname.split("/").filter(Boolean);
-  const fileKey = parts[0] === "design" || parts[0] === "file" ? parts[1] : undefined;
+  const branch = parts[0] === "design" && parts[2] === "branch" ? parts[3] : undefined;
+  const fileKey = branch ?? (parts[0] === "design" || parts[0] === "file" ? parts[1] : undefined);
   if (!fileKey) return { ok: false, reason: "链接里缺少 Figma 文件 ID" };
-  const fileName = decodeURIComponent(parts[2] ?? parts[1] ?? "Figma");
+  const fileName = decodeURIComponent(branch ? parts[4] ?? branch : parts[2] ?? parts[1] ?? "Figma");
   const node = parsed.searchParams.get("node-id")?.replace("-", ":") ?? undefined;
 
   return {

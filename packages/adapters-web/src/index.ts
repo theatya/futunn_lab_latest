@@ -175,12 +175,18 @@ export class StorageProjectRepository implements ProjectRepository {
  * Figma Plugin API 创建 Frame 和主视觉 Instance。
  */
 function stableFigmaSessionId() {
-  const fallback = typeof crypto === "undefined" ? `session-${Date.now()}` : crypto.randomUUID();
-  if (typeof window === "undefined") return fallback;
+  const createCode = () => {
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const value = crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
+      return String(value % 100_000).padStart(5, "0");
+    }
+    return String(Math.floor(Math.random() * 100_000)).padStart(5, "0");
+  };
+  if (typeof window === "undefined") return createCode();
   const key = "futu:figma-bridge-session";
   const saved = window.localStorage.getItem(key);
-  if (saved) return saved;
-  const created = fallback.slice(0, 8);
+  if (saved && /^\d{5}$/.test(saved)) return saved;
+  const created = createCode();
   window.localStorage.setItem(key, created);
   return created;
 }
@@ -189,10 +195,12 @@ export class LocalPluginFigmaWriter implements FigmaWriterPort {
   readonly sessionId = stableFigmaSessionId();
 
   async identity() {
-    return { kind: "user" as const, label: `本地 Figma 插件 · ${this.sessionId.slice(0, 8)}` };
+    return { kind: "user" as const, label: `延展连接器 · ${this.sessionId}` };
   }
 
-  async write(boards: BoardPlan[], options: FigmaWriteOptions): Promise<FigmaWriteResult> {
+  async write(boards: BoardPlan[], options: FigmaWriteOptions, signal?: AbortSignal): Promise<FigmaWriteResult> {
+    const abortError = () => new DOMException("已取消写入", "AbortError");
+    if (signal?.aborted) throw abortError();
     const uploaded = options.visualComponent?.source === "upload" && options.visualComponent.previewUrl?.startsWith("data:");
     if (boards.some((board) => !board.native) && !options.visualComponent?.figmaUrl && !uploaded) {
       throw new Error("请先在第一步识别主视觉组件或上传图片");
@@ -204,16 +212,104 @@ export class LocalPluginFigmaWriter implements FigmaWriterPort {
     });
     const job = (await created.json()) as { jobId?: string; error?: string };
     if (!created.ok || !job.jobId) throw new Error(job.error ?? "无法创建 Figma 写入任务");
+    const publishProgress = (progress: { completed: number; total: number }) => {
+      if (typeof window === "undefined") return;
+      window.dispatchEvent(new CustomEvent("futu:figma-write-progress", {
+        detail: { jobId: job.jobId, ...progress },
+      }));
+    };
+    publishProgress({ completed: 0, total: boards.length });
 
-    const expiresAt = Date.now() + 120_000;
-    while (Date.now() < expiresAt) {
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      const response = await fetch(`/api/figma/write?jobId=${encodeURIComponent(job.jobId)}`);
-      const status = (await response.json()) as { status?: string; result?: FigmaWriteResult; error?: string };
-      if (status.status === "completed" && status.result) return status.result;
-      if (status.status === "failed") throw new Error(status.error ?? "Figma 插件写入失败");
+    let cancelResolution: Promise<FigmaWriteResult | null> | null = null;
+    const confirmCancelled = () => {
+      cancelResolution ??= (async () => {
+        const response = await fetch("/api/figma/write", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "cancel", jobId: job.jobId, sessionId: this.sessionId }),
+        });
+        if (response.ok) return null;
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        if (response.status === 409) {
+          const latestResponse = await fetch(`/api/figma/write?jobId=${encodeURIComponent(job.jobId!)}`, { cache: "no-store" });
+          const latest = (await latestResponse.json().catch(() => null)) as {
+            status?: string;
+            result?: FigmaWriteResult;
+            error?: string;
+          } | null;
+          if (latestResponse.ok && latest?.status === "completed" && latest.result) return latest.result;
+          if (latestResponse.ok && latest?.status === "cancelled") return null;
+          if (latestResponse.ok && latest?.status === "failed") {
+            throw new Error(latest.error ?? "Figma 插件写入失败");
+          }
+        }
+        throw new Error(payload?.error ?? "取消写入失败，请重试");
+      })();
+      return cancelResolution;
+    };
+    const onAbort = () => void confirmCancelled().catch(() => undefined);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      if (signal?.aborted) {
+        const terminalResult = await confirmCancelled();
+        if (terminalResult) return terminalResult;
+        throw abortError();
+      }
+      const hardExpiresAt = Date.now() + 30 * 60_000;
+      let lastActivityAt = Date.now();
+      while (Date.now() < hardExpiresAt) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        if (signal?.aborted) throw abortError();
+        let response: Response;
+        try {
+          response = await fetch(`/api/figma/write?jobId=${encodeURIComponent(job.jobId)}`, { signal });
+        } catch (cause) {
+          if (signal?.aborted) throw abortError();
+          if (Date.now() - lastActivityAt > 60_000) throw cause;
+          continue;
+        }
+        let status: {
+          status?: string;
+          progress?: { completed: number; total: number };
+          result?: FigmaWriteResult;
+          error?: string;
+          activityAt?: number;
+        };
+        try {
+          status = (await response.json()) as typeof status;
+        } catch (cause) {
+          if (Date.now() - lastActivityAt > 60_000) throw cause;
+          continue;
+        }
+        if (!response.ok) {
+          const retryable = response.status >= 500 || response.status === 408 || response.status === 429;
+          if (retryable && Date.now() - lastActivityAt <= 60_000) continue;
+          throw new Error(status.error ?? "无法读取 Figma 写入状态");
+        }
+        if (Number.isFinite(status.activityAt)) lastActivityAt = Math.max(lastActivityAt, status.activityAt!);
+        if (status.progress) publishProgress(status.progress);
+        if (status.status === "completed" && status.result) return status.result;
+        if (status.status === "failed") throw new Error(status.error ?? "Figma 插件写入失败");
+        if (status.status === "cancelled") throw abortError();
+        if (Date.now() - lastActivityAt > 60_000) {
+          throw new Error("连接器超过 60 秒没有心跳或写入进度，请确认插件保持开启后重试。");
+        }
+      }
+      const terminalResult = await confirmCancelled();
+      if (terminalResult) return terminalResult;
+      throw new Error("等待 Figma 插件超时。请确认插件已打开、连接码正确，并运行在目标文件中。");
+    } catch (cause) {
+      if (signal?.aborted) {
+        const terminalResult = await confirmCancelled();
+        if (terminalResult) return terminalResult;
+        throw abortError();
+      }
+      const terminalResult = await confirmCancelled().catch(() => null);
+      if (terminalResult) return terminalResult;
+      throw cause;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
     }
-    throw new Error("等待 Figma 插件超时。请确认插件已打开、配对码正确，并运行在目标文件中。");
   }
 }
 

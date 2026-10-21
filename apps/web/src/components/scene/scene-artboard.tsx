@@ -42,6 +42,8 @@ type DragState = {
   /** 跟随标题组对齐时 x 由标题组决定，只能上下拖。 */
   lockX: boolean;
   widthSign?: number;
+  /** 角点缩放时同步改变可拉伸元素的宽度，保持当前比例。 */
+  scaleWidth?: boolean;
   origin: { x: number; y: number; scale: number; w: number };
   /** 多选拖动时一起挪的其它对象。 */
   followers: Array<{ target: string; origin: { x: number; y: number }; lockX: boolean }>;
@@ -283,14 +285,16 @@ export function SceneArtboard({
   /** 拖动时实际挪的对象：文字层和编入组的图层都归到标题组。 */
   const unitFor = (id: string): DragUnit | null => {
     const el = scene.elements.find((item) => item.id === id);
-    if (output.group && (id === SCENE_GROUP_ID || (el && (isSceneGroupRole(el.role) || resolveScenePlacement(scene, board, el).attach)))) {
+    const placement = el ? resolveScenePlacement(scene, board, el) : null;
+    const independentBackdrop = Boolean(el?.role === "module" && (placement?.customMode ?? el.module?.placementMode) === "title-backdrop");
+    if (output.group && (id === SCENE_GROUP_ID || (el && (isSceneGroupRole(el.role) || (placement?.attach && !independentBackdrop))))) {
       const group = resolveSceneGroup(scene, board);
       return { target: SCENE_GROUP_ID, origin: { x: group.x, y: group.y }, lockX: false, box: output.group.frame };
     }
     const layer = output.layers.find((item) => item.id === id);
     if (!el || !layer) return null;
-    const placement = resolveScenePlacement(scene, board, el);
-    return { target: id, origin: { x: placement.x, y: placement.y }, lockX: Boolean(output.group && placement.follow && placement.follow !== "none"), box: layer.box };
+    const ownPlacement = placement ?? resolveScenePlacement(scene, board, el);
+    return { target: id, origin: { x: ownPlacement.x, y: ownPlacement.y }, lockX: Boolean(output.group && ownPlacement.follow && ownPlacement.follow !== "none"), box: layer.box };
   };
   /** 点击标题组里的图层始终选中整个标题组，被点那一层同时高亮、带缩放手柄、展开参数；双击进入文字编辑。 */
   const pick = (id: string) => {
@@ -346,7 +350,9 @@ export function SceneArtboard({
     let lockX = false;
     const boxW = output.layers.find((layer) => layer.id === id)?.box.w ?? 0;
     /** 拖文字层或编入组的图层都是挪整个标题组；组内位置锁定，要单独挪先取消编组。 */
-    const rides = Boolean(el && kind === "move" && output.group && resolveScenePlacement(scene, board, el).attach);
+    const dragPlacement = el ? resolveScenePlacement(scene, board, el) : null;
+    const independentBackdrop = Boolean(el?.role === "module" && (dragPlacement?.customMode ?? el.module?.placementMode) === "title-backdrop");
+    const rides = Boolean(el && kind === "move" && output.group && dragPlacement?.attach && !independentBackdrop);
     if (id === SCENE_GROUP_ID || (el && isSceneGroupRole(el.role) && kind === "move") || rides) {
       const group = resolveSceneGroup(scene, board);
       target = SCENE_GROUP_ID;
@@ -436,7 +442,11 @@ export function SceneArtboard({
     } else if (drag.kind === "height") {
       onPatch(drag.target, { scale: drag.origin.scale * Math.max(0.2, (drag.layerH + dy) / drag.layerH) });
     } else {
-      onPatch(drag.target, { scale: drag.origin.scale * Math.max(0.2, (drag.layerW + dx) / drag.layerW) });
+      const factor = Math.max(0.2, (drag.layerW + dx) / drag.layerW);
+      onPatch(drag.target, {
+        scale: drag.origin.scale * factor,
+        ...(drag.scaleWidth ? { w: sceneWidthToUnit(board, drag.origin.w * factor) } : {}),
+      });
     }
   };
 
@@ -449,11 +459,14 @@ export function SceneArtboard({
 
   const padX = (24 / 1080) * board.w * k;
   const padY = 0.04 * board.h * k;
-  const handleFor = (id: string) => (
+  const handleFor = (id: string, scaleWidth = false) => (
     <span
       role="presentation"
       title="拖动缩放比例"
-      onPointerDown={(event) => begin(event, id, "scale")}
+      onPointerDown={(event) => {
+        begin(event, id, "scale");
+        if (dragRef.current) dragRef.current.scaleWidth = scaleWidth;
+      }}
       onPointerMove={move}
       onPointerUp={end}
       onPointerCancel={end}
@@ -564,6 +577,27 @@ export function SceneArtboard({
             >
               <LogoPresetPreview preset={output.logoPreset} className="pointer-events-none size-full min-h-0" />
               {handle}
+            </div>
+          );
+        }
+
+        if (layer.role === "module" && layer.module) {
+          return (
+            <div
+              key={layer.id}
+              data-scene-layer
+              {...pointer}
+              className={cn("absolute", frame)}
+              style={{ left: layer.box.x * k, top: layer.box.y * k, width: layer.box.w * k, height: layer.box.h * k }}
+            >
+              {layer.module.previewUrl ? (
+                <img src={layer.module.previewUrl} alt="" draggable={false} className="pointer-events-none block size-full object-cover object-top" />
+              ) : (
+                <div className="grid size-full place-items-center border border-dashed border-white/25 text-[8px] text-white/45">{layer.name}</div>
+              )}
+              {selected && movable(layer.id) && layer.module.stretchable ? widthHandleFor(layer) : null}
+              {selected && movable(layer.id) && layer.module.stretchable ? heightHandleFor(layer) : null}
+              {selected && movable(layer.id) && !editing ? handleFor(layer.id, Boolean(layer.module.stretchable)) : null}
             </div>
           );
         }

@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { LANGS, resolvedTitleBreaks, sizeKey } from "@futu/domain";
 import { generate, planBoards, preflight } from "@futu/orchestrator";
 import { createWebPorts } from "@futu/adapters-web";
 import { T_BASE, useStagger } from "@/lib/motion";
+import { parseFigmaUrl } from "@/lib/figma-link";
 import { useStudio } from "@/lib/studio-store";
 import { BoardPreview } from "@/components/board/board-preview";
 import { Button, WorkflowSparkle } from "@/components/ui/button";
@@ -25,6 +26,8 @@ export function StepGenerate() {
   const [done, setDone] = useState<Awaited<ReturnType<typeof generate>> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bridgeLabel, setBridgeLabel] = useState("");
+  const lastWriteRunRef = useRef<string | null>(null);
+  const pairingCode = bridgeLabel.includes("·") ? bridgeLabel.split("·").at(-1)?.trim() ?? "" : bridgeLabel.trim();
   const measurer = useMemo(() => new CanvasMeasurer('"BR Hendrix","PingFang SC",sans-serif'), []);
 
   const plans = useMemo(() => planBoards(project, measurer), [measurer, project]);
@@ -35,6 +38,11 @@ export function StepGenerate() {
   ).values()), [plans]);
   const boards = plans.length;
   const copy = project.content.copy[lang];
+  const targetUrl = project.content.kv?.figmaUrl
+    ?? project.content.sourceFrames?.[lang]?.figmaUrl
+    ?? project.content.sourceFrame?.figmaUrl
+    ?? "";
+  const targetLink = useMemo(() => parseFigmaUrl(targetUrl), [targetUrl]);
   const stagger = useStagger(0.02);
 
   useEffect(() => {
@@ -42,17 +50,28 @@ export function StepGenerate() {
   }, []);
 
   const run = async () => {
+    const retryRunId = error ? lastWriteRunRef.current : null;
+    const runId = retryRunId ?? crypto.randomUUID();
     setBusy(true);
     setDone(null);
     setError(null);
     try {
+      if (!targetLink.ok || !targetLink.nodeId) {
+        throw new Error("请先提供包含 node-id 的目标 Figma 文件链接");
+      }
       const result = await generate(project, ports.figma, {
+        fileKey: targetLink.fileKey,
+        targetNodeId: targetLink.nodeId,
+        runId,
+        ...(retryRunId ? { replaceRun: true } : {}),
         page,
         pageName: project.name,
         arrange,
       }, { measurer });
+      lastWriteRunRef.current = runId;
       setDone(result);
     } catch (cause) {
+      lastWriteRunRef.current = runId;
       setError(cause instanceof Error ? cause.message : "Figma 写入失败");
     } finally {
       setBusy(false);
@@ -119,14 +138,14 @@ export function StepGenerate() {
                 onChange={setArrange}
                 options={[
                   { id: "group", label: "按尺寸" },
-                  { id: "lang", label: "按语种" },
+                  { id: "lang", label: "按语言" },
                   { id: "flat", label: "平铺" },
                 ]}
               />
             </div>
             <div className="rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-2)] p-2.5 text-[10px]">
-              <div className="text-[var(--app-text-3)]">在 Figma Desktop 中加载 <code className="text-[var(--color-brand)]">figma-plugin/manifest.json</code>，保持插件开启后填入配对码：</div>
-              <code className="mt-1.5 block select-all text-[12px] text-[var(--app-text)]">{bridgeLabel || "正在生成…"}</code>
+              <div className="text-[var(--app-text-3)]">在 Figma 中打开「延展连接器（ExtendLink）」，保持连接器开启后填入 5 位连接码：</div>
+              <code className="mt-1.5 block select-all text-[12px] text-[var(--app-text)]">{pairingCode || "正在生成…"}</code>
             </div>
           </div>
           </Panel>

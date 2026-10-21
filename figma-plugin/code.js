@@ -1,4 +1,90 @@
-figma.showUI(__html__, { width: 390, height: 440, title: "Futu Banner Bridge" });
+const EXTEND_LINK_VERSION = "1.0.0";
+const cancelledClaims = new Set();
+let activeClaim = null;
+let activeRun = null;
+
+class WriteCancelledError extends Error {
+  constructor() {
+    super("写入已取消");
+    this.name = "WriteCancelledError";
+  }
+}
+
+function jobMarker(jobId, claimToken) {
+  return claimToken ? `${jobId}:${claimToken}` : jobId;
+}
+
+function assertJobActive(job) {
+  if (cancelledClaims.has(jobMarker(job.id, job.claimToken))) throw new WriteCancelledError();
+}
+
+function protectCreatedNode(node) {
+  if (activeClaim && node && typeof node.setPluginData === "function") {
+    node.setPluginData("futuWriteJob", activeClaim);
+    if (activeRun) node.setPluginData("futuWriteRun", activeRun);
+  }
+  return node;
+}
+
+async function cleanupJobArtifacts(jobId, claimToken) {
+  const exactMarker = claimToken ? jobMarker(jobId, claimToken) : null;
+  const belongsToClaim = (node) => {
+    const marker = node.getPluginData("futuWriteJob");
+    return exactMarker ? marker === exactMarker : marker === jobId || marker.startsWith(`${jobId}:`);
+  };
+  const pages = [...figma.root.children];
+  for (const page of pages) {
+    await page.loadAsync();
+    if (belongsToClaim(page)) {
+      if (figma.currentPage === page) {
+        const fallback = pages.find((candidate) => candidate !== page && candidate.parent);
+        if (fallback) await figma.setCurrentPageAsync(fallback);
+      }
+      if (page.parent && figma.currentPage !== page) page.remove();
+      continue;
+    }
+    for (const child of [...page.children]) {
+      if (belongsToClaim(child) && child.parent) child.remove();
+    }
+  }
+}
+
+async function safelyCleanupJobArtifacts(jobId, claimToken) {
+  try {
+    await cleanupJobArtifacts(jobId, claimToken);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function cleanupRunArtifacts(runId) {
+  if (!runId) return;
+  const belongsToRun = (node) => node.getPluginData("futuWriteRun") === runId;
+  const pages = [...figma.root.children];
+  for (const page of pages) {
+    await page.loadAsync();
+    if (belongsToRun(page)) {
+      if (figma.currentPage === page) {
+        const fallback = pages.find((candidate) => candidate !== page && candidate.parent);
+        if (fallback) await figma.setCurrentPageAsync(fallback);
+      }
+      if (page.parent && figma.currentPage !== page) page.remove();
+      continue;
+    }
+    for (const child of [...page.children]) {
+      if (belongsToRun(child) && child.parent) child.remove();
+    }
+  }
+}
+
+figma.showUI(__html__, { width: 390, height: 560, title: "延展连接器（ExtendLink）" });
+figma.ui.postMessage({
+  type: "context",
+  version: EXTEND_LINK_VERSION,
+  fileKey: figma.fileKey || "",
+  fileName: figma.root.name,
+});
 
 function at(rect, board) {
   return {
@@ -54,7 +140,7 @@ async function addStructuredText(parent, text, layer, board, offset) {
   if (!layer || !text) return null;
   const typography = layer.typography || {};
   const fontName = await loadRecipeFont(typography, typography.fontWeight >= 600 ? "bold" : "regular");
-  const node = figma.createText();
+  const node = protectCreatedNode(figma.createText());
   node.name = layer.name || layer.role;
   node.fontName = fontName;
   node.fontSize = Math.max(8, typography.fontSizePx || 16);
@@ -130,7 +216,7 @@ async function addText(frame, text, rect, size, weight, color) {
   if (!rect || !text) return;
   const fontStyle = weight === "bold" ? "Bold" : "Regular";
   await figma.loadFontAsync({ family: "Inter", style: fontStyle });
-  const node = figma.createText();
+  const node = protectCreatedNode(figma.createText());
   node.fontName = { family: "Inter", style: fontStyle };
   node.fontSize = Math.max(8, Math.round(size));
   node.characters = text;
@@ -147,7 +233,7 @@ async function appendAsset(frame, asset, rect, fallbackLabel) {
   const box = at(rect, { w: frame.width, h: frame.height });
   try {
     const component = await sourceComponent(asset.id);
-    const instance = component.createInstance();
+    const instance = protectCreatedNode(component.createInstance());
     const scale = Math.min(box.w / instance.width, box.h / instance.height);
     instance.rescale(scale);
     instance.x = box.x + (box.w - instance.width) / 2;
@@ -169,6 +255,29 @@ async function sourceComponent(componentId) {
   throw new Error("主视觉链接不再指向 Component 或 Instance，请回平台重新识别。");
 }
 
+async function cloneCustomElement(source) {
+  const node = await figma.getNodeByIdAsync(source.nodeId);
+  if (!node) throw new Error(`当前文件中找不到自定义元素「${source.nodeId}」，请刷新源元素后重试。`);
+  if (node.type === "COMPONENT") return protectCreatedNode(node.createInstance());
+  if (!["RECTANGLE", "GROUP", "FRAME", "INSTANCE"].includes(node.type)) {
+    throw new Error("自定义元素只支持矩形、Group、Frame、Component 或 Instance。");
+  }
+  return protectCreatedNode(node.clone());
+}
+
+async function createSceneModule(layer) {
+  const custom = await cloneCustomElement(layer.module);
+  custom.name = layer.name || "元素";
+  // 用户链接到 Frame 时，以 Frame 外框作为元素边界；源文件里未裁切的越界子层不应跟着写入成品。
+  if (custom.type === "FRAME") custom.clipsContent = true;
+  if (layer.module.stretchable && typeof custom.resize === "function") {
+    custom.resize(Math.max(1, layer.box.w), Math.max(1, layer.box.h));
+  } else if (custom.width > 0) {
+    custom.rescale(layer.box.w / custom.width);
+  }
+  return custom;
+}
+
 async function writeResolvedRecipe(frame, plan, component) {
   const layers = plan.solution.resolvedLayers;
   if (!Array.isArray(layers) || layers.length === 0) return false;
@@ -178,7 +287,7 @@ async function writeResolvedRecipe(frame, plan, component) {
   const kvLayer = layer("kv");
   if (kvLayer) {
     const box = at(kvLayer.bounds, board);
-    const instance = component.createInstance();
+    const instance = protectCreatedNode(component.createInstance());
     const scale = Math.max(box.w / instance.width, box.h / instance.height);
     instance.rescale(scale);
     instance.x = box.x + (box.w - instance.width) / 2;
@@ -195,7 +304,7 @@ async function writeResolvedRecipe(frame, plan, component) {
   const secondaryLayer = layer("kicker") || layer("sub");
   if (groupLayer && titleLayer) {
     const groupBox = at(groupLayer.bounds, board);
-    const group = figma.createFrame();
+    const group = protectCreatedNode(figma.createFrame());
     group.name = groupLayer.name || "标题组";
     group.x = groupBox.x;
     group.y = groupBox.y;
@@ -218,7 +327,7 @@ async function writeResolvedRecipe(frame, plan, component) {
   const ctaLayer = layer("cta");
   if (ctaLayer && plan.solution.cta) {
     const box = at(plan.solution.cta, board);
-    const button = figma.createFrame();
+    const button = protectCreatedNode(figma.createFrame());
     button.name = ctaLayer.name || "CTA";
     button.x = box.x;
     button.y = box.y;
@@ -238,7 +347,7 @@ async function writeResolvedRecipe(frame, plan, component) {
   const badgeLayer = layer("badge");
   if (badgeLayer && plan.solution.badge) {
     const box = at(plan.solution.badge, board);
-    const badge = figma.createFrame();
+    const badge = protectCreatedNode(figma.createFrame());
     badge.name = badgeLayer.name || "角标";
     badge.x = box.x;
     badge.y = box.y;
@@ -317,18 +426,19 @@ const FEATHER_RATIO = [0, 0.08, 0.14, 0.2];
 const VERTICAL_GRADIENT = [[0, 1, 0], [-1, 0, 1]];
 const HORIZONTAL_GRADIENT = [[1, 0, 0], [0, 1, 0]];
 
-async function uploadedComponent(options, page) {
+async function uploadedComponent(options, page, writeMarker) {
   const asset = options.visualComponent;
   const match = /^data:image\/(png|jpeg);base64,(.+)$/.exec(asset.previewUrl || "");
   if (!match) throw new Error("上传图片数据缺失，请回平台第一步重新上传。");
   const image = figma.createImage(figma.base64Decode(match[2]));
   const size = await image.getSizeAsync();
-  const component = figma.createComponent();
+  const component = protectCreatedNode(figma.createComponent());
+  component.setPluginData("futuWriteJob", writeMarker);
   component.name = `主视觉 / ${asset.name}`;
   component.resize(size.width, size.height);
   component.fills = [];
   component.clipsContent = true;
-  const base = figma.createRectangle();
+  const base = protectCreatedNode(figma.createRectangle());
   base.name = "底图";
   base.resize(size.width, size.height);
   base.fills = [{ type: "IMAGE", imageHash: image.hash, scaleMode: "FILL" }];
@@ -346,7 +456,7 @@ async function uploadedComponent(options, page) {
       ["底部过渡", 0, size.height - t, size.width, t, VERTICAL_GRADIENT, false],
     ];
     for (const [name, x, y, w, h, transform, opaqueFirst] of edges) {
-      const rect = figma.createRectangle();
+      const rect = protectCreatedNode(figma.createRectangle());
       rect.name = name;
       rect.x = x;
       rect.y = y;
@@ -410,7 +520,7 @@ function figmaPaint(paint) {
 }
 
 async function createSceneText(layer, fallbackColor, lineHeight) {
-  const node = figma.createText();
+  const node = protectCreatedNode(figma.createText());
   node.name = layer.name;
   node.fontName = await loadSceneFont(layer);
   node.fontSize = Math.max(1, layer.fontPx);
@@ -482,7 +592,7 @@ function overlayPaint(overlay) {
 
 function appendSvg(parent, svg, box, name) {
   if (!svg || !box) return;
-  const node = figma.createNodeFromSvg(svg);
+  const node = protectCreatedNode(figma.createNodeFromSvg(svg));
   node.name = name;
   if (node.width > 0) node.rescale(box.w / node.width);
   node.x = box.x;
@@ -493,7 +603,7 @@ function appendSvg(parent, svg, box, name) {
 /** 角标：底图 SVG + 文字（+ 财报季 moomoo 标），坐标全部相对角标外框。 */
 async function createSceneBadge(layer) {
   const badge = layer.badge;
-  const frame = figma.createFrame();
+  const frame = protectCreatedNode(figma.createFrame());
   frame.name = layer.name || "角标";
   frame.resize(Math.max(1, layer.box.w), Math.max(1, layer.box.h));
   frame.fills = [];
@@ -519,12 +629,21 @@ async function createSceneBadge(layer) {
 
 async function writeScene(frame, plan, component) {
   const scene = plan.scene;
-  const groupIds = new Set(scene.group ? scene.group.ids : []);
+  const groupedLayers = scene.group
+    ? scene.group.stackIds
+      .map((id) => scene.layers.find((item) => item.id === id))
+      .filter((layer) => layer && (scene.group.ids.includes(layer.id) || layer.role === "module"))
+    : [];
+  const groupIds = new Set(groupedLayers.map((layer) => layer.id));
+  const backdropIds = new Set(scene.layers
+    .filter((layer) => layer.role === "module" && layer.module && layer.module.placementMode === "title-backdrop")
+    .map((layer) => layer.id));
   // 标题组按图层顺序插回第一个成员所在的层级，主视觉可以在它上面。
   let groupIndex = -1;
+  let backdropTopIndex = -1;
   for (const layer of scene.layers) {
     if (layer.role === "visual") {
-      const instance = component.createInstance();
+      const instance = protectCreatedNode(component.createInstance());
       instance.name = "主视觉组件";
       instance.rescale(layer.box.w / instance.width);
       instance.x = Math.round(layer.box.x);
@@ -535,7 +654,7 @@ async function writeScene(frame, plan, component) {
         const fade = Math.round(scene.edgeFade);
         const hex = String(scene.background).toUpperCase();
         for (const [name, x, opaqueFirst] of [["左侧过渡到底色", 0, true], ["右侧过渡到底色", scene.board.w - fade, false]]) {
-          const rect = figma.createRectangle();
+          const rect = protectCreatedNode(figma.createRectangle());
           rect.name = `${name} ${hex}`;
           rect.x = x;
           rect.y = 0;
@@ -553,9 +672,13 @@ async function writeScene(frame, plan, component) {
       }
       continue;
     }
+    if (groupIds.has(layer.id)) {
+      if (groupIndex < 0) groupIndex = frame.children.length;
+      continue;
+    }
     if (layer.role === "logo") {
       if (plan.logoSvg) {
-        const logo = figma.createNodeFromSvg(plan.logoSvg);
+        const logo = protectCreatedNode(figma.createNodeFromSvg(plan.logoSvg));
         logo.name = plan.logo ? plan.logo.name : "Logo";
         logo.rescale(layer.box.h / logo.height);
         logo.x = Math.round(layer.box.x);
@@ -567,8 +690,17 @@ async function writeScene(frame, plan, component) {
       }
       continue;
     }
+    if (layer.role === "module" && layer.module) {
+      const custom = await createSceneModule(layer);
+      custom.x = Math.round(layer.box.x);
+      custom.y = Math.round(layer.box.y);
+      frame.appendChild(custom);
+      /** 标题底层必须位于合并后的整个标题组下方，避免主/副标题被矩形覆盖。 */
+      if (backdropIds.has(layer.id)) backdropTopIndex = frame.children.length;
+      continue;
+    }
     if (layer.role === "cta" && layer.cta) {
-      const button = figma.createFrame();
+      const button = protectCreatedNode(figma.createFrame());
       button.name = "CTA";
       button.layoutMode = "HORIZONTAL";
       button.primaryAxisAlignItems = "CENTER";
@@ -605,10 +737,6 @@ async function writeScene(frame, plan, component) {
       frame.appendChild(await createSceneBadge(layer));
       continue;
     }
-    if (groupIds.has(layer.id)) {
-      if (groupIndex < 0) groupIndex = frame.children.length;
-      continue;
-    }
     const text = await createSceneText(layer, "#ffffff", (layer.lineHeight || 1.2) * 100);
     frame.appendChild(text);
     placeByAnchor(text, layer);
@@ -616,7 +744,7 @@ async function writeScene(frame, plan, component) {
   if (scene.group) {
     const counterAlign = scene.group.align === "left" ? "MIN" : scene.group.align === "center" ? "CENTER" : "MAX";
     const stackFrame = (name, spacing) => {
-      const node = figma.createFrame();
+      const node = protectCreatedNode(figma.createFrame());
       node.name = name;
       node.layoutMode = "VERTICAL";
       node.primaryAxisSizingMode = "AUTO";
@@ -627,12 +755,12 @@ async function writeScene(frame, plan, component) {
       node.clipsContent = false;
       return node;
     };
-    const texts = [];
-    for (const id of scene.group.ids) {
-      const layer = scene.layers.find((item) => item.id === id);
-      if (layer) texts.push(await createSceneText(layer, "#ffffff", (layer.lineHeight || 1.2) * 100));
+    const nodes = [];
+    for (const layer of groupedLayers) {
+      if (layer.role === "module" && layer.module) nodes.push(await createSceneModule(layer));
+      else nodes.push(await createSceneText(layer, "#ffffff", (layer.lineHeight || 1.2) * 100));
     }
-    const gaps = scene.group.gaps && scene.group.gaps.length === texts.length - 1 ? scene.group.gaps : texts.slice(1).map(() => scene.group.gap);
+    const gaps = groupedLayers.slice(1).map((layer, index) => layer.box.y - (groupedLayers[index].box.y + groupedLayers[index].box.h));
     // Auto Layout 只有统一间距；间距不同时把后面的层再包一层 Auto Layout。
     const nest = (nodes, spacings, name) => {
       const node = stackFrame(name, spacings[0] || 0);
@@ -644,16 +772,18 @@ async function writeScene(frame, plan, component) {
       node.appendChild(nest(nodes.slice(1), spacings.slice(1), "标题组内层"));
       return node;
     };
-    const group = nest(texts, gaps, "标题组");
-    if (groupIndex >= 0) frame.insertChild(groupIndex, group);
+    const group = nest(nodes, gaps, "标题组");
+    const insertAt = Math.max(groupIndex, backdropTopIndex);
+    if (insertAt >= 0) frame.insertChild(insertAt, group);
     else frame.appendChild(group);
-    placeByAnchor(group, { anchor: scene.group.anchor, align: scene.group.align });
+    group.x = Math.round(Math.min(...groupedLayers.map((layer) => layer.box.x)));
+    group.y = Math.round(Math.min(...groupedLayers.map((layer) => layer.box.y)));
   }
 }
 
 /** 仿原生文字：行高、字间距按 px；highlight 区间按字符下标换算成 UTF-16。 */
 async function createNativeText(node) {
-  const text = figma.createText();
+  const text = protectCreatedNode(figma.createText());
   text.name = node.name;
   text.fontName = await loadSceneFont({ fontFamily: node.font.family, fontStyle: node.font.style });
   text.fontSize = node.size;
@@ -678,7 +808,7 @@ async function createNativeText(node) {
 function nativeSvg(assets, url, name, w) {
   const svg = assets[url];
   if (!svg) throw new Error(`缺少仿原生素材：${url}`);
-  const node = figma.createNodeFromSvg(svg);
+  const node = protectCreatedNode(figma.createNodeFromSvg(svg));
   node.name = name;
   if (node.width > 0) node.rescale(w / node.width);
   return node;
@@ -690,7 +820,7 @@ async function writeNative(frame, plan) {
   frame.clipsContent = true;
   for (const node of board.nodes) {
     if (node.kind === "rect") {
-      const rect = figma.createRectangle();
+      const rect = protectCreatedNode(figma.createRectangle());
       rect.name = node.name;
       rect.resize(node.w, node.h);
       rect.x = node.x;
@@ -707,7 +837,7 @@ async function writeNative(frame, plan) {
       const data = assets[node.url];
       if (!data) throw new Error(`缺少仿原生配图：${node.url}`);
       const image = figma.createImage(figma.base64Decode(data));
-      const rect = figma.createRectangle();
+      const rect = protectCreatedNode(figma.createRectangle());
       rect.name = node.name;
       rect.resize(node.w, node.h);
       rect.x = node.x;
@@ -720,7 +850,7 @@ async function writeNative(frame, plan) {
       text.y = node.y;
       frame.appendChild(text);
     } else if (node.kind === "pill") {
-      const button = figma.createFrame();
+      const button = protectCreatedNode(figma.createFrame());
       button.name = node.name;
       button.layoutMode = "HORIZONTAL";
       button.primaryAxisAlignItems = "CENTER";
@@ -736,7 +866,7 @@ async function writeNative(frame, plan) {
       button.y = node.y;
       frame.appendChild(button);
     } else if (node.kind === "link") {
-      const link = figma.createFrame();
+      const link = protectCreatedNode(figma.createFrame());
       link.name = node.name;
       link.layoutMode = "HORIZONTAL";
       link.counterAxisAlignItems = "CENTER";
@@ -754,17 +884,227 @@ async function writeNative(frame, plan) {
   }
 }
 
+function uniquePageName(name) {
+  const base = (name || "素材延展").trim() || "素材延展";
+  const used = new Set(figma.root.children.map((page) => page.name));
+  if (!used.has(base)) return base;
+  let index = 2;
+  while (used.has(`${base} (${index})`)) index += 1;
+  return `${base} (${index})`;
+}
+
+function planSize(plan) {
+  const width = plan.native ? plan.native.w : plan.solution.board.w;
+  const height = plan.native ? plan.native.h : plan.solution.board.h;
+  return { width, height, label: plan.figmaLayout?.size || `${width} × ${height}` };
+}
+
+function groupedBy(items, keyOf, labelOf = keyOf) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = keyOf(item);
+    if (!groups.has(key)) groups.set(key, { label: labelOf(item), items: [] });
+    groups.get(key).items.push(item);
+  }
+  return [...groups.values()];
+}
+
+async function createCategoryLabel(section, name, x, y) {
+  await figma.loadFontAsync({ family: "Inter", style: "Bold" });
+  const label = protectCreatedNode(figma.createFrame());
+  label.name = `分类标签｜${name}`;
+  label.layoutMode = "HORIZONTAL";
+  label.primaryAxisSizingMode = "AUTO";
+  label.counterAxisSizingMode = "AUTO";
+  label.primaryAxisAlignItems = "CENTER";
+  label.counterAxisAlignItems = "CENTER";
+  label.paddingLeft = 28;
+  label.paddingRight = 28;
+  label.paddingTop = 12;
+  label.paddingBottom = 12;
+  label.fills = [solidPaint("#000000")];
+  label.clipsContent = false;
+  const text = protectCreatedNode(figma.createText());
+  text.name = name;
+  text.fontName = { family: "Inter", style: "Bold" };
+  text.fontSize = 32;
+  text.fills = [solidPaint("#FFFFFF")];
+  text.characters = name;
+  label.appendChild(text);
+  section.appendChild(label);
+  label.x = x;
+  label.y = y;
+  return label;
+}
+
+async function createOutputSection(page, name, categories, startX, writeMarker, flat = false) {
+  const PADDING = 140;
+  const LABEL_TO_FRAMES = 36;
+  const FRAME_GAP = 100;
+  const FRAME_ROW_GAP = 100;
+  const CATEGORY_COLUMN_GAP = 180;
+  const CATEGORY_ROW_GAP = 220;
+  const TARGET_CONTENT_WIDTH = 6400;
+  const FLAT_CONTENT_WIDTH = 6200;
+  const section = protectCreatedNode(figma.createSection());
+  section.setPluginData("futuWriteJob", writeMarker);
+  section.name = name;
+  section.fills = [solidPaint("#4A4A4A")];
+  page.appendChild(section);
+  try {
+    const layouts = [];
+    for (const category of categories) {
+      const label = await createCategoryLabel(section, category.label, 0, 0);
+      const sizes = category.items.map((plan) => planSize(plan));
+      const widest = Math.max(...sizes.map((size) => size.width), 1);
+      const internalColumns = flat ? Number.MAX_SAFE_INTEGER : widest <= 600 ? 3 : widest <= 1400 ? 2 : 1;
+      const contentWidth = flat
+        ? FLAT_CONTENT_WIDTH
+        : Math.max(1200, Math.min(category.items.length, internalColumns) * widest + Math.max(0, Math.min(category.items.length, internalColumns) - 1) * FRAME_GAP);
+      const slots = new Map();
+      let x = 0;
+      let y = label.height + LABEL_TO_FRAMES;
+      let rowHeight = 0;
+      let maxRight = 0;
+      for (const [index, plan] of category.items.entries()) {
+        const size = sizes[index];
+        if (x > 0 && x + size.width > contentWidth) {
+          x = 0;
+          y += rowHeight + FRAME_ROW_GAP;
+          rowHeight = 0;
+        }
+        slots.set(plan, { x, y });
+        maxRight = Math.max(maxRight, x + size.width);
+        x += size.width + FRAME_GAP;
+        rowHeight = Math.max(rowHeight, size.height);
+      }
+      layouts.push({
+        label,
+        slots,
+        width: Math.max(label.width, maxRight, contentWidth),
+        height: y + rowHeight,
+      });
+    }
+
+    const widestCategory = Math.max(...layouts.map((layout) => layout.width), 1);
+    const categoryColumns = flat
+      ? 1
+      : Math.max(2, Math.min(4, Math.floor((TARGET_CONTENT_WIDTH + CATEGORY_COLUMN_GAP) / (widestCategory + CATEGORY_COLUMN_GAP))));
+    const placements = new Map();
+    let y = 126;
+    let maxRight = PADDING;
+    for (let start = 0; start < layouts.length; start += categoryColumns) {
+      const row = layouts.slice(start, start + categoryColumns);
+      const rowHeight = Math.max(...row.map((layout) => layout.height), 0);
+      row.forEach((layout, column) => {
+        const x = PADDING + column * (widestCategory + CATEGORY_COLUMN_GAP);
+        layout.label.x = x;
+        layout.label.y = y;
+        for (const [plan, slot] of layout.slots) {
+          placements.set(plan, { section, x: x + slot.x, y: y + slot.y });
+        }
+        maxRight = Math.max(maxRight, x + layout.width);
+      });
+      y += rowHeight + CATEGORY_ROW_GAP;
+    }
+
+    const width = Math.max(1600, maxRight + PADDING);
+    const height = Math.max(600, y - CATEGORY_ROW_GAP + PADDING);
+    if (typeof section.resizeWithoutConstraints === "function") section.resizeWithoutConstraints(width, height);
+    else section.resize(width, height);
+    section.x = startX;
+    section.y = 0;
+    return { section, placements };
+  } catch (error) {
+    section.remove();
+    throw error;
+  }
+}
+
+async function prepareOutputSections(page, plans, options, writeMarker, startX) {
+  const projectName = options.sectionName || options.pageName || "素材延展";
+  let definitions;
+  if (options.arrange === "lang") {
+    definitions = groupedBy(
+      plans,
+      (plan) => plan.figmaLayout?.languageGroup || plan.lang,
+      (plan) => plan.figmaLayout?.languageSection || plan.figmaLayout?.language || plan.lang,
+    ).map((group) => ({
+      name: `${projectName}｜${group.label}`,
+      categories: groupedBy(group.items, (plan) => planSize(plan).label),
+    }));
+  } else if (options.arrange === "flat") {
+    definitions = [{
+      name: `${projectName}｜平铺`,
+      categories: [{ label: "全部版式", items: plans }],
+      flat: true,
+    }];
+  } else {
+    definitions = [{
+      name: `${projectName}｜按尺寸`,
+      categories: groupedBy(plans, (plan) => planSize(plan).label),
+    }];
+  }
+
+  const sections = [];
+  const placements = new Map();
+  let x = startX;
+  try {
+    for (const definition of definitions) {
+      const prepared = await createOutputSection(page, definition.name, definition.categories, x, writeMarker, definition.flat);
+      const section = prepared.section;
+      sections.push(section);
+      for (const [plan, placement] of prepared.placements) placements.set(plan, placement);
+      x += section.width + 400;
+    }
+    return { sections, placements };
+  } catch (error) {
+    for (const section of sections) if (section.parent) section.remove();
+    throw error;
+  }
+}
+
 async function write(job) {
+  assertJobActive(job);
+  const writeMarker = jobMarker(job.id, job.claimToken);
+  if (!figma.fileKey) {
+    throw new Error("插件无法读取当前 Figma 文件标识，请重新导入最新版插件后重试。");
+  }
+  if (job.options.fileKey !== figma.fileKey) {
+    throw new Error("当前插件打开的 Figma 文件与平台目标文件不一致，请切换到目标文件后重试。");
+  }
+  if (!job.options.targetNodeId || !(await figma.getNodeByIdAsync(job.options.targetNodeId))) {
+    throw new Error("当前插件打开的 Figma 文件与平台目标链接不一致，请切换到目标文件后重试。");
+  }
+  if (job.options.replaceRun && job.options.runId) {
+    await cleanupRunArtifacts(job.options.runId);
+  }
+  await cleanupJobArtifacts(job.id);
+  assertJobActive(job);
   const needsVisual = job.boards.some((plan) => !plan.native);
   const uploaded = needsVisual && job.options.visualComponent.source === "upload";
   const existing = needsVisual && !uploaded ? await sourceComponent(job.options.visualComponent.id) : null;
   const page = job.options.page === "new" ? figma.createPage() : figma.currentPage;
-  if (job.options.page === "new") page.name = job.options.pageName;
-  const component = needsVisual ? existing || await uploadedComponent(job.options, page) : null;
+  if (job.options.page === "new") {
+    page.setPluginData("futuWriteJob", writeMarker);
+    if (job.options.runId) page.setPluginData("futuWriteRun", job.options.runId);
+    page.name = uniquePageName(job.options.pageName);
+  }
+  await page.loadAsync();
+  const existingRight = page.children.reduce((right, node) => Math.max(right, node.x + node.width), 0);
+  const component = needsVisual ? existing || await uploadedComponent(job.options, page, writeMarker) : null;
+  assertJobActive(job);
+  let sectionStartX = existingRight > 0 ? existingRight + 400 : 0;
+  if (uploaded && component) {
+    component.x = sectionStartX;
+    component.y = 0;
+    sectionStartX += component.width + 400;
+  }
+  const preparedOutput = await prepareOutputSections(page, job.boards, job.options, writeMarker, sectionStartX);
+  const { sections, placements } = preparedOutput;
   const nodes = [];
-  const createdFrames = [];
+  const createdItems = [];
   const failures = [];
-  const columns = job.options.arrange === "flat" ? 5 : 3;
   const framesByKey = new Map();
   const masters = new Map();
 
@@ -777,21 +1117,22 @@ async function write(job) {
       if (!source) throw new Error("缺少闪屏母版画板，请同时写入母版");
       const sourceId = source.id;
       master = figma.createComponentFromNode(source);
+      master.setPluginData("futuWriteJob", writeMarker);
       masters.set(id, master);
       const entry = nodes.find((item) => item.nodeId === sourceId);
       if (entry) entry.nodeId = master.id;
-      const at = createdFrames.indexOf(source);
-      if (at >= 0) createdFrames[at] = master;
+      const at = createdItems.findIndex((item) => item.node === source);
+      if (at >= 0) createdItems[at] = { ...createdItems[at], node: master };
     }
     const w = plan.solution.board.w;
     const h = plan.solution.board.h;
     frame.clipsContent = true;
-    const instance = master.createInstance();
+    const instance = protectCreatedNode(master.createInstance());
     instance.rescale(plan.linked.scale);
     instance.x = plan.linked.x;
     instance.y = 0;
     frame.appendChild(instance);
-    const bar = figma.createRectangle();
+    const bar = protectCreatedNode(figma.createRectangle());
     bar.name = "底部白条";
     bar.resize(w, plan.linked.bar);
     bar.x = 0;
@@ -799,7 +1140,7 @@ async function write(job) {
     bar.fills = [solidPaint("#FFFFFF")];
     frame.appendChild(bar);
     if (plan.linked.logoSvg) {
-      const logo = figma.createNodeFromSvg(plan.linked.logoSvg);
+      const logo = protectCreatedNode(figma.createNodeFromSvg(plan.linked.logoSvg));
       logo.name = "闪屏底部logo";
       logo.rescale(plan.linked.logo.w / logo.width);
       logo.x = plan.linked.logo.x;
@@ -809,26 +1150,33 @@ async function write(job) {
   };
 
   for (let index = 0; index < job.boards.length; index += 1) {
+    assertJobActive(job);
     const plan = job.boards[index];
+    let frame;
     try {
-      const frame = figma.createFrame();
+      const placement = placements.get(plan);
+      if (!placement) throw new Error(`无法确定画板「${plan.name}」的 Section 位置`);
+      frame = protectCreatedNode(figma.createFrame());
+      frame.setPluginData("futuWriteJob", writeMarker);
       frame.name = plan.name;
       frame.resize(plan.native ? plan.native.w : plan.solution.board.w, plan.native ? plan.native.h : plan.solution.board.h);
-      frame.x = (index % columns) * (frame.width + 160);
-      frame.y = Math.floor(index / columns) * (frame.height + 160);
       frame.fills = [solidPaint(plan.backgroundColor)];
-      page.appendChild(frame);
+      placement.section.appendChild(frame);
+      frame.x = placement.x;
+      frame.y = placement.y;
 
       if (plan.native) {
         await writeNative(frame, plan);
+        assertJobActive(job);
         nodes.push({ key: plan.key, lang: plan.lang, nodeId: frame.id, validated: false });
-        createdFrames.push(frame);
+        createdItems.push({ node: frame, plan });
         continue;
       }
       if (plan.linked) {
         await writeLinked(frame, plan);
+        assertJobActive(job);
         nodes.push({ key: plan.key, lang: plan.lang, nodeId: frame.id, validated: false });
-        createdFrames.push(frame);
+        createdItems.push({ node: frame, plan });
         continue;
       }
       framesByKey.set(`${plan.key}|${plan.lang}`, frame);
@@ -838,7 +1186,7 @@ async function write(job) {
       const usedRecipe = usedScene || await writeResolvedRecipe(frame, plan, component);
       if (!usedRecipe) {
         if (plan.solution.kv) {
-          const instance = component.createInstance();
+          const instance = protectCreatedNode(component.createInstance());
           const box = at(plan.solution.kv, plan.solution.board);
           const scale = Math.min(box.w / instance.width, box.h / instance.height);
           instance.rescale(scale);
@@ -851,7 +1199,7 @@ async function write(job) {
         await addText(frame, plan.subLabel || "", plan.solution.sub, plan.solution.subPx, "regular", "#ffffff");
         if (plan.solution.cta) {
           const box = at(plan.solution.cta, plan.solution.board);
-          const button = figma.createRectangle();
+          const button = protectCreatedNode(figma.createRectangle());
           button.name = "CTA";
           button.x = box.x;
           button.y = box.y;
@@ -863,7 +1211,7 @@ async function write(job) {
         }
         if (plan.solution.badge) {
           const box = at(plan.solution.badge, plan.solution.board);
-          const badge = figma.createRectangle();
+          const badge = protectCreatedNode(figma.createRectangle());
           badge.name = "Badge";
           badge.x = box.x;
           badge.y = box.y;
@@ -875,6 +1223,7 @@ async function write(job) {
         }
         await addText(frame, plan.disclaimerLabel || "", plan.solution.disc, plan.solution.discPx, "regular", "#8f949b");
       }
+      assertJobActive(job);
       if (!usedScene) validateResolvedFrame(frame, plan);
       nodes.push({
         key: plan.key,
@@ -883,27 +1232,88 @@ async function write(job) {
         recipeId: plan.solution.recipeTrace?.recipeId,
         validated: Boolean(plan.solution.recipeTrace),
       });
-      createdFrames.push(frame);
+      createdItems.push({ node: frame, plan });
     } catch (error) {
+      if (frame?.parent) frame.remove();
+      if (error instanceof WriteCancelledError) throw error;
       failures.push({ key: plan.key, lang: plan.lang, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      figma.ui.postMessage({
+        type: "progress",
+        jobId: job.id,
+        claimToken: job.claimToken,
+        completed: index + 1,
+        total: job.boards.length,
+      });
     }
   }
+  assertJobActive(job);
+  if (!createdItems.length) {
+    if (uploaded && component?.parent) component.remove();
+    if (job.options.page === "new" && page.parent) page.remove();
+    return { ok: false, nodes: [], failures };
+  }
+  const createdFrames = createdItems.map((item) => item.node);
+  assertJobActive(job);
   await figma.setCurrentPageAsync(page);
-  page.selection = createdFrames;
-  if (createdFrames.length) figma.viewport.scrollAndZoomIntoView(createdFrames);
+  page.selection = sections.length ? sections : createdFrames;
+  if (sections.length) figma.viewport.scrollAndZoomIntoView(sections);
+  else if (createdFrames.length) figma.viewport.scrollAndZoomIntoView(createdFrames);
   return { ok: failures.length === 0, nodes, failures };
 }
 
 figma.ui.onmessage = async (message) => {
+  if (message.type === "open-platform") {
+    figma.openExternal("http://localhost:3210");
+    return;
+  }
+  if (message.type === "cancel" && message.jobId && message.claimToken) {
+    const marker = jobMarker(message.jobId, message.claimToken);
+    cancelledClaims.add(marker);
+    if (activeClaim !== marker) {
+      const cleanupError = await safelyCleanupJobArtifacts(message.jobId, message.claimToken);
+      cancelledClaims.delete(marker);
+      figma.ui.postMessage(cleanupError
+        ? { type: "failed", jobId: message.jobId, claimToken: message.claimToken, error: `取消写入后清理失败：${cleanupError}` }
+        : { type: "cancelled", jobId: message.jobId, claimToken: message.claimToken });
+    }
+    return;
+  }
   if (message.type !== "write") return;
+  if (activeClaim) {
+    figma.ui.postMessage({ type: "failed", jobId: message.job.id, claimToken: message.job.claimToken, error: "连接器正在处理另一个写入任务" });
+    return;
+  }
+  activeClaim = jobMarker(message.job.id, message.job.claimToken);
+  activeRun = message.job.options?.runId || null;
+  cancelledClaims.delete(activeClaim);
   try {
+    figma.ui.postMessage({ type: "started", jobId: message.job.id, claimToken: message.job.claimToken, total: message.job.boards.length });
     const result = await write(message.job);
-    figma.ui.postMessage({ type: "completed", jobId: message.job.id, result });
+    assertJobActive(message.job);
+    if (!result.nodes.length && result.failures.length) {
+      throw new Error(`全部画板写入失败：${result.failures[0].error}`);
+    }
+    figma.ui.postMessage({ type: "completed", jobId: message.job.id, claimToken: message.job.claimToken, result });
   } catch (error) {
+    const cleanupError = await safelyCleanupJobArtifacts(message.job.id, message.job.claimToken);
+    if (error instanceof WriteCancelledError && !cleanupError) {
+      figma.ui.postMessage({ type: "cancelled", jobId: message.job.id, claimToken: message.job.claimToken });
+      return;
+    }
+    const primaryError = error instanceof Error ? error.message : String(error);
     figma.ui.postMessage({
       type: "failed",
       jobId: message.job.id,
-      error: error instanceof Error ? error.message : String(error),
+      claimToken: message.job.claimToken,
+      error: cleanupError ? `${primaryError}；回滚未完成：${cleanupError}` : primaryError,
     });
+  } finally {
+    const marker = jobMarker(message.job.id, message.job.claimToken);
+    cancelledClaims.delete(marker);
+    if (activeClaim === marker) {
+      activeClaim = null;
+      activeRun = null;
+    }
   }
 };

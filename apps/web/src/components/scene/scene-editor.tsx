@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignStartHorizontal, AlignStartVertical, Check, ChevronDown, ChevronUp, Copy, Eye, EyeOff, Lock, LockOpen, Minus, PanelLeftClose, PanelLeftOpen, Plus, Redo2, RotateCcw, Trash2, Undo2, Ungroup, X } from "lucide-react";
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignStartHorizontal, AlignStartVertical, Check, ChevronDown, ChevronUp, Copy, Eye, EyeOff, Link2, Lock, LockOpen, Minus, PanelLeftClose, PanelLeftOpen, Plus, Redo2, RotateCcw, Trash2, Undo2, Ungroup, X } from "lucide-react";
 import { LAYOUT_PRESETS, recipeById, type LayoutPresetRecord } from "@futu/corpus";
 import {
   CTA_STYLE_PRESETS,
@@ -30,6 +30,7 @@ import {
   resolveSceneGroup,
   resolveSceneOwn,
   resolveScenePlacement,
+  roundSceneModulePatch,
   roundScenePatch,
   sceneBadgeStyle,
   sceneBadgeStyle1Svg,
@@ -71,6 +72,8 @@ import {
   sceneLineRatios,
   sceneLineStyles,
   sceneMetrics,
+  sceneModuleName,
+  sceneNextModuleNumber,
   sceneText,
   sceneVersionView,
   sceneWidthToUnit,
@@ -83,6 +86,9 @@ import {
   type SceneCopyKind,
   type SceneCtaLength,
   type SceneCopyVariantSpec,
+  type SceneCustomBackdropTarget,
+  type SceneCustomModule,
+  type SceneCustomPlacementMode,
   type SceneElement,
   type SceneFollow,
   type SceneFontRun,
@@ -96,6 +102,8 @@ import {
   type SceneVersion,
 } from "@futu/domain";
 import { BackgroundColorControl } from "@/components/color-control";
+import type { FigmaRecognitionResult } from "@/lib/figma-recognition";
+import { parseFigmaUrl } from "@/lib/figma-link";
 import { LOGO_PRESET_OPTIONS, LogoPresetPreview } from "@/components/logo-preset-preview";
 import { arrowStep, ScrubField } from "@/components/ui/field";
 import { Segmented } from "@/components/ui/segmented";
@@ -158,6 +166,13 @@ const FOLLOW_OPTIONS = [
   { id: "right" as const, label: "右" },
 ];
 
+const CUSTOM_PLACEMENT_OPTIONS: ReadonlyArray<{ id: SceneCustomPlacementMode; label: string; detail: string }> = [
+  { id: "title-backdrop", label: "标题底层", detail: "位于文字后方，随标题移动" },
+  { id: "above-title", label: "标题组上方", detail: "加入标题组顶部，保留间距" },
+  { id: "below-title", label: "标题组下方", detail: "加入标题组底部，保留间距" },
+  { id: "free", label: "自由放置", detail: "独立拖动、缩放，不跟随标题" },
+];
+
 const INPUT = "h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2.5 text-[10px] outline-none hover:border-[var(--app-line-strong)] focus:border-[var(--app-line-strong)]";
 const GHOST = "h-7 rounded-[4px] px-2.5 text-[10px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-35";
 const CHIP = "h-7 rounded-[4px] border px-2 text-[10px] disabled:cursor-not-allowed disabled:opacity-40";
@@ -178,11 +193,10 @@ const SELECTION_ALIGN = [
 const COLUMN_LIMITS = { layers: [120, 280], props: [280, 640] } as const;
 const COLUMN_STORE = "futu:scene-editor-columns";
 const VIEW_STORE = "futu:scene-editor-view";
-const COPY_ORDER: SceneRole[] = ["title", "subtitle", "kicker", "badge", "disclaimer"];
-/** 角标、免责默认不出现，通过「添加」按钮打开。 */
-const OPTIONAL_ROLES = new Set<SceneRole>(["badge", "disclaimer"]);
+const COPY_ORDER: SceneRole[] = ["title", "subtitle", "kicker"];
 const COLOR_ROLES = new Set<SceneRole>(["title", "subtitle", "kicker", "custom", "disclaimer", "cta"]);
 const ICON = "grid size-5 place-items-center rounded-[3px] text-[var(--app-text-4)] hover:text-[var(--app-text)]";
+const SECTION_ADD = "grid size-5 place-items-center rounded-[4px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]";
 
 function highlightDetail(paints: readonly ScenePaint[]) {
   const first = paints[0];
@@ -284,8 +298,9 @@ export function Section({ id, title, muted, open, onToggle, aside, children }: {
   );
 }
 
-function withPatch(map: SceneState["familyEdits"], scope: string, id: string, patch: ScenePlacementPatch) {
-  return { ...map, [scope]: { ...map[scope], [id]: { ...map[scope]?.[id], ...roundScenePatch(patch) } } };
+function withPatch(map: SceneState["familyEdits"], scope: string, id: string, patch: ScenePlacementPatch, module = false) {
+  const rounded = module ? roundSceneModulePatch(patch) : roundScenePatch(patch);
+  return { ...map, [scope]: { ...map[scope], [id]: { ...map[scope]?.[id], ...rounded } } };
 }
 
 function withoutEntry(map: SceneState["familyEdits"], scope: string, id?: string) {
@@ -333,10 +348,13 @@ export function SceneEditor({
   const visibilityScope = mode === "board" ? `board:${board.key}` : family;
   const withLanguageVisibility = (current: SceneState, scope: string) => {
     const visibility = current.languageVisibility?.[lang]?.[scope];
-    if (!visibility) return current;
+    const removed = new Set(current.languageRemoved?.[lang]?.[scope] ?? []);
+    if (!visibility && !removed.size) return current;
     return {
       ...current,
-      elements: current.elements.map((el) => visibility[el.id] === undefined ? el : { ...el, visible: visibility[el.id] }),
+      elements: current.elements
+        .filter((el) => !removed.has(el.id))
+        .map((el) => visibility?.[el.id] === undefined ? el : { ...el, visible: visibility[el.id] }),
     };
   };
   const withLanguageLayout = (current: SceneState) => {
@@ -365,7 +383,7 @@ export function SceneEditor({
       ...current,
       familyContent,
       elements: current.elements.map((el) => {
-        const fallback = el.role === "custom" || el.role === "badge" || el.role === "disclaimer"
+        const fallback = el.role === "custom" || el.role === "module" || el.role === "badge" || el.role === "disclaimer"
           ? false
           : sceneDefaultElement(el.role, 0).visible;
         return { ...el, visible: fallback };
@@ -373,7 +391,11 @@ export function SceneEditor({
     };
   };
   const languageFamilyView = (current: SceneState) => {
-    const base = sceneFamilyView(withLanguageLayout(withoutLegacySharedVisibility(current)), family, show);
+    const isolated = withLanguageLayout(withoutLegacySharedVisibility(current));
+    const modules = isolated.languageModules?.[lang];
+    const base = sceneFamilyView(modules
+      ? { ...isolated, elements: isolated.elements.map((el) => modules[el.id] ? { ...el, module: modules[el.id] } : el) }
+      : isolated, family, show);
     return withLanguageVisibility(withLanguageVisibility(base, "*"), family);
   };
   const languageScopedView = (current: SceneState) => mode === "board"
@@ -391,20 +413,46 @@ export function SceneEditor({
       const globalBase = withLanguageVisibility(base, "*");
       const scopeBase = mode === "board" ? withLanguageVisibility(globalBase, family) : globalBase;
       const view = languageScopedView(current);
-      const next = recipe(view);
+      const activeVersion = version ? current.versions?.find((item) => item.id === version.id) : null;
+      const editableView = activeVersion ? sceneVersionView(view, activeVersion) : view;
+      const next = recipe(editableView);
       const languageFamilyEdit = next.familyEdits[family] ?? {};
       const languageBoardEdit = next.boardOverrides[board.key] ?? {};
       const baseById = new Map(scopeBase.elements.map((el) => [el.id, el]));
       const visibility = { ...current.languageVisibility?.[lang]?.[visibilityScope] };
-      for (const el of next.elements) {
-        const fallback = baseById.get(el.id)?.visible ?? false;
-        if (el.visible === fallback) delete visibility[el.id];
-        else visibility[el.id] = el.visible;
+      if (!version) {
+        for (const el of next.elements) {
+          const fallback = baseById.get(el.id)?.visible ?? false;
+          if (el.visible === fallback) delete visibility[el.id];
+          else visibility[el.id] = el.visible;
+        }
       }
       const rawById = new Map(sharedBase.elements.map((el) => [el.id, el]));
+      const languageModuleMap = { ...current.languageModules?.[lang] };
+      if (!version) {
+        for (const el of next.elements) {
+          const raw = rawById.get(el.id);
+          if (!raw || !el.module) continue;
+          if (JSON.stringify(el.module) === JSON.stringify(raw.module)) delete languageModuleMap[el.id];
+          else languageModuleMap[el.id] = el.module;
+        }
+      }
       const sharedSafe = {
         ...next,
-        elements: next.elements.map((el) => ({ ...el, visible: rawById.get(el.id)?.visible ?? false })),
+        elements: next.elements.map((el) => {
+          const raw = rawById.get(el.id);
+          return {
+            ...el,
+            visible: raw?.visible ?? false,
+            /** 基础语言编辑只把当前语言的文案提交为当前版式族覆盖；其它语言仍取提交前数据，避免跨语言串改。 */
+            texts: version
+              ? raw?.texts ?? el.texts
+              : { ...(raw?.texts ?? el.texts), [lang]: el.texts[lang] ?? "" },
+            ...(raw?.module ? { module: raw.module } : {}),
+          };
+        }),
+        ...(version ? { highlights: current.highlights, fontRuns: current.fontRuns } : {}),
+        ...(version ? { badgeStyles: current.badgeStyles } : {}),
         familyEdits: { ...next.familyEdits, [family]: current.familyEdits[family] ?? {} },
         boardOverrides: mode === "board"
           ? { ...next.boardOverrides, [board.key]: current.boardOverrides[board.key] ?? {} }
@@ -417,20 +465,43 @@ export function SceneEditor({
       const languageVisibility = { ...committed.languageVisibility };
       if (Object.keys(languageScopes).length) languageVisibility[lang] = languageScopes;
       else delete languageVisibility[lang];
+      const languageModules = { ...committed.languageModules };
+      if (Object.keys(languageModuleMap).length) languageModules[lang] = languageModuleMap;
+      else delete languageModules[lang];
       const languageFamilyEdits = { ...committed.languageFamilyEdits };
-      languageFamilyEdits[lang] = { ...languageFamilyEdits[lang], [family]: languageFamilyEdit };
       const languageBoardOverrides = { ...committed.languageBoardOverrides };
-      if (mode === "board") languageBoardOverrides[lang] = { ...languageBoardOverrides[lang], [board.key]: languageBoardEdit };
+      let versions = committed.versions;
+      if (version) {
+        versions = (committed.versions ?? []).map((item) => item.id === version.id ? {
+          ...item,
+          visibility: Object.fromEntries(next.elements.map((el) => [el.id, el.visible])),
+          badgeStyles: next.badgeStyles,
+          familyEdits: { ...item.familyEdits, [family]: languageFamilyEdit },
+          ...(mode === "board" ? { boardOverrides: { ...item.boardOverrides, [board.key]: languageBoardEdit } } : {}),
+        } : item);
+      } else {
+        languageFamilyEdits[lang] = { ...languageFamilyEdits[lang], [family]: languageFamilyEdit };
+        if (mode === "board") languageBoardOverrides[lang] = { ...languageBoardOverrides[lang], [board.key]: languageBoardEdit };
+      }
       /** 当前语言当前版式族一有改动就重新标为待保存。 */
       const savedFamiliesByLanguage = { ...committed.savedFamiliesByLanguage };
       const saved = (savedFamiliesByLanguage[lang] ?? committed.savedFamilies ?? []).filter((id) => id !== family);
       savedFamiliesByLanguage[lang] = saved;
-      return { ...committed, languageVisibility, languageFamilyEdits, languageBoardOverrides, savedFamiliesByLanguage };
+      return { ...committed, versions, languageVisibility, languageModules, languageFamilyEdits, languageBoardOverrides, savedFamiliesByLanguage };
     });
   const [cols, setCols] = useState({ layers: 148, props: 320 });
   const [guides, setGuides] = useState(true);
   const [outlines, setOutlines] = useState(true);
   const [layersOpen, setLayersOpen] = useState(true);
+  const [customImportOpen, setCustomImportOpen] = useState(false);
+  const [customImportExpanded, setCustomImportExpanded] = useState(true);
+  const [customUrl, setCustomUrl] = useState("");
+  const customUrlRef = useRef("");
+  const [customBusy, setCustomBusy] = useState(false);
+  const customBusyRef = useRef(false);
+  const [customError, setCustomError] = useState<string | null>(null);
+  const [customRefreshId, setCustomRefreshId] = useState<string | null>(null);
+  const [customModuleUrls, setCustomModuleUrls] = useState<Record<string, string>>({});
   const colDrag = useRef<{ key: keyof typeof cols; x: number; start: number } | null>(null);
   useEffect(() => {
     try {
@@ -586,11 +657,30 @@ export function SceneEditor({
     return { ...current, boardOverrides };
   };
   const writePlacement = (current: SceneState, id: string, patch: ScenePlacementPatch): SceneState => {
-    if (mode === "board") return { ...current, boardOverrides: withPatch(current.boardOverrides, board.key, id, patch) };
     if (frozen(current, id)) return current;
-    current = withoutOwnOverride(current, id, patch);
-    if (current.familyEdits[family]?.[id]?.attach) return { ...current, familyEdits: withPatch(current.familyEdits, family, id, attachedPatch(current, id, patch)) };
-    return { ...current, familyEdits: withPatch(current.familyEdits, family, id, sceneFamilyPatch(current, board, id, patch)) };
+    if (mode !== "board") current = withoutOwnOverride(current, id, patch);
+    const el = current.elements.find((item) => item.id === id);
+    const module = el?.role === "module";
+    const resolved = el ? resolveScenePlacement(current, board, el) : null;
+    const customMode = resolved?.customMode ?? el?.module?.placementMode;
+    /** 标题底层独立拖动：把绝对坐标换成相对目标文字的偏移，不移动标题组，也不丢掉拖动结果。 */
+    if (el?.role === "module" && customMode === "title-backdrop" && resolved?.attach) {
+      const laidItem = layoutScene(current, board, lang).laid.find((item) => item.el.id === id);
+      const unit = sceneGroupUnit(current, board);
+      const stored = mode === "board" ? current.boardOverrides[board.key]?.[id] : current.familyEdits[family]?.[id];
+      const attach = { ...(stored?.attach ?? resolved.attach) };
+      if (patch.x !== undefined && laidItem) attach.dx += ((patch.x - laidItem.placement.x) * board.w) / unit;
+      if (patch.y !== undefined && laidItem) attach.dy += ((patch.y - laidItem.placement.y) * board.h) / unit;
+      if (patch.align !== undefined) attach.dx = 0;
+      const { x: _x, y: _y, follow: _follow, ...next } = patch;
+      if (patch.scale !== undefined && mode !== "board") next.scale = patch.scale / resolveSceneGroup(current, board).scale;
+      return mode === "board"
+        ? { ...current, boardOverrides: withPatch(current.boardOverrides, board.key, id, { ...next, attach }, module) }
+        : { ...current, familyEdits: withPatch(current.familyEdits, family, id, { ...next, attach }, module) };
+    }
+    if (mode === "board") return { ...current, boardOverrides: withPatch(current.boardOverrides, board.key, id, patch, module) };
+    if (current.familyEdits[family]?.[id]?.attach) return { ...current, familyEdits: withPatch(current.familyEdits, family, id, attachedPatch(current, id, patch), module) };
+    return { ...current, familyEdits: withPatch(current.familyEdits, family, id, sceneFamilyPatch(current, board, id, patch), module) };
   };
 
   /** 组内图层位置锁定：换对齐时贴齐标题组同一侧，比例换算成相对标题组的倍数。 */
@@ -627,7 +717,10 @@ export function SceneEditor({
   });
 
   const setVisible = (el: SceneElement, visible: boolean) => {
-    if (version) updateScene((current) => editVersion(current, (item) => ({ ...item, visibility: { ...item.visibility, [el.id]: visible } })));
+    if (version) updateScene((current) => ({
+      ...current,
+      elements: current.elements.map((item) => item.id === el.id ? { ...item, visible } : item),
+    }));
     else updateScene((current) => holdGroup(current, { ...current, elements: current.elements.map((item) => item.id === el.id ? { ...item, visible } : item) }));
   };
 
@@ -643,23 +736,425 @@ export function SceneEditor({
   });
 
   const removeElement = (id: string) => {
-    const el = scene.elements.find((item) => item.id === id);
-    if (el) setVisible(el, false);
+    if (languageLocked) return;
+    updateRawScene((current) => {
+      if (version) {
+        return {
+          ...current,
+          versions: current.versions?.map((item) => item.id === version.id
+            ? { ...item, removed: Array.from(new Set([...(item.removed ?? []), id])) }
+            : item),
+        };
+      }
+      const scopes = { ...current.languageRemoved?.[lang] };
+      scopes[visibilityScope] = Array.from(new Set([...(scopes[visibilityScope] ?? []), id]));
+      return {
+        ...current,
+        languageRemoved: {
+          ...current.languageRemoved,
+          [lang]: scopes,
+        },
+      };
+    });
     if (selectedId === id) setSelectedId(null);
   };
 
   const addElement = (role: SceneRole) => {
-    const existing = scene.elements.find((el) => el.role === role && role !== "custom");
+    const repeatable = role === "badge" || role === "disclaimer" || role === "custom";
+    const reusable = repeatable && role !== "custom"
+      ? scene.elements.find((el) => el.id === role && !elementVisible(el) && !sceneText(el, lang).trim())
+      : undefined;
+    const existing = reusable ?? (repeatable ? undefined : scene.elements.find((el) => el.role === role));
     if (existing) {
       patchElement(existing.id, (item) => ({ ...item, visible: true }));
       setSelectedId(existing.id);
       return;
     }
-    const index = scene.elements.filter((el) => el.role === "custom").length + 1;
-    const el = sceneDefaultElement(role, index);
-    const id = role === "custom" ? `custom-${Date.now().toString(36)}` : el.id;
-    updateScene((current) => ({ ...current, elements: [...current.elements, { ...el, id }] }));
+    const index = scene.elements.filter((el) => el.role === role).length + 1;
+    const el = sceneDefaultElement(role, scene.elements.length + index);
+    const id = repeatable ? `${role}-${Date.now().toString(36)}-${index}` : el.id;
+    const label = role === "badge" ? "角标" : role === "disclaimer" ? "免责" : role === "custom" ? "文字" : el.name;
+    updateScene((current) => ({
+      ...current,
+      elements: [...current.elements, { ...el, id, name: repeatable ? `${label} ${index}` : el.name, visible: true }],
+    }));
     setSelectedId(id);
+    setOpenParams((current) => ({ ...current, [id]: true }));
+  };
+
+  const recognizeCustomElement = async (url: string) => {
+    if (customBusyRef.current) return null;
+    const value = url.trim();
+    if (!value) {
+      setCustomError("请粘贴包含 node-id 的 Figma 链接");
+      return null;
+    }
+    customBusyRef.current = true;
+    setCustomBusy(true);
+    setCustomError(null);
+    try {
+      const response = await fetch("/api/figma/recognize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: value,
+          token: window.sessionStorage.getItem("futu:figma-token") ?? undefined,
+          target: "custom-element",
+        }),
+      });
+      const result = await response.json() as FigmaRecognitionResult & { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "无法读取这个 Figma 节点");
+      const targetUrl = project.content.kv?.figmaUrl
+        ?? project.content.sourceFrames?.[lang]?.figmaUrl
+        ?? project.content.sourceFrame?.figmaUrl;
+      const target = targetUrl ? parseFigmaUrl(targetUrl) : null;
+      if (!target?.ok) {
+        throw new Error("第一期需要先在准备主视觉中识别当前项目的 Figma 文件，再导入同文件内的自定义元素");
+      }
+      if (target?.ok && result.fileKey && result.fileKey !== target.fileKey) {
+        throw new Error("第一期仅支持导入当前项目 Figma 文件中的节点；请复制到项目文件后重新粘贴链接");
+      }
+      return result;
+    } catch (error) {
+      setCustomError(error instanceof Error ? error.message : "无法读取这个 Figma 节点");
+      return null;
+    } finally {
+      customBusyRef.current = false;
+      setCustomBusy(false);
+    }
+  };
+
+  const moduleSource = (
+    result: FigmaRecognitionResult,
+    url: string,
+    placementMode: SceneCustomPlacementMode,
+    backdropTarget: SceneCustomBackdropTarget = "title",
+  ): SceneCustomModule => ({
+    figmaUrl: url.trim(),
+    fileKey: result.fileKey ?? "",
+    nodeId: result.frame.id,
+    nodeType: result.frame.nodeType,
+    previewUrl: result.previewUrl,
+    width: Math.max(1, result.frame.width),
+    height: Math.max(1, result.frame.height),
+    stretchable: result.frame.nodeType === "RECTANGLE",
+    placementMode,
+    backdropTarget,
+  });
+
+  const addCustomModule = (
+    result: FigmaRecognitionResult,
+    url: string,
+    customMode: SceneCustomPlacementMode = "title-backdrop",
+    customBackdropTarget: SceneCustomBackdropTarget = "title",
+  ) => {
+    if (languageLocked) return;
+    const id = `module-${Date.now().toString(36)}`;
+    const source = moduleSource(result, url, customMode, customBackdropTarget);
+    const importScope = mode === "board" ? "current" : "family";
+    updateScene((current) => {
+      const moduleNumber = sceneNextModuleNumber(current);
+      const element: SceneElement = { id, role: "module", name: `元素${moduleNumber}`, visible: true, texts: {}, module: source };
+      const elements = [...current.elements];
+      const targetIndex = elements.findIndex((item) => item.role === customBackdropTarget);
+      if (customMode === "title-backdrop" && targetIndex >= 0) elements.splice(targetIndex, 0, element);
+      else elements.push(element);
+      const draft = { ...current, elements };
+      const group = resolveSceneGroup(draft, board);
+      const unit = sceneGroupUnit(draft, board);
+      /** 首次导入按 Figma 节点原始尺寸放置；仅在超出画板时等比缩小，避免套用通用模块高度把宽标签压得过小。 */
+      const initialPlacement = resolveScenePlacement(draft, board, element);
+      const initialHeight = sceneMetrics(draft, board, element, initialPlacement, lang).h;
+      const fit = Math.min(1, board.w / source.width, board.h / source.height);
+      const scaleFactor = Math.max(0.01, (source.height * fit) / Math.max(1, initialHeight));
+      const initialScale = mode === "board" && importScope === "current"
+        ? initialPlacement.scale * scaleFactor
+        : scaleFactor;
+      let patch: ScenePlacementPatch = { align: group.align, scale: initialScale, backdropTarget: customBackdropTarget };
+      if (customMode === "above-title" || customMode === "below-title") {
+        patch = { ...patch, attach: { v: customMode === "above-title" ? "above" : "below", dy: Math.max(8, sceneGroupBaseGap(board) * group.scale) / unit, dx: 0 } };
+      } else if (customMode === "title-backdrop") {
+        patch = { ...patch, attach: { v: "beside", dy: 0, dx: 0 } };
+      }
+      const versions = (draft.versions ?? []).map((item) => {
+        if (version && item.id === version.id) return { ...item, visibility: { ...item.visibility, [id]: true } };
+        if (!version && item.lang === lang) return { ...item, visibility: { ...item.visibility, [id]: false } };
+        return item;
+      });
+      const languageScopes = { ...draft.languageVisibility?.[lang] };
+      if (!version && importScope === "family") {
+        languageScopes[family] = { ...languageScopes[family], [id]: true };
+      }
+      return {
+        ...draft,
+        versions,
+        familyEdits: mode === "board" && importScope === "current" ? draft.familyEdits : withPatch(draft.familyEdits, family, id, patch, true),
+        boardOverrides: mode === "board" && importScope === "current"
+          ? withPatch(draft.boardOverrides, board.key, id, patch, true)
+          : draft.boardOverrides,
+        languageVisibility: {
+          ...draft.languageVisibility,
+          [lang]: languageScopes,
+        },
+      };
+    });
+    setSelectedId(id);
+    /** 识别期间若用户已输入另一条链接，保留输入并继续展开导入区。 */
+    if (customUrlRef.current.trim() === url.trim()) {
+      customUrlRef.current = "";
+      setCustomImportOpen(false);
+      setCustomUrl("");
+    }
+  };
+
+  const importCustomModule = async () => {
+    if (languageLocked || customBusyRef.current) return;
+    setCustomRefreshId(null);
+    const result = await recognizeCustomElement(customUrl);
+    if (result) addCustomModule(result, customUrl);
+  };
+
+  const writeCustomElementScope = (
+    current: SceneState,
+    id: string,
+    nextScope: "current" | "family" | "all",
+  ): SceneState => {
+    const scopes: Record<string, Record<string, boolean>> = { ...(current.languageVisibility?.[lang] ?? {}) };
+    for (const [scope, values] of Object.entries(scopes)) {
+      const next = { ...values };
+      delete next[id];
+      if (Object.keys(next).length) scopes[scope] = next;
+      else delete scopes[scope];
+    }
+    const setScope = (scope: string, value: boolean) => {
+      scopes[scope] = { ...scopes[scope], [id]: value };
+    };
+    if (nextScope === "all") setScope("*", true);
+    else if (nextScope === "family") setScope(family, true);
+    else {
+      /** 当前族显式隐藏，再由当前画板覆盖显示，避免族级内容使其它画板也出现。 */
+      setScope(family, false);
+      setScope(`board:${board.key}`, true);
+    }
+    const allRemoved = { ...current.languageRemoved };
+    if (nextScope === "all") {
+      const languageRemoved = { ...(allRemoved[lang] ?? {}) };
+      for (const [scope, ids] of Object.entries(languageRemoved)) {
+        const next = ids.filter((item) => item !== id);
+        if (next.length) languageRemoved[scope] = next;
+        else delete languageRemoved[scope];
+      }
+      if (Object.keys(languageRemoved).length) allRemoved[lang] = languageRemoved;
+      else delete allRemoved[lang];
+    }
+    return {
+      ...current,
+      languageVisibility: {
+        ...current.languageVisibility,
+        [lang]: scopes,
+      },
+      languageRemoved: Object.keys(allRemoved).length ? allRemoved : undefined,
+    };
+  };
+
+  const setCustomElementScope = (id: string, nextScope: "current" | "family" | "all") => {
+    if (languageLocked || version) return;
+    updateRawScene((current) => {
+      const allSnapshots = { ...current.customModuleScopeSnapshots };
+      const languageSnapshots = { ...allSnapshots[lang] };
+      if (nextScope === "all") {
+        const snapshot: Record<string, boolean> = {};
+        for (const [scope, values] of Object.entries(current.languageVisibility?.[lang] ?? {})) {
+          if (values[id] !== undefined) snapshot[scope] = values[id];
+        }
+        languageSnapshots[id] = {
+          visibility: snapshot,
+          removedScopes: Object.entries(current.languageRemoved?.[lang] ?? {})
+            .filter(([, ids]) => ids.includes(id))
+            .map(([scope]) => scope),
+        };
+      } else {
+        delete languageSnapshots[id];
+      }
+      if (Object.keys(languageSnapshots).length) allSnapshots[lang] = languageSnapshots;
+      else delete allSnapshots[lang];
+      return writeCustomElementScope({
+        ...current,
+        customModuleScopeSnapshots: Object.keys(allSnapshots).length ? allSnapshots : undefined,
+      }, id, nextScope);
+    });
+  };
+
+  const undoCustomElementScope = (id: string) => {
+    if (languageLocked || version) return;
+    updateRawScene((current) => {
+      const snapshot = current.customModuleScopeSnapshots?.[lang]?.[id];
+      if (!snapshot) return writeCustomElementScope(current, id, mode === "board" ? "current" : "family");
+      const scopes: Record<string, Record<string, boolean>> = { ...(current.languageVisibility?.[lang] ?? {}) };
+      for (const [scope, values] of Object.entries(scopes)) {
+        const next = { ...values };
+        delete next[id];
+        if (Object.keys(next).length) scopes[scope] = next;
+        else delete scopes[scope];
+      }
+      /** 兼容上线前已保存的旧快照：旧格式直接是 scope → boolean。 */
+      const storedSnapshot = snapshot as unknown as Record<string, unknown>;
+      const visibilitySnapshot = storedSnapshot.visibility && typeof storedSnapshot.visibility === "object"
+        ? snapshot.visibility
+        : Object.fromEntries(Object.entries(storedSnapshot).filter(([, value]) => typeof value === "boolean")) as Record<string, boolean>;
+      const removedScopes = Array.isArray(storedSnapshot.removedScopes)
+        ? storedSnapshot.removedScopes.filter((scope): scope is string => typeof scope === "string")
+        : [];
+      for (const [scope, value] of Object.entries(visibilitySnapshot)) {
+        scopes[scope] = { ...scopes[scope], [id]: value };
+      }
+      const allRemoved = { ...current.languageRemoved };
+      const languageRemoved = { ...(allRemoved[lang] ?? {}) };
+      for (const [scope, ids] of Object.entries(languageRemoved)) {
+        const next = ids.filter((item) => item !== id);
+        if (next.length) languageRemoved[scope] = next;
+        else delete languageRemoved[scope];
+      }
+      for (const scope of removedScopes) {
+        languageRemoved[scope] = Array.from(new Set([...(languageRemoved[scope] ?? []), id]));
+      }
+      if (Object.keys(languageRemoved).length) allRemoved[lang] = languageRemoved;
+      else delete allRemoved[lang];
+      const allSnapshots = { ...current.customModuleScopeSnapshots };
+      const languageSnapshots = { ...allSnapshots[lang] };
+      delete languageSnapshots[id];
+      if (Object.keys(languageSnapshots).length) allSnapshots[lang] = languageSnapshots;
+      else delete allSnapshots[lang];
+      return {
+        ...current,
+        languageVisibility: {
+          ...current.languageVisibility,
+          [lang]: scopes,
+        },
+        languageRemoved: Object.keys(allRemoved).length ? allRemoved : undefined,
+        customModuleScopeSnapshots: Object.keys(allSnapshots).length ? allSnapshots : undefined,
+      };
+    });
+  };
+
+  const refreshCustomModule = async (el: SceneElement, nextUrl = el.module?.figmaUrl ?? "") => {
+    if (!el.module || customBusyRef.current) return;
+    const value = nextUrl.trim();
+    const sourceKey = `${el.module.fileKey}:${el.module.nodeId}:${el.module.figmaUrl}:${Boolean(el.module.cleared)}`;
+    setCustomRefreshId(el.id);
+    let recognized = false;
+    try {
+      const result = await recognizeCustomElement(value);
+      if (!result) return;
+      recognized = true;
+      updateScene((current) => {
+        const baseModule = current.elements.find((item) => item.id === el.id)?.module;
+        const versionModule = version
+          ? current.versions?.find((item) => item.id === version.id)?.modules?.[el.id]
+          : undefined;
+        const latest = versionModule ?? baseModule;
+        const latestSourceKey = latest
+          ? `${latest.fileKey}:${latest.nodeId}:${latest.figmaUrl}:${Boolean(latest.cleared)}`
+          : "";
+        /** 删除链接或切换了来源后，迟到的识别结果不得覆盖用户的新状态。 */
+        if (!latest || latestSourceKey !== sourceKey) return current;
+        const module = moduleSource(result, value, latest.placementMode, latest.backdropTarget);
+        return {
+          ...current,
+          elements: version
+            ? current.elements
+            : current.elements.map((item) => item.id === el.id ? { ...item, module } : item),
+          versions: version
+            ? (current.versions ?? []).map((item) => item.id === version.id ? { ...item, modules: { ...item.modules, [el.id]: module } } : item)
+            : current.versions,
+        };
+      });
+    } finally {
+      if (recognized) setCustomRefreshId((current) => current === el.id ? null : current);
+    }
+  };
+
+  const clearCustomModuleSource = (el: SceneElement) => {
+    if (!el.module || languageLocked) return;
+    const module: SceneCustomModule = {
+      ...el.module,
+      figmaUrl: "",
+      fileKey: "",
+      nodeId: "",
+      nodeType: "",
+      cleared: true,
+    };
+    delete module.previewUrl;
+    updateScene((current) => ({
+      ...current,
+      elements: version
+        ? current.elements
+        : current.elements.map((item) => item.id === el.id ? { ...item, module } : item),
+      versions: version
+        ? (current.versions ?? []).map((item) => item.id === version.id ? { ...item, modules: { ...item.modules, [el.id]: module } } : item)
+        : current.versions,
+    }));
+    setCustomModuleUrls((current) => ({ ...current, [el.id]: "" }));
+    setCustomRefreshId(null);
+    setCustomError(null);
+  };
+
+  const changeCustomPlacement = (
+    el: SceneElement,
+    placementMode: SceneCustomPlacementMode,
+    backdropTarget?: SceneCustomBackdropTarget,
+  ) => {
+    if (!el.module) return;
+    const target = backdropTarget
+      ?? (mode === "board" ? boardPatch[el.id]?.backdropTarget : scene.familyEdits[family]?.[el.id]?.backdropTarget)
+      ?? el.module.backdropTarget
+      ?? "title";
+    const currentLayout = layoutScene(scene, board, lang);
+    const currentLaid = currentLayout.laid.find((item) => item.el.id === el.id);
+    updateScene((current) => {
+      const unit = sceneGroupUnit(current, board);
+      const scope = mode === "board" ? board.key : family;
+      const source = mode === "board" ? current.boardOverrides : current.familyEdits;
+      const edits = { ...source[scope] };
+      const entry: ScenePlacementPatch = { ...edits[el.id], align: resolveSceneGroup(current, board).align };
+      delete entry.attach;
+      /** family 的编组比例相对标题组，自由比例相对版式；切换模式时换算，保持画面尺寸不跳。board 一律存绝对比例。 */
+      if (currentLaid) {
+        const effectiveScale = currentLaid.placement.scale;
+        if (mode === "board") entry.scale = effectiveScale;
+        else if (placementMode === "free") entry.scale = sceneFamilyPatch(current, board, el.id, { scale: effectiveScale }).scale ?? effectiveScale;
+        else entry.scale = effectiveScale / resolveSceneGroup(current, board).scale;
+      }
+      if (placementMode === "free" && currentLaid) {
+        entry.x = currentLaid.placement.x;
+        entry.y = currentLaid.placement.y;
+        entry.align = currentLaid.placement.align;
+      } else {
+        delete entry.x;
+        delete entry.y;
+      }
+      if (placementMode === "above-title" || placementMode === "below-title") {
+        entry.attach = { v: placementMode === "above-title" ? "above" : "below", dy: Math.max(8, sceneGroupBaseGap(board)) / unit, dx: 0 };
+      } else if (placementMode === "title-backdrop") {
+        entry.attach = { v: "beside", dy: 0, dx: 0 };
+      }
+      entry.customMode = placementMode;
+      entry.backdropTarget = target;
+      if (mode === "board" && placementMode === "free") entry.detached = true;
+      else delete entry.detached;
+      edits[el.id] = roundSceneModulePatch(entry);
+      const module = { ...el.module!, placementMode, backdropTarget: target };
+      return {
+        ...current,
+        elements: version || mode === "board" ? current.elements : current.elements.map((item) => item.id === el.id ? { ...item, module } : item),
+        versions: version && mode !== "board"
+          ? (current.versions ?? []).map((item) => item.id === version.id ? { ...item, modules: { ...item.modules, [el.id]: module } } : item)
+          : current.versions,
+        ...(mode === "board"
+          ? { boardOverrides: { ...current.boardOverrides, [board.key]: edits } }
+          : { familyEdits: { ...current.familyEdits, [family]: edits } }),
+      };
+    });
   };
 
   const trainingLanguage = lang === "en" ? "en" : "zh-common";
@@ -732,13 +1227,13 @@ export function SceneEditor({
   });
 
   /** 财报季角标文字固定，选中即显示角标；其它样式沿用已填的角标文案。 */
-  const setBadgeStyle = (style: SceneBadgeStyle) => updateScene((current) => {
-    const badge = current.elements.find((el) => el.role === "badge");
+  const setBadgeStyle = (id: string, style: SceneBadgeStyle) => updateScene((current) => {
+    const badge = current.elements.find((el) => el.id === id && el.role === "badge");
     const earnings = style === "earnings";
     const elements = badge
       ? current.elements.map((el) => el.id === badge.id && earnings ? { ...el, visible: true } : el)
       : earnings ? [...current.elements, { ...sceneDefaultElement("badge", 0), texts: { en: "", sc: "", tc: "" } }] : current.elements;
-    return { ...current, elements, badgeStyle: style };
+    return { ...current, elements, badgeStyles: { ...current.badgeStyles, [id]: style } };
   });
 
   const setText = (el: SceneElement, text: string) => {
@@ -865,7 +1360,10 @@ export function SceneEditor({
       const edits = { ...current.familyEdits[family] };
       for (const riderId of sceneAttachedIds(current, family)) {
         const attach = edits[riderId]?.attach;
-        if (attach && attach.v !== "beside") edits[riderId] = { ...edits[riderId], align, attach: { ...attach, dx: 0 } };
+        const rider = current.elements.find((item) => item.id === riderId);
+        const titleBackdrop = rider?.role === "module"
+          && (edits[riderId]?.customMode ?? rider.module?.placementMode) === "title-backdrop";
+        if (attach && (attach.v !== "beside" || titleBackdrop)) edits[riderId] = { ...edits[riderId], align, attach: { ...attach, dx: 0 } };
       }
       return { ...current, familyEdits: { ...current.familyEdits, [family]: edits } };
     };
@@ -886,14 +1384,17 @@ export function SceneEditor({
   /** 规范 CTA 没解除锁定时位置也锁住，解除锁定后才能挪。 */
   const ctaPinned = (el: SceneElement) => el.role === "cta" && Boolean(board.ctaSpec) && Boolean(metricsOf(el).locked) && !scene.ctaFontUnlocked;
   const pinnedIds = new Set(scene.elements.filter(ctaPinned).map((el) => el.id));
-  const missingRoles = (["cta"] as SceneRole[]).filter((role) => !scene.elements.some((el) => el.role === role));
   const firstMemberIndex = scene.elements.findIndex((el) => isSceneGroupRole(el.role));
-  const hasLayerContent = (el: SceneElement) => Boolean(sceneText(el, lang).trim()) || (el.role === "badge" && sceneBadgeStyle(scene).id === "earnings");
-  const attachedIds = mode === "family" ? sceneAttachedIds(scene, family) : [];
+  const hasLayerContent = (el: SceneElement) => (el.role === "module" && Boolean(el.module)) || Boolean(sceneText(el, lang).trim()) || (el.role === "badge" && sceneBadgeStyle(scene, el.id).id === "earnings");
+  const attachedIds = scene.elements
+    .filter((el) => SCENE_ATTACH_ROLES.includes(el.role) && Boolean(resolveScenePlacement(scene, board, el).attach))
+    .map((el) => el.id);
   const attachedEls = scene.elements.filter((el) => attachedIds.includes(el.id) && (el.role === "logo" || hasLayerContent(el)));
-  const listed = scene.elements.filter((el) => !isSceneGroupRole(el.role) && !attachedEls.includes(el) && (!MODULE_ROLES.has(el.role) || el.role === "logo" || (hasLayerContent(el) && elementVisible(el))));
+  /** 元素的放置模式就是它与标题组的关系，不提供第二套取消编组入口。 */
+  const detachableEls = attachedEls.filter((el) => el.role !== "module");
+  const listed = scene.elements.filter((el) => !isSceneGroupRole(el.role) && !attachedEls.includes(el) && (!MODULE_ROLES.has(el.role) || el.role === "logo" || hasLayerContent(el) || elementVisible(el)));
   /** 图层栏里标题组的子层按层序排，并排编入的图层排在最后。 */
-  const groupOrder = sceneGroupOrder(scene, family);
+  const groupOrder = sceneGroupOrder(scene, family, board.key);
   const orderRank = (el: SceneElement) => groupOrder.includes(el.id) ? groupOrder.indexOf(el.id) : groupOrder.length;
   const groupChildren = [
     ...SCENE_GROUP_ROLES.flatMap((role) => scene.elements.filter((el) => el.role === role && hasLayerContent(el))),
@@ -961,15 +1462,15 @@ export function SceneEditor({
   };
   const groupFlagged = members.some((el) => issueIds.has(el.id));
 
-  /** 编组：选中标题组（或其中一层）加上 Logo、角标、免责、自定义文字。 */
+  /** 编组：选中标题组（或其中一层）加上 Logo、角标、免责、自定义文字或自定义元素。 */
   const selection = [selectedId, ...multiIds].filter((id): id is string => Boolean(id));
   const selectionHasGroup = selection.some((id) => id === SCENE_GROUP_ID || scene.elements.some((el) => el.id === id && isSceneGroupRole(el.role)));
   const groupable = selection.flatMap((id) => {
     const el = scene.elements.find((item) => item.id === id);
-    return el && SCENE_ATTACH_ROLES.includes(el.role) && !attachedIds.includes(el.id) && elementVisible(el) ? [el] : [];
+    return el && el.role !== "module" && SCENE_ATTACH_ROLES.includes(el.role) && !attachedIds.includes(el.id) && elementVisible(el) ? [el] : [];
   });
   const canGroup = mode === "family" && !layoutLocked && selectionHasGroup && groupable.length > 0 && Boolean(output.group);
-  const ungroupIds = layoutLocked ? [] : selection.includes(SCENE_GROUP_ID) ? attachedEls.map((el) => el.id) : selection.filter((id) => attachedIds.includes(id));
+  const ungroupIds = mode !== "family" || layoutLocked ? [] : selection.includes(SCENE_GROUP_ID) ? detachableEls.map((el) => el.id) : selection.filter((id) => detachableEls.some((el) => el.id === id));
   const groupLayers = () => {
     if (!canGroup) return;
     const ids = groupable.map((el) => el.id);
@@ -1022,8 +1523,9 @@ export function SceneEditor({
     });
   };
   const ungroupLayers = (ids = ungroupIds) => {
-    if (!ids.length) return;
-    updateScene((current) => sceneDetachFromGroup(current, family, board, lang, ids));
+    const detachable = ids.filter((id) => scene.elements.find((el) => el.id === id)?.role !== "module");
+    if (!detachable.length) return;
+    updateScene((current) => sceneDetachFromGroup(current, family, board, lang, detachable));
   };
   const groupKeys = useRef({ group: groupLayers, ungroup: () => ungroupLayers(), move: (_step: -1 | 1): boolean => false });
   groupKeys.current = {
@@ -1038,6 +1540,7 @@ export function SceneEditor({
 
   const layerRow = (el: SceneElement, indent = false) => {
     const visible = elementVisible(el);
+    const label = sceneModuleName(scene, el);
     const canToggle = el.role !== "visual" && el.role !== "title";
     const orderable = (canReorder && (indent || (SCENE_ATTACH_ROLES.includes(el.role) && visible))) || (!indent && canStack);
     const dropMark = indent ? rowDrag?.over === el.id && rowDrag.id !== el.id ? rowDrag.place : undefined : dropMarkOf(el.id);
@@ -1065,17 +1568,17 @@ export function SceneEditor({
           "group relative flex h-8 cursor-pointer items-center gap-2 rounded-[4px] px-2 text-[10px]",
           indent && "pl-7",
           selectedId === el.id || multiSet.has(el.id) ? "bg-[var(--app-surface-3)] text-[var(--app-text)]" : "text-[var(--app-text-2)] hover:bg-[var(--app-surface-2)]",
-          !visible && "opacity-50",
+          !visible && el.role !== "logo" && "opacity-50",
         )}
       >
         {dropMark ? <span className={cn("pointer-events-none absolute inset-x-2 h-px bg-[var(--app-text-3)]", dropMark === "before" ? "top-0" : "bottom-0")} /> : null}
-        <span className="min-w-0 flex-1 truncate">{el.name}</span>
+        <span className="min-w-0 flex-1 truncate">{label}</span>
         {!version && sceneFamilyCopyEdited(rawScene, family, el.id) ? <span title={`文案仅${groupName}使用`} className="size-1.5 shrink-0 rounded-full bg-[var(--app-text-4)]" /> : null}
         {issueIds.has(el.id) ? <span className="size-1.5 shrink-0 rounded-full bg-[var(--color-warn)]" /> : null}
         {canToggle ? (
           <button
             type="button"
-            aria-label={visible ? `隐藏${el.name}` : `显示${el.name}`}
+            aria-label={visible ? `隐藏${label}` : `显示${label}`}
             onClick={(event) => {
               event.stopPropagation();
               setVisible(el, !visible);
@@ -1088,7 +1591,7 @@ export function SceneEditor({
         {mode === "family" && SCENE_REMOVABLE_ROLES.includes(el.role) ? (
           <button
             type="button"
-            aria-label={`删除${el.name}`}
+            aria-label={`删除${label}`}
             onClick={(event) => {
               event.stopPropagation();
               removeElement(el.id);
@@ -1133,14 +1636,14 @@ export function SceneEditor({
         </button>
         <span className="min-w-0 flex-1 truncate">标题组</span>
         {groupFlagged ? <span className="size-1.5 shrink-0 rounded-full bg-[var(--color-warn)]" /> : null}
-        {attachedEls.length ? (
+        {mode === "family" && detachableEls.length ? (
           <button
             type="button"
             aria-label="取消编组"
-            title={`取消编组：${attachedEls.map((el) => el.name).join("、")}移出标题组（Ctrl+Shift+G）`}
+            title={`取消编组：${detachableEls.map((el) => el.name).join("、")}移出标题组（Ctrl+Shift+G）`}
             onClick={(event) => {
               event.stopPropagation();
-              ungroupLayers(attachedEls.map((el) => el.id));
+              ungroupLayers(detachableEls.map((el) => el.id));
             }}
             className="grid size-5 place-items-center rounded-[3px] text-[var(--app-text-4)] hover:text-[var(--app-text)]"
           >
@@ -1380,46 +1883,19 @@ export function SceneEditor({
   const slotField = (role: SceneRole) => {
     const el = scene.elements.find((item) => item.role === role);
     const shown = el ? (mode === "board" ? elementVisible(el) : el.visible) : false;
-    const optional = OPTIONAL_ROLES.has(role);
-    if (optional && !shown) return null;
     const id = el?.id ?? role;
     const label = SCENE_ROLE_LABEL[role];
     const value = el ? sceneText(el, lang) : "";
-    const badgeStyle = role === "badge" ? sceneBadgeStyle(scene).id : null;
+    const badgeStyle = role === "badge" ? sceneBadgeStyle(scene, el?.id).id : null;
     const earnings = Boolean(el) && badgeStyle === "earnings";
     const hasCopy = Boolean(value.trim()) || earnings;
     const multiline = isSceneGroupRole(role);
     const required = role === "title";
     const onChange = (text: string) => !el || (!el.visible && !value.trim()) ? fillSlot(role, text) : setText(el, text);
-    const clear = () => {
-      if (!el) return;
-      if (earnings) setBadgeStyle("style1");
-      setText(el, "");
-    };
     const hidden = Boolean(el) && hasCopy && !shown;
     const common = { "aria-label": `${label}文案`, value, placeholder: required ? "必填" : "选填", ...(el ? rangeHandlers(el) : {}) };
-    const aside = (
-      <>
-        {el ? resetButton(el.id) : null}
-        {el && hasCopy && !required && !optional ? (
-          <button type="button" aria-label={shown ? `隐藏${label}` : `显示${label}`} title={shown ? "隐藏" : "显示"} onClick={() => setVisible(el, !shown)} className={ICON}>
-            {shown ? <Eye size={11} /> : <EyeOff size={11} />}
-          </button>
-        ) : null}
-        {el && hasCopy && !required && !optional && mode === "family" ? (
-          <button type="button" aria-label={`清空${label}`} title="清空" onClick={clear} className={ICON}>
-            <X size={11} />
-          </button>
-        ) : null}
-        {el && optional ? (
-          <button type="button" aria-label={`移除${label}`} title="移除" onClick={() => setVisible(el, false)} className={ICON}>
-            <X size={11} />
-          </button>
-        ) : null}
-      </>
-    );
     return (
-      <Section key={role} id={id} title={label} muted={!hasCopy || hidden} open={isOpen(id)} onToggle={() => togglePanel(id)} aside={aside}>
+      <Section key={role} id={id} title={label} muted={!hasCopy || hidden} open={isOpen(id)} onToggle={() => togglePanel(id)}>
         <div className={cn(hidden && "opacity-50")}>
           {earnings ? (
             <div className="flex h-8 items-center rounded-[4px] border border-[var(--app-line)] bg-[var(--app-surface-2)] px-2.5 text-[10px] text-[var(--app-text-3)]">
@@ -1445,7 +1921,7 @@ export function SceneEditor({
                 type="button"
                 aria-pressed={badgeStyle === style.id}
                 title={style.name}
-                onClick={() => setBadgeStyle(style.id)}
+                onClick={() => setBadgeStyle(id, style.id)}
                 className={cn(
                   "flex h-9 flex-col items-center justify-center gap-0.5 rounded-[4px] border bg-[#121212] px-1",
                   badgeStyle === style.id ? "border-[var(--color-brand)]" : "border-[var(--app-line)] hover:border-[var(--app-line-strong)]",
@@ -1460,17 +1936,6 @@ export function SceneEditor({
         {el && hasCopy ? elementParams(el) : null}
       </Section>
     );
-  };
-
-  /** 角标、免责默认不出现，点添加后才显示对应模块。 */
-  const showModule = (role: SceneRole) => {
-    const el = scene.elements.find((item) => item.role === role);
-    if (el) setVisible(el, true);
-    else if (mode === "family") fillSlot(role, "");
-    else return;
-    const id = el?.id ?? sceneDefaultElement(role, 0).id;
-    setOpenParams((current) => ({ ...current, [id]: true }));
-    setSelectedId(id);
   };
 
   /** 标题组里的层：上移/下移一层，选中后也可按 ↑ ↓。 */
@@ -1492,14 +1957,25 @@ export function SceneEditor({
     const placement = resolveScenePlacement(scene, board, el);
     const laidItem = laidOf(el);
     const metrics = metricsOf(el);
-    const badgeStyle = el.role === "badge" ? sceneBadgeStyle(scene) : null;
+    const badgeStyle = el.role === "badge" ? sceneBadgeStyle(scene, el.id) : null;
     const following = Boolean(output.group) && placement.follow !== undefined && placement.follow !== "none";
     const ctaLocked = el.role === "cta" && Boolean(metrics.locked);
     const widthEditable = (el.role === "cta" && !ctaLocked) || badgeStyle?.id === "style1";
     const shownX = laidItem ? laidItem.placement.x : placement.x;
-    const inGroup = attachedIds.includes(el.id);
-    const attach = inGroup ? scene.familyEdits[family]?.[el.id]?.attach : undefined;
+    const inGroup = Boolean(placement.attach);
+    const attach = placement.attach;
     const unit = sceneGroupUnit(scene, board);
+    /** 自定义元素的比例对用户始终以 Figma 原始节点为 1×；内部仍保存版式相对比例。 */
+    const moduleScale = el.role === "module" && el.module
+      ? metrics.h / Math.max(1, el.module.height)
+      : placement.scale;
+    const commitModuleScale = (value: number) => {
+      const factor = value / Math.max(0.01, moduleScale);
+      patchPlacement(el.id, {
+        scale: placement.scale * factor,
+        ...(placement.w !== undefined ? { w: sceneWidthToUnit(board, metrics.w * factor) } : {}),
+      });
+    };
     const wrap = el.role === "visual" ? (node: ReactNode) => node : layoutBlock;
     /** 没有字号的层（Logo 等）间距和比例放一排。 */
     const sizeHere = withSize && !ctaLocked && !(metrics.fontPx > 0);
@@ -1511,15 +1987,12 @@ export function SceneEditor({
         min={0}
         max={Math.round(board.h / 2)}
         suffix="px"
-        onCommit={(value) => updateScene((current) => {
-          const own = current.familyEdits[family]?.[el.id]?.attach;
-          return own ? { ...current, familyEdits: withPatch(current.familyEdits, family, el.id, { attach: { ...own, dy: Math.max(0, value) / sceneGroupUnit(current, board) } }) } : current;
-        })}
+        onCommit={(value) => patchPlacement(el.id, { attach: { ...attach, dy: Math.max(0, value) / sceneGroupUnit(scene, board) } })}
       />
     ) : null;
     return wrap(
       <>
-        {inGroup ? (
+        {inGroup ? el.role === "module" || mode !== "family" ? null : (
           <div className="mb-3 flex items-center justify-between gap-2">
             <span className="min-w-0 flex-1 truncate text-[9px] text-[var(--app-text-4)]">已编入标题组</span>
             <button type="button" title="取消编组（Ctrl+Shift+G）" onClick={() => ungroupLayers([el.id])} className="shrink-0 text-[9px] text-[var(--app-text-3)] hover:text-[var(--app-text)]">
@@ -1527,7 +2000,7 @@ export function SceneEditor({
             </button>
             {orderButtons(el)}
           </div>
-        ) : el.role !== "visual" && output.group ? (
+        ) : el.role !== "visual" && el.role !== "module" && output.group ? (
           <div className="mb-3">
             <div className="mb-1 flex items-center justify-between">
               <span className="text-[9px] text-[var(--app-text-4)]">对齐方式</span>
@@ -1540,7 +2013,7 @@ export function SceneEditor({
             </div>
           </div>
         ) : null}
-        {attachGap && !sizeHere ? <div className="mb-2 grid grid-cols-2 gap-2">{attachGap}</div> : inGroup || el.role === "visual" ? null : (
+        {attachGap && el.role !== "module" && !sizeHere ? <div className="mb-2 grid grid-cols-2 gap-2">{attachGap}</div> : inGroup || el.role === "visual" ? null : (
           <div className="mb-2 grid grid-cols-2 gap-2">
             <ScrubField label="X" ariaLabel="X 坐标" disabled={following} value={Math.round(shownX * board.w)} min={-board.w} max={board.w * 2} suffix="px" onCommit={(value) => patchPlacement(el.id, { x: value / board.w })} />
             <ScrubField label="Y" ariaLabel="Y 坐标" value={Math.round(placement.y * board.h)} min={-board.h} max={board.h * 2} suffix="px" onCommit={(value) => patchPlacement(el.id, { y: value / board.h })} />
@@ -1549,6 +2022,45 @@ export function SceneEditor({
         {!withSize ? null : ctaLocked ? (
           <div className="rounded-[4px] bg-[var(--app-surface-2)] px-2 py-1.5 text-[9px] leading-relaxed text-[var(--app-text-3)]">
             站内规范锁定：高 {Math.round(board.ctaSpec!.height)}px · 字号 {board.ctaSpec!.fontPx}px · 左右内边距 {board.ctaSpec!.paddingX}px · 宽 {board.ctaSpec!.minWidth}–{board.ctaSpec!.maxWidth}px（当前 {Math.round(metrics.w)}px）
+          </div>
+        ) : el.role === "module" && el.module?.stretchable ? (
+          <div className="grid grid-cols-2 gap-2">
+            {attachGap}
+            <ScrubField
+              label="比例"
+              ariaLabel="比例"
+              value={moduleScale}
+              decimals={2}
+              min={0.01}
+              max={Math.max(20, Math.ceil(moduleScale))}
+              step={0.01}
+              suffix="×"
+              onCommit={commitModuleScale}
+            />
+            <ScrubField
+              label="宽度"
+              ariaLabel="宽度"
+              value={Math.round(metrics.w)}
+              min={8}
+              max={board.w}
+              suffix="px"
+              onCommit={(value) => patchPlacement(el.id, { w: sceneWidthToUnit(board, value) })}
+            />
+          </div>
+        ) : el.role === "module" ? (
+          <div className="grid grid-cols-2 gap-2">
+            {attachGap}
+            <ScrubField
+              label="比例"
+              ariaLabel="比例"
+              value={moduleScale}
+              decimals={2}
+              min={0.01}
+              max={Math.max(20, Math.ceil(moduleScale))}
+              step={0.01}
+              suffix="×"
+              onCommit={commitModuleScale}
+            />
           </div>
         ) : sizeFields(el, placement.scale, (value) => patchPlacement(el.id, { scale: value }), sizeHere ? attachGap : null)}
         {withSize && widthEditable ? (
@@ -1564,15 +2076,22 @@ export function SceneEditor({
             />
             <button
               type="button"
-              disabled={!placement.w}
-              onClick={() => clearPlacementKey(el.id, "w")}
-              className={cn(GHOST, "h-8")}
+              aria-pressed={placement.w === undefined}
+              onClick={() => placement.w === undefined
+                ? patchPlacement(el.id, { w: sceneWidthToUnit(board, metrics.w) })
+                : clearPlacementKey(el.id, "w")}
+              className={cn(
+                GHOST,
+                "flex h-8 items-center justify-center gap-1",
+                placement.w === undefined && "bg-[var(--app-surface-3)] text-[var(--app-text)]",
+              )}
             >
+              {placement.w === undefined ? <Check size={10} /> : null}
               随文案自适应
             </button>
           </div>
         ) : null}
-        {el.role !== "visual" && !following && !(attach && attach.v !== "beside") ? (
+        {el.role !== "visual" && el.role !== "module" && !following && !(attach && attach.v !== "beside") ? (
           <div className="mt-3 flex items-center justify-between">
             <span className="text-[9px] text-[var(--app-text-4)]">对齐锚点</span>
             <Segmented<SceneAlign> size="sm" value={placement.align} onChange={(align) => changeAlign(el.id, align)} options={ALIGN_OPTIONS} />
@@ -1593,22 +2112,29 @@ export function SceneEditor({
         muted={!hasCopy || !shown}
         open={isOpen(el.id)}
         onToggle={() => togglePanel(el.id)}
-        aside={(
-          <>
-            {resetButton(el.id)}
-            <button type="button" aria-label={shown ? `隐藏${el.name}` : `显示${el.name}`} title={shown ? "隐藏" : "显示"} onClick={() => setVisible(el, !shown)} className={ICON}>
-              {shown ? <Eye size={11} /> : <EyeOff size={11} />}
-            </button>
-            {mode === "family" ? (
-              <button type="button" aria-label={`删除${el.name}`} title="删除" onClick={() => removeElement(el.id)} className={cn(ICON, "hover:text-[var(--color-up)]")}>
-                <Trash2 size={11} />
-              </button>
-            ) : null}
-          </>
-        )}
       >
         <div className={cn(!shown && "opacity-50")}>{copyField(el, el.role !== "cta")}</div>
         {familyCopyNote(el)}
+        {el.role === "badge" && mode === "family" ? (
+          <div className="mt-1.5 grid grid-cols-4 gap-1">
+            {SCENE_BADGE_STYLES.map((style) => (
+              <button
+                key={style.id}
+                type="button"
+                aria-pressed={sceneBadgeStyle(scene, el.id).id === style.id}
+                title={style.name}
+                onClick={() => setBadgeStyle(el.id, style.id)}
+                className={cn(
+                  "flex h-9 flex-col items-center justify-center gap-0.5 rounded-[4px] border bg-[#121212] px-1",
+                  sceneBadgeStyle(scene, el.id).id === style.id ? "border-[var(--color-brand)]" : "border-[var(--app-line)] hover:border-[var(--app-line-strong)]",
+                )}
+              >
+                <img src={BADGE_THUMBS[style.id]} alt="" className="h-3 max-w-full" />
+                <span className="w-full truncate text-center text-[8px] text-white/60">{style.name}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {hasCopy ? elementParams(el) : null}
       </Section>
     );
@@ -1633,8 +2159,8 @@ export function SceneEditor({
         disabled={!elRange}
         onClick={() => applyHighlight(id)}
         className={cn(
-          "group relative size-7 rounded-[4px] border disabled:cursor-not-allowed",
-          rangePreset === id ? "border-[var(--color-brand)] ring-1 ring-[var(--color-brand)]" : "border-white/15 hover:border-white/40",
+          "group relative size-7 rounded-[4px] border outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/50 disabled:cursor-not-allowed",
+          rangePreset === id ? "border-white/60 ring-1 ring-white/20" : "border-white/15 hover:border-white/40",
           !elRange && "opacity-60",
         )}
         style={{ backgroundImage: scenePaintsCss(paints).join(", ") }}
@@ -1665,8 +2191,10 @@ export function SceneEditor({
           } else setCustomOpen(customOpen === kind ? null : kind);
         }}
         className={cn(
-          "grid size-7 place-items-center rounded-[4px] border border-dashed text-[var(--app-text-3)] hover:text-[var(--app-text)]",
-          rangePreset === id ? "border-solid border-[var(--color-brand)] ring-1 ring-[var(--color-brand)]" : customOpen === kind ? "border-white/50" : "border-white/20 hover:border-white/40",
+          "grid size-7 place-items-center rounded-[4px] border border-dashed text-[var(--app-text-3)] outline-none hover:text-[var(--app-text)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/50",
+          rangePreset === id
+            ? "border-solid border-white/40 bg-[var(--app-surface-3)] text-[var(--app-text)]"
+            : customOpen === kind ? "border-white/50 bg-[var(--app-surface-2)]" : "border-white/20 hover:border-white/40",
         )}
       >
         <Plus size={12} />
@@ -1733,7 +2261,9 @@ export function SceneEditor({
                     onClick={() => setRange({ id: el.id, start: item.start, end: item.end })}
                     className={cn(
                       "flex h-7 cursor-pointer items-center gap-2 rounded-[4px] border px-2 text-[10px]",
-                      current ? "border-[var(--color-brand)]" : "border-transparent bg-[var(--app-surface-2)] hover:border-[var(--app-line-strong)]",
+                      current
+                        ? "border-[var(--app-line-strong)] bg-[var(--app-surface-3)]"
+                        : "border-transparent bg-[var(--app-surface-2)] hover:border-[var(--app-line-strong)]",
                     )}
                   >
                     <span className="size-3 shrink-0 rounded-[2px]" style={{ backgroundImage: scenePaintsCss(highlightPaints(scene, item.preset)).join(", ") }} />
@@ -1776,7 +2306,7 @@ export function SceneEditor({
       <Section
         title="描边"
         aside={stroke ? null : (
-          <button type="button" aria-label={`添加${el.name}描边`} title="添加描边" onClick={() => setStroke(sceneDefaultStroke(fontPx))} className="grid size-5 place-items-center rounded-[4px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]">
+          <button type="button" aria-label={`添加${el.name}描边`} title="添加描边" onClick={() => setStroke(sceneDefaultStroke(fontPx))} className={SECTION_ADD}>
             <Plus size={13} />
           </button>
         )}
@@ -1859,7 +2389,7 @@ export function SceneEditor({
         <>
         {fontPicker(el)}
         <div className="mt-3">
-          {sceneBadgeStyle(scene).widths ? (
+          {sceneBadgeStyle(scene, el.id).widths ? (
             <div className="mb-3 flex items-center justify-between">
               <span className="text-[9px] text-[var(--app-text-4)]">固定规格</span>
               <Segmented<SceneBadgeLength>
@@ -2089,7 +2619,7 @@ export function SceneEditor({
     ];
     const activeSize: VisualSize = visualSizes.find((option) => Math.abs(option.scale - visualScale) < 0.005)?.id ?? "custom";
     return (
-      <Section id={el.id} title={el.name} open={isOpen(el.id)} onToggle={() => togglePanel(el.id)} aside={resetButton(el.id)}>
+      <Section id={el.id} title={el.name} open={isOpen(el.id)} onToggle={() => togglePanel(el.id)}>
         {item ? (
           <VisualCrop
             kvUrl={kvUrl}
@@ -2132,7 +2662,7 @@ export function SceneEditor({
   };
 
   const logoPanel = (el: SceneElement) => (
-    <Section id={el.id} title={el.name} muted={!elementVisible(el)} open={isOpen(el.id)} onToggle={() => togglePanel(el.id)} aside={resetButton(el.id)}>
+    <Section id={el.id} title={el.name} open={isOpen(el.id)} onToggle={() => togglePanel(el.id)}>
       <div className="grid grid-cols-2 gap-1.5">
         {LOGO_PRESET_OPTIONS.map((option) => {
           const logoShown = elementVisible(el);
@@ -2166,6 +2696,230 @@ export function SceneEditor({
       {elementVisible(el) ? <div className="mt-3">{placementFields(el)}</div> : null}
     </Section>
   );
+
+  const customModePreview = (mode: SceneCustomPlacementMode) => {
+    const moduleClass = mode === "title-backdrop"
+      ? "left-3 right-3 top-[25px] h-3"
+      : mode === "above-title"
+        ? "left-4 right-8 top-2 h-2.5"
+        : mode === "below-title"
+          ? "left-4 right-8 bottom-2 h-2.5"
+          : "right-2 top-2 h-4 w-9";
+    return (
+      <div className="relative h-12 overflow-hidden rounded-[3px] bg-[#111317]">
+        <span className="absolute left-4 top-[19px] z-10 h-1.5 w-12 rounded-full bg-white/80" />
+        <span className="absolute left-4 top-[29px] z-10 h-1 w-8 rounded-full bg-white/45" />
+        <span className={cn("absolute rounded-[2px] border border-[#f0c88b]/45 bg-gradient-to-r from-[#d9c1b2]/75 to-[#8d8d8d]/35", moduleClass)} />
+      </div>
+    );
+  };
+
+  const customModeCards = (value: SceneCustomPlacementMode, onChange: (mode: SceneCustomPlacementMode) => void) => (
+    <div className="grid w-full max-w-[360px] grid-cols-2 gap-1.5">
+      {CUSTOM_PLACEMENT_OPTIONS.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          aria-pressed={value === option.id}
+          onClick={() => onChange(option.id)}
+          className={cn(
+            "relative overflow-hidden rounded-[6px] p-1.5 text-left transition-colors",
+            value === option.id ? "bg-[var(--app-surface-3)]" : "bg-[var(--app-surface-2)] hover:bg-[var(--app-surface-3)]",
+          )}
+        >
+          {customModePreview(option.id)}
+          <span className="mt-1.5 flex items-center justify-between text-[9px] font-medium text-[var(--app-text)]">
+            {option.label}{value === option.id ? <Check size={10} className="text-[var(--app-text-2)]" /> : null}
+          </span>
+          <span className="mt-0.5 block text-[9px] leading-[1.35] text-[var(--app-text-4)]">{option.detail}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  const customElementsPanel = () => {
+    const modules = scene.elements.filter((el) => el.role === "module" && el.module);
+    const nextModuleName = `元素${sceneNextModuleNumber(scene)}`;
+    return (
+      <>
+        {customImportOpen ? (
+          <Section
+            id="custom-elements"
+            title={nextModuleName}
+            open={customImportExpanded}
+            onToggle={() => setCustomImportExpanded((open) => !open)}
+            aside={<button type="button" aria-label="取消添加元素" title="取消添加" onClick={() => setCustomImportOpen(false)} className={ICON}><X size={11} /></button>}
+          >
+          <div>
+            <p className="mb-2 whitespace-nowrap text-[9px] text-[var(--app-text-4)]">
+              标题框、特殊标签、活动时间、二维码等平台未预设元素
+            </p>
+            <div className="flex gap-1.5">
+              <div className="relative min-w-0 flex-1">
+                <Link2 size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[var(--app-text-4)]" />
+                <input
+                  aria-label={`${nextModuleName} Figma 链接`}
+                  value={customUrl}
+                  onChange={(event) => {
+                    customUrlRef.current = event.target.value;
+                    setCustomUrl(event.target.value);
+                    setCustomError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !customBusy) {
+                      event.preventDefault();
+                      void importCustomModule();
+                    }
+                  }}
+                  placeholder="粘贴figma链接"
+                  className={cn(INPUT, "pl-7")}
+                />
+              </div>
+              <button type="button" aria-live="polite" disabled={customBusy || languageLocked || !customUrl.trim()} onClick={() => void importCustomModule()} className={cn(GHOST, "h-8 shrink-0 bg-[var(--app-surface-2)] px-3")}>
+                {customBusy ? "识别中" : "识别"}
+              </button>
+            </div>
+            {customError && !customRefreshId ? <p role="alert" className="mt-1.5 text-[9px] leading-relaxed text-[var(--warn-text)]">{customError}</p> : null}
+          </div>
+          </Section>
+        ) : null}
+        {modules.map((el) => {
+          const moduleName = sceneModuleName(scene, el);
+          const shown = elementVisible(el);
+          const activeMode = (mode === "board" ? boardPatch[el.id]?.customMode : scene.familyEdits[family]?.[el.id]?.customMode)
+            ?? el.module!.placementMode;
+          const activeTarget = (mode === "board" ? boardPatch[el.id]?.backdropTarget : scene.familyEdits[family]?.[el.id]?.backdropTarget)
+            ?? el.module!.backdropTarget
+            ?? "title";
+          const languageScopes = rawScene.languageVisibility?.[lang];
+          const allApplied = languageScopes?.["*"]?.[el.id] === true;
+          const sourceCleared = Boolean(el.module!.cleared);
+          return (
+            <Section
+              key={el.id}
+              id={el.id}
+              title={moduleName}
+              muted={!shown}
+              open={isOpen(el.id)}
+              onToggle={() => togglePanel(el.id)}
+              aside={!version && !sourceCleared ? (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label={`${moduleName}${allApplied ? "已应用到全部版式" : "应用到全部版式"}`}
+                    aria-pressed={allApplied}
+                    disabled={allApplied || languageLocked}
+                    onClick={() => setCustomElementScope(el.id, "all")}
+                    className={cn(
+                      "flex h-6 items-center gap-1 rounded-[4px] border px-2 text-[9px] transition-colors disabled:cursor-not-allowed",
+                      allApplied
+                        ? "border-[var(--color-down)] bg-[var(--app-surface-3)] text-[var(--color-down)]"
+                        : "border-[var(--app-line-strong)] bg-[var(--app-surface-2)] text-[var(--app-text-2)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]",
+                    )}
+                  >
+                    {allApplied ? <Check size={11} /> : <Copy size={10} />}
+                    {allApplied ? "已应用" : "应用到全部版式"}
+                  </button>
+                  {allApplied ? (
+                    <button
+                      type="button"
+                      aria-label={`撤销${moduleName}应用到全部版式`}
+                      disabled={languageLocked}
+                      onClick={() => undoCustomElementScope(el.id)}
+                      className="flex h-6 items-center gap-1 rounded-[4px] px-1.5 text-[9px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Undo2 size={10} />撤销
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            >
+              <div className={cn(!shown && "opacity-50")}>
+                <div className="mb-2 flex items-center gap-1.5">
+                  <div className="relative min-w-0 flex-1">
+                    <Link2 size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[var(--app-text-4)]" />
+                    <input
+                      aria-label={`${moduleName} Figma 链接`}
+                      value={customModuleUrls[el.id] ?? el.module?.figmaUrl ?? ""}
+                      placeholder="粘贴figma链接"
+                      onChange={(event) => {
+                        setCustomModuleUrls((current) => ({ ...current, [el.id]: event.target.value }));
+                        setCustomError(null);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && !customBusy && (customModuleUrls[el.id] ?? el.module?.figmaUrl ?? "").trim()) {
+                          event.preventDefault();
+                          void refreshCustomModule(el, customModuleUrls[el.id] ?? el.module?.figmaUrl ?? "");
+                        }
+                      }}
+                      className={cn(INPUT, "pl-7")}
+                    />
+                  </div>
+                  {sourceCleared ? (
+                    <button
+                      type="button"
+                      aria-label={`识别${moduleName} Figma 链接`}
+                      disabled={customBusy || !(customModuleUrls[el.id] ?? "").trim()}
+                      onClick={() => void refreshCustomModule(el, customModuleUrls[el.id] ?? "")}
+                      className={cn(GHOST, "h-8 shrink-0 bg-[var(--app-surface-2)] px-3 hover:bg-[var(--app-surface-3)]")}
+                    >
+                      {customBusy && customRefreshId === el.id ? "识别中…" : "识别"}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        aria-label={`${moduleName}重新识别`}
+                        title="重新识别"
+                        disabled={customBusy || !(customModuleUrls[el.id] ?? el.module?.figmaUrl ?? "").trim()}
+                        onClick={() => void refreshCustomModule(el, customModuleUrls[el.id] ?? el.module?.figmaUrl ?? "")}
+                        className={cn(ICON, "shrink-0 disabled:cursor-not-allowed disabled:opacity-40")}
+                      >
+                        <RotateCcw size={12} className={cn(customBusy && customRefreshId === el.id && "animate-spin")} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`${moduleName}删除链接`}
+                        title="删除链接"
+                        disabled={languageLocked}
+                        onClick={() => clearCustomModuleSource(el)}
+                        className={cn(ICON, "shrink-0 disabled:cursor-not-allowed disabled:opacity-40")}
+                      >
+                        <X size={12} />
+                      </button>
+                    </>
+                  )}
+                </div>
+                {customRefreshId === el.id && customError ? <p role="alert" className="mb-2 text-[9px] leading-relaxed text-[var(--color-up)]">{customError}</p> : null}
+                {sourceCleared ? null : (
+                  <>
+                    <div className="mb-1.5 text-[9px] text-[var(--app-text-3)]">放置模式</div>
+                    {customModeCards(activeMode, (placementMode) => changeCustomPlacement(el, placementMode))}
+                    {activeMode === "title-backdrop" ? (
+                      <div className="mt-2 flex max-w-[360px] items-center justify-between gap-2">
+                        <span className="text-[9px] text-[var(--app-text-3)]">标题底层</span>
+                        <Segmented<SceneCustomBackdropTarget>
+                          size="sm"
+                          value={activeTarget}
+                          onChange={(target) => changeCustomPlacement(el, activeMode, target)}
+                          options={[
+                            { id: "kicker", label: "小标题" },
+                            { id: "title", label: "主标题" },
+                            { id: "subtitle", label: "副标题" },
+                          ]}
+                        />
+                      </div>
+                    ) : null}
+                    <div className="mt-2 max-w-[360px]">{placementFields(el)}</div>
+                  </>
+                )}
+              </div>
+            </Section>
+          );
+        })}
+      </>
+    );
+  };
 
   /** 颜色是固定在参数栏底部的一个模块，作用于当前选中的文字层，参照 Figma 的填充 / 描边面板。 */
   const colorTargets = scene.elements.filter((el) => COLOR_ROLES.has(el.role) && hasLayerContent(el) && elementVisible(el));
@@ -2370,12 +3124,12 @@ export function SceneEditor({
       aside={(
         <button
           type="button"
+          aria-label="记录当前标题组方案"
           onClick={saveScheme}
           title={schemeExtras.length ? `记录标题组与${schemeExtras.map((el) => el.name).join("、")}的排版` : "记录当前标题组的排版；按住 Shift 点选 Logo 等图层可一起记录"}
-          className="flex h-5 max-w-[180px] items-center gap-1 rounded-[4px] px-1.5 text-[9px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]"
+          className={SECTION_ADD}
         >
-          <Plus size={11} className="shrink-0" />
-          <span className="truncate">记录当前</span>
+          <Plus size={13} />
         </button>
       )}
     >
@@ -2549,12 +3303,25 @@ export function SceneEditor({
               return el ? layerRow(el) : null;
             })}
           </div>
-          {mode === "family" && !version ? (
-            <div className="mt-2 flex flex-wrap gap-1">
-              <button type="button" onClick={() => addElement("custom")} className={cn(GHOST, "flex items-center gap-1")}><Plus size={11} />自定义</button>
-              {missingRoles.map((role) => (
-                <button key={role} type="button" onClick={() => addElement(role)} className={cn(GHOST, "flex items-center gap-1")}><Plus size={11} />{SCENE_ROLE_LABEL[role]}</button>
+          {mode === "family" ? (
+            <div className="mt-3 space-y-0.5 border-t border-[var(--app-line)] pt-2">
+              {([
+                ["badge", "角标"],
+                ["disclaimer", "免责"],
+                ["custom", "文字"],
+              ] as const).map(([role, label]) => (
+                <button key={role} type="button" onClick={() => addElement(role)} className="flex h-7 w-full items-center gap-2 rounded-[4px] px-2 text-[10px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]">
+                  <Plus size={11} /> {label}
+                </button>
               ))}
+              <button type="button" onClick={() => {
+                setCustomImportOpen(true);
+                setCustomImportExpanded(true);
+                setCustomError(null);
+                setTimeout(() => propsRef.current?.querySelector<HTMLElement>('[data-param-id="custom-elements"]')?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+              }} className="flex h-7 w-full items-center gap-2 rounded-[4px] px-2 text-[10px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]">
+                <Plus size={11} /> 元素
+              </button>
             </div>
           ) : null}
         </Section>
@@ -2630,7 +3397,7 @@ export function SceneEditor({
                 </button>
               ) : null}
             </div>
-          ) : mode === "board" ? resetButton(SCENE_GROUP_ID) : null}
+          ) : null}
         >
           {layoutBlock(<>
           <div className={cn("mb-3 grid items-end gap-2", layoutSchemes.length && mode === "family" && !layoutLocked ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-1")}>
@@ -2675,34 +3442,19 @@ export function SceneEditor({
         </Section>
 
         {COPY_ORDER.map((role) => slotField(role))}
-        {scene.elements.filter((el) => el.role === "cta").map((el) => customField(el))}
-        {scene.elements.filter((el) => el.role === "custom").map((el) => customField(el))}
-
-        {(() => {
-          const addable = [
-            ...[...OPTIONAL_ROLES].filter((role) => {
-              const el = scene.elements.find((item) => item.role === role);
-              const shown = el ? (mode === "board" ? elementVisible(el) : el.visible) : false;
-              return !shown && (mode === "family" || Boolean(el));
-            }).map((role) => ({ key: role, label: SCENE_ROLE_LABEL[role], onClick: () => showModule(role) })),
-            ...(mode === "family" && !scene.elements.some((el) => el.role === "cta") ? [{ key: "cta", label: "CTA", onClick: () => addElement("cta") }] : []),
-            ...(mode === "family" ? [{ key: "custom", label: "自定义文字", onClick: () => addElement("custom") }] : []),
-          ];
-          return addable.length ? (
-            <div className="grid grid-cols-2 gap-1.5 border-b border-[var(--app-line-soft)] py-3">
-              {addable.map((item) => (
-                <button key={item.key} type="button" onClick={item.onClick} className={cn(GHOST, "flex items-center justify-center gap-1 border border-dashed border-[var(--app-line-strong)] text-[var(--app-text-2)]")}>
-                  <Plus size={11} />{item.label}
-                </button>
-              ))}
-            </div>
-          ) : null;
-        })()}
-
-        {colorModule()}
+        {scene.elements
+          .filter((el) => (
+            el.role === "cta"
+            || el.role === "custom"
+            || ((el.role === "badge" || el.role === "disclaimer") && (hasLayerContent(el) || elementVisible(el)))
+          ))
+          .map((el) => customField(el))}
+        {customElementsPanel()}
 
         {scene.elements.filter((el) => el.role === "logo").map((el) => <Fragment key={el.id}>{logoPanel(el)}</Fragment>)}
         {scene.elements.filter((el) => el.role === "visual").map((el) => <Fragment key={el.id}>{visualPanel(el)}</Fragment>)}
+
+        {colorModule()}
 
         {mode === "board" ? (
           <Section title="本画板">

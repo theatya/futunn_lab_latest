@@ -73,6 +73,14 @@ export interface BoardPlan {
   lang: string;
   /** 画板名，会成为 Figma 里的 Frame 名 */
   name: string;
+  /** 写入 Figma 时用于 Section 分类、标签和稳定命名的展示信息。 */
+  figmaLayout?: {
+    boardName: string;
+    size: string;
+    language: string;
+    languageGroup?: string;
+    languageSection?: string;
+  };
   solution: Solution;
   /** 第一阶段确认的主视觉组件引用。 */
   visualComponent?: AssetRef;
@@ -111,7 +119,13 @@ export interface BoardPlan {
 }
 
 export interface FigmaWriteOptions {
-  fileKey?: string;
+  fileKey: string;
+  /** 目标链接中的节点；插件用它确认自己确实运行在目标文件中。 */
+  targetNodeId: string;
+  /** 一次完整写入任务的稳定标识；同一任务重试时保持不变。 */
+  runId: string;
+  /** 重试同一任务时，先移除该 runId 上一次未完成的输出。 */
+  replaceRun?: boolean;
   /** 已在第一步识别的主视觉组件；写入端必须创建其 Instance，而非复制图层。 */
   visualComponent?: AssetRef;
   /** 上传图片转组件时的边缘过渡：强度 0..3 与过渡到的底色。 */
@@ -119,6 +133,8 @@ export interface FigmaWriteOptions {
   /** 建新页还是写当前页 */
   page: "new" | "current";
   pageName: string;
+  /** Section 名称的项目部分；与用户可编辑的页面名分开。 */
+  sectionName?: string;
   /** 画板怎么排：按尺寸分组 / 按语种分组 / 平铺 */
   arrange: "group" | "lang" | "flat";
 }
@@ -139,7 +155,7 @@ export interface FigmaWriteResult {
  * 这个接口把那条链路整个藏在后面，将来换成 D 方案（自建插件 + 本地桥接）也不影响调用方。
  */
 export interface FigmaWriterPort {
-  write(boards: BoardPlan[], options: FigmaWriteOptions): Promise<FigmaWriteResult>;
+  write(boards: BoardPlan[], options: FigmaWriteOptions, signal?: AbortSignal): Promise<FigmaWriteResult>;
   /** 当前用哪个身份写。界面上要如实告诉用户。 */
   identity(): Promise<{ kind: "user" | "service" | "mock"; label: string }>;
 }
