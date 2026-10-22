@@ -195,7 +195,7 @@ export class LocalPluginFigmaWriter implements FigmaWriterPort {
   readonly sessionId = stableFigmaSessionId();
 
   async identity() {
-    return { kind: "user" as const, label: `延展连接器 · ${this.sessionId}` };
+    return { kind: "user" as const, label: `FUTU 延展平台连接器 · ${this.sessionId}` };
   }
 
   async write(boards: BoardPlan[], options: FigmaWriteOptions, signal?: AbortSignal): Promise<FigmaWriteResult> {

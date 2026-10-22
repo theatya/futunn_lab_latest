@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
  * 让画板预览吃掉容器里能用的最大面积，同时保持真实宽高比。
  * 全屏工作区里预览框会跟着窗口变，不再写死 420px。
  */
-export function useFitBoard(boardW: number, boardH: number, pad = 24) {
+export function useFitBoard(boardW: number, boardH: number, pad = 24, minSize = 80) {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(280);
 
@@ -15,8 +15,8 @@ export function useFitBoard(boardW: number, boardH: number, pad = 24) {
     if (!el || boardW <= 0 || boardH <= 0) return;
 
     const fit = (cw: number, ch: number) => {
-      const availW = Math.max(80, cw - pad);
-      const availH = Math.max(80, ch - pad);
+      const availW = Math.max(minSize, cw - pad);
+      const availH = Math.max(minSize, ch - pad);
       const byWidth = availW;
       const byHeight = availH * (boardW / boardH);
       setWidth(Math.floor(Math.min(byWidth, byHeight)));
@@ -29,7 +29,7 @@ export function useFitBoard(boardW: number, boardH: number, pad = 24) {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [boardW, boardH, pad]);
+  }, [boardW, boardH, minSize, pad]);
 
   return { ref, width };
 }

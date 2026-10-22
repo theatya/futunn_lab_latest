@@ -40,7 +40,7 @@ import { Button, WorkflowSparkle } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { parseFigmaUrl } from "@/lib/figma-link";
 import type { FigmaRecognitionResult } from "@/lib/figma-recognition";
-import { buildLogoSvg } from "@/lib/logo-svg";
+import { buildLogoSvg, logoComponentRef, splashLogoComponentRef } from "@/lib/logo-svg";
 import { useFitBoard } from "@/lib/use-fit-board";
 import { useScene, useStudio } from "@/lib/studio-store";
 import { cn } from "@/lib/utils";
@@ -60,11 +60,6 @@ const BATCH_ASIDE_STORE = "futu:scene-batch-aside-width";
 const BATCH_ASIDE_LIMITS = [360, 640] as const;
 /** 至少容纳两张 200px 卡片和间距；卡片内部再按实际宽度缩放预览。 */
 const BATCH_BOARD_MIN_WIDTH = 440;
-const FIGMA_ARRANGE_OPTIONS = [
-  { id: "group" as const, label: "按尺寸" },
-  { id: "lang" as const, label: "按语言" },
-  { id: "flat" as const, label: "平铺" },
-] as const;
 
 function InstallGuideVisual({ step }: { step: 3 | 4 }) {
   if (step === 3) {
@@ -118,7 +113,7 @@ function InstallGuideVisual({ step }: { step: 3 | 4 }) {
           <div>下载</div>
         </div>
         <div className="flex-1 p-2">
-          <div className="mb-2 text-[#888]">延展连接器 〉</div>
+          <div className="mb-2 text-[#888]">FUTU 延展平台连接器 〉</div>
           <div className="flex items-center gap-2 rounded-[3px] border border-[#696969] bg-[#343434] px-2 py-1.5">
             <span className="grid size-4 place-items-center rounded-[2px] bg-[#575757] font-mono text-[6px] text-white">{`{ }`}</span>
             <span className="font-mono text-[#f1f1f1]">manifest.json</span>
@@ -159,16 +154,42 @@ function uniqueArchivePath(path: string, used: Set<string>) {
 
 const boardSizeLabel = (board: Pick<TargetBoard, "w" | "h">) => `${board.w} × ${board.h}`;
 const SLOT_ITEM_BY_ID = new Map(SIZE_GROUPS.flatMap((group) => group.items.map((item) => [item.id, item] as const)));
-const EXTERNAL_SLOT_IDS = new Set(SIZE_GROUPS.find((group) => group.id === "external")?.items.map((item) => item.id) ?? []);
+const SLOT_CHANNEL_BY_ID = new Map(SIZE_GROUPS.flatMap((group) => group.items.map((item) => [item.id, group.name] as const)));
+const EXTERNAL_GROUP = SIZE_GROUPS.find((group) => group.id === "external");
+const EXTERNAL_SLOT_IDS = new Set(EXTERNAL_GROUP?.items.map((item) => item.id) ?? []);
+const EXTERNAL_SUB_NAME_BY_ID = new Map(EXTERNAL_GROUP?.subs?.map((sub) => [sub.id, sub.name] as const) ?? []);
 const isExternalTarget = (target: Pick<TargetBoard, "sizeId">) => Boolean(target.sizeId && EXTERNAL_SLOT_IDS.has(target.sizeId));
+const boardChannelLabel = (target: Pick<TargetBoard, "sizeId">) => target.sizeId ? SLOT_CHANNEL_BY_ID.get(target.sizeId) ?? "自定义" : "自定义";
+type FigmaLayoutGroup = "landscape" | "square" | "portrait" | "splash";
+const LINKED_MASTER_IDS = new Set(
+  SIZE_GROUPS.flatMap((group) => group.items.flatMap((item) => (item.linked ? [item.linked.master] : []))),
+);
+const boardLayoutGroup = (target: TargetBoard): FigmaLayoutGroup => {
+  if ((target.sizeId && LINKED_MASTER_IDS.has(target.sizeId)) || linkedOf(target)) return "splash";
+  const family = sceneBoardFamily(slotBoardRef(target));
+  if (family === "square") return "square";
+  if (family === "portrait") return "portrait";
+  return "landscape";
+};
 const boardUseLabel = (target: Pick<TargetBoard, "sizeId" | "use">) => {
   const item = target.sizeId ? SLOT_ITEM_BY_ID.get(target.sizeId) : undefined;
   return item ? `${item.use}${item.variant ? ` ${item.variant}` : ""}` : target.use;
 };
+const externalCategoryLabel = (target: Pick<TargetBoard, "sizeId" | "use">) => {
+  if (!isExternalTarget(target)) return null;
+  const item = target.sizeId ? SLOT_ITEM_BY_ID.get(target.sizeId) : undefined;
+  return (item?.sub ? EXTERNAL_SUB_NAME_BY_ID.get(item.sub) : undefined)
+    || item?.use?.trim()
+    || target.use?.trim()
+    || "站外";
+};
+const externalBoardName = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => {
+  const category = externalCategoryLabel(target);
+  return category ? `${category}｜${target.w}*${target.h}` : null;
+};
 const boardDisplayLabel = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => (
-  isExternalTarget(target) || !boardUseLabel(target)
-    ? boardSizeLabel(target)
-    : `${boardSizeLabel(target)} ${boardUseLabel(target)}`
+  (externalCategoryLabel(target) ? `${boardSizeLabel(target)} ${externalCategoryLabel(target)}` : null)
+    ?? (!boardUseLabel(target) ? boardSizeLabel(target) : `${boardSizeLabel(target)} ${boardUseLabel(target)}`)
 );
 const boardFileStem = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => (
   isExternalTarget(target) || !boardUseLabel(target)
@@ -176,10 +197,10 @@ const boardFileStem = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) 
     : `${boardSizeLabel(target)}_${boardUseLabel(target)}`
 );
 const figmaBoardName = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => (
-  boardUseLabel(target)?.trim() || "未命名画板"
+  externalBoardName(target) ?? (boardUseLabel(target)?.trim() || "自定义画幅")
 );
 const figmaFrameName = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">, language: string) => (
-  `${figmaBoardName(target)}｜${boardSizeLabel(target)}｜${language}`
+  externalBoardName(target) ?? `${figmaBoardName(target)}｜${boardSizeLabel(target)}｜${language}`
 );
 
 async function imageDataUrl(src?: string) {
@@ -1325,12 +1346,12 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
 /* 第四步：批量生成并细化                                               */
 /* ------------------------------------------------------------------ */
 
-function Thumb({ scene, version, target, lang, selected, onOpen }: { scene: SceneState; version?: SceneVersion | null; target: TargetBoard; lang: Lang; selected?: boolean; onOpen: () => void }) {
+function Thumb({ scene, version, target, lang, selected, compact = false, onOpen }: { scene: SceneState; version?: SceneVersion | null; target: TargetBoard; lang: Lang; selected?: boolean; compact?: boolean; onOpen: () => void }) {
   const { project } = useStudio();
   const ref = sceneRef(target);
   const resolved = sceneVersionView(sceneLanguageBoardView(scene, lang, ref), version);
-  const fit = useFitBoard(target.w, target.h, 16);
-  const width = Math.min(220, fit.width);
+  const fit = useFitBoard(target.w, target.h, compact ? 8 : 16, compact ? 1 : 80);
+  const width = Math.min(compact ? 100 : 220, fit.width);
   const external = isExternalTarget(target);
   return (
     <button
@@ -1348,8 +1369,83 @@ function Thumb({ scene, version, target, lang, selected, onOpen }: { scene: Scen
       </div>
       <div className="mt-2 flex min-w-0 items-baseline gap-1.5 truncate text-[10px]">
         <span className="shrink-0 font-medium tabular-nums text-[var(--app-text-2)]">{boardSizeLabel(target)}</span>
-        {external ? null : <span className="truncate text-[var(--app-text-3)]">{boardUseLabel(target)}</span>}
+        <span className="truncate text-[var(--app-text-3)]">
+          {external ? externalCategoryLabel(target) : boardUseLabel(target)}
+        </span>
       </div>
+    </button>
+  );
+}
+
+function LinkedThumb({
+  scene,
+  version,
+  target,
+  master,
+  lang,
+  kvUrl,
+  logoUrl,
+  onOpen,
+}: {
+  scene: SceneState;
+  version?: SceneVersion | null;
+  target: TargetBoard;
+  master: TargetBoard;
+  lang: Lang;
+  kvUrl?: string;
+  logoUrl: string;
+  onOpen: () => void;
+}) {
+  const link = linkedOf(target);
+  const fit = useFitBoard(target.w, target.h, 8, 1);
+  if (!link) return null;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={`细化 ${boardDisplayLabel(target)}，跟随闪屏母版`}
+      title={`${boardDisplayLabel(target)} · 跟随闪屏母版`}
+      className="flex min-w-0 flex-col items-center overflow-hidden rounded-[5px] border border-transparent bg-[var(--app-surface-2)] p-2 outline-none transition-colors hover:bg-[var(--app-surface-3)] focus-visible:bg-[var(--app-surface-3)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--app-text-2)]"
+    >
+      <div ref={fit.ref} aria-hidden="true" className="grid h-[136px] w-full min-w-0 place-items-center overflow-hidden rounded-[4px] bg-[#111317]">
+        <SceneLinkedPreview
+          scene={sceneVersionView(sceneLanguageBoardView(scene, lang, sceneRef(master)), version)}
+          master={sceneRef(master)}
+          board={sceneRef(target)}
+          linked={link.linked}
+          lang={lang}
+          kvUrl={kvUrl}
+          logoUrl={logoUrl}
+          width={Math.min(100, fit.width)}
+        />
+      </div>
+      <span className="mt-1.5 flex w-full min-w-0 items-baseline justify-center gap-1 truncate text-[10px]">
+        <span className="shrink-0 font-medium tabular-nums text-[var(--app-text-2)]">{boardSizeLabel(target)}</span>
+        <span className="truncate text-[var(--app-text-3)]">{boardUseLabel(target)}</span>
+      </span>
+      <span className="mt-0.5 w-full truncate text-center text-[9px] text-[var(--app-text-4)]">跟随闪屏母版</span>
+    </button>
+  );
+}
+
+function NativeThumb({ board, target, skin, onOpen }: { board: NativeBoard; target: TargetBoard; skin: string; onOpen: () => void }) {
+  const fit = useFitBoard(board.w, board.h, 16);
+  return (
+    <button
+      type="button"
+      aria-label={`返回配置 ${boardDisplayLabel(target)} ${skin}`}
+      title="回第三步修改仿原生"
+      onClick={onOpen}
+      className="min-w-0 overflow-hidden rounded-[5px] border border-transparent bg-[var(--app-surface-2)] p-2 text-left outline-none transition-colors hover:bg-[var(--app-surface-3)] focus-visible:bg-[var(--app-surface-3)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--app-text-2)]"
+    >
+      <div ref={fit.ref} aria-hidden="true" className="grid h-[136px] w-full min-w-0 place-items-center overflow-hidden rounded-[4px] bg-[#111317]">
+        <NativeBanner board={board} width={Math.min(220, fit.width)} />
+      </div>
+      <div className="mt-2 flex min-w-0 items-baseline gap-1.5 truncate text-[10px]">
+        <span className="shrink-0 font-medium tabular-nums text-[var(--app-text-2)]">{boardSizeLabel(target)}</span>
+        <span className="truncate text-[var(--app-text-3)]">{boardUseLabel(target) ?? "仿原生"}</span>
+      </div>
+      <div className="mt-0.5 truncate text-[9px] text-[var(--app-text-4)]">{skin}</div>
     </button>
   );
 }
@@ -1371,7 +1467,6 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     return parsed.ok && parsed.nodeId ? projectTargetFigmaUrl.trim() : null;
   });
   const [targetLinkAttempted, setTargetLinkAttempted] = useState(false);
-  const [arrange, setArrange] = useState<"group" | "lang" | "flat">("group");
   const [busy, setBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportProgress, setExportProgress] = useState("");
@@ -1383,10 +1478,12 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
   const [writeProgress, setWriteProgress] = useState<{ completed: number; total: number } | null>(null);
   const [bridgeLabel, setBridgeLabel] = useState("");
   const [pairingCopied, setPairingCopied] = useState(false);
-  const [pluginConnection, setPluginConnection] = useState<{ connected: boolean; compatible: boolean | null; version?: string }>({
+  const [pluginConnection, setPluginConnection] = useState<{ connected: boolean; compatible: boolean | null; fileKey?: string }>({
     connected: false,
     compatible: null,
   });
+  const [furthestConnectionStage, setFurthestConnectionStage] = useState<1 | 2 | 3>(1);
+  const [viewedConnectionStage, setViewedConnectionStage] = useState<1 | 2 | 3>(1);
   const [installGuideOpen, setInstallGuideOpen] = useState(false);
   const [asideWidth, setAsideWidth] = useState(400);
   const asideDrag = useRef<{ x: number; width: number } | null>(null);
@@ -1401,17 +1498,15 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     const keys = new Set<string>();
     const visualLink = kv?.figmaUrl ? parseFigmaUrl(kv.figmaUrl) : null;
     if (visualLink?.ok) keys.add(visualLink.fileKey);
-    for (const element of scene.elements) {
-      if (element.role === "module" && element.module?.fileKey) keys.add(element.module.fileKey);
-    }
-    for (const modules of Object.values(scene.languageModules ?? {})) {
-      for (const module of Object.values(modules)) if (module.fileKey) keys.add(module.fileKey);
-    }
-    for (const item of scene.versions ?? []) {
-      for (const module of Object.values(item.modules ?? {})) if (module.fileKey) keys.add(module.fileKey);
+    for (const target of project.targets) {
+      if (nativeOf(target)) continue;
+      const activeScene = sceneVersionView(sceneLanguageBoardView(scene, lang, sceneRef(target)), version);
+      for (const element of activeScene.elements) {
+        if (element.visible && element.role === "module" && element.module?.fileKey) keys.add(element.module.fileKey);
+      }
     }
     return keys;
-  }, [kv?.figmaUrl, scene.elements, scene.languageModules, scene.versions]);
+  }, [kv?.figmaUrl, lang, project.targets, scene, version]);
   const targetMatchesSources = !targetLink.ok
     || !sourceFileKeys.size
     || (sourceFileKeys.size === 1 && sourceFileKeys.has(targetLink.fileKey));
@@ -1429,7 +1524,13 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
         ? "需与主视觉和自定义元素所在的 Figma 文件一致"
         : "";
   const pairingCode = bridgeLabel.includes("·") ? bridgeLabel.split("·").at(-1)?.trim() ?? "" : bridgeLabel.trim();
-  const connectionStage = done ? 4 : writeStarted || pluginConnection.connected ? 3 : pairingCode ? 2 : 1;
+  const targetFileValidated = pluginConnection.connected
+    && pluginConnection.compatible !== false
+    && targetLinkRecognized
+    && targetLink.ok
+    && Boolean(targetLink.nodeId)
+    && pluginConnection.fileKey === targetLink.fileKey;
+  const connectionStage = !pluginConnection.connected ? 1 : targetFileValidated ? (done ? 4 : 3) : 2;
   const visualReady = scene.visualMode === "figma"
     ? kv?.source === "figma" && Boolean(kv.figmaUrl)
     : kv?.source === "upload" && Boolean(kv.previewUrl?.startsWith("data:"));
@@ -1457,13 +1558,13 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
         const payload = await response.json() as {
           connected?: boolean;
           compatible?: boolean | null;
-          plugin?: { version?: string } | null;
+          plugin?: { fileKey?: string } | null;
         };
         if (!active) return;
         setPluginConnection({
           connected: response.ok && Boolean(payload.connected),
           compatible: response.ok ? payload.compatible ?? null : null,
-          ...(payload.plugin?.version ? { version: payload.plugin.version } : {}),
+          ...(payload.plugin?.fileKey ? { fileKey: payload.plugin.fileKey } : {}),
         });
       } catch {
         if (active) setPluginConnection({ connected: false, compatible: null });
@@ -1478,6 +1579,16 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       window.clearInterval(timer);
     };
   }, [pairingCode]);
+
+  useEffect(() => {
+    const visibleStage = Math.min(connectionStage, 3) as 1 | 2 | 3;
+    if (visibleStage > furthestConnectionStage) {
+      setFurthestConnectionStage(visibleStage);
+      setViewedConnectionStage(visibleStage);
+    } else if (furthestConnectionStage < 3) {
+      setViewedConnectionStage(visibleStage);
+    }
+  }, [connectionStage, furthestConnectionStage]);
 
   useEffect(() => () => writeAbortRef.current?.abort(), []);
 
@@ -1513,6 +1624,9 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     const parsed = parseFigmaUrl(projectTargetFigmaUrl);
     setRecognizedTargetFigmaUrl(parsed.ok && parsed.nodeId ? projectTargetFigmaUrl.trim() : null);
     setTargetLinkAttempted(false);
+    setFurthestConnectionStage(1);
+    setViewedConnectionStage(1);
+    setInstallGuideOpen(false);
   }, [project.id]);
 
   const asideLayoutMax = () => {
@@ -1537,15 +1651,19 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     };
   }, [openKey]);
 
-  const outputLangs = useMemo(
-    () => project.content.langs.filter((id) => !scene.hiddenLanguages?.includes(id)),
-    [project.content.langs, scene.hiddenLanguages],
+  const activeOutputLabel = version?.name ?? langName(lang);
+  const activeOutputHidden = version ? Boolean(version.hidden) : Boolean(scene.hiddenLanguages?.includes(lang));
+  const writeActionLabel = version ? `写入${activeOutputLabel}` : `写入${activeOutputLabel}版`;
+  /** 批量页只输出左侧当前选中的基础语言或自定义版本，预览、图片导出和 Figma 写入共用同一范围。 */
+  const outputs = useMemo<Array<{ id: string; lang: Lang; label: string; version?: SceneVersion }>>(
+    () => activeOutputHidden ? [] : [{
+      id: version?.id ?? lang,
+      lang,
+      label: activeOutputLabel,
+      ...(version ? { version } : {}),
+    }],
+    [activeOutputHidden, activeOutputLabel, lang, version],
   );
-  /** 每个语种和自定义版本各出一套；自定义版本用版本 id 作为 plan.lang，便于区分与重试。 */
-  const outputs = useMemo<Array<{ id: string; lang: Lang; label: string; version?: SceneVersion }>>(() => [
-    ...outputLangs.map((id) => ({ id: id as string, lang: id, label: langName(id) })),
-    ...(scene.versions ?? []).filter((item) => !item.hidden).map((item) => ({ id: item.id, lang: item.lang, label: item.name, version: item })),
-  ], [outputLangs, scene]);
   const boardTargets = useMemo(() => project.targets.filter((target) => !nativeOf(target)), [project.targets]);
   const nativeTargets = useMemo(() => project.targets.filter((target) => nativeOf(target)), [project.targets]);
   const linkedTargets = useMemo(() => boardTargets.filter((target) => linkedOf(target)), [boardTargets]);
@@ -1564,6 +1682,8 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
         language: `${output.label} · ${skin.name}`,
         languageGroup: output.id,
         languageSection: output.label,
+        channel: boardChannelLabel(target),
+        layoutGroup: boardLayoutGroup(target),
       },
       solution: sceneSolution(sceneRef(target)),
       backgroundColor: board.background,
@@ -1582,6 +1702,8 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     const ref = sceneRef(masterTarget ?? target);
     const languageScene = sceneLanguageBoardView(scene, output.lang, ref);
     const board = buildSceneBoard(sceneVersionView(languageScene, output.version), ref, output.lang);
+    const hasLogo = board.layers.some((layer) => layer.role === "logo");
+    const logoComponent = hasLogo ? logoComponentRef(board.logoPreset) : undefined;
     const name = figmaFrameName(target, output.label);
     const figmaLayout = {
       boardName: figmaBoardName(target),
@@ -1589,6 +1711,8 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       language: output.label,
       languageGroup: output.id,
       languageSection: output.label,
+      channel: boardChannelLabel(target),
+      layoutGroup: boardLayoutGroup(target),
     };
     if (link && masterTarget) {
       const place = linkedPlacement(link.linked, target, masterTarget);
@@ -1600,7 +1724,14 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
         solution: sceneSolution(sceneRef(target)),
         backgroundColor: "#FFFFFF",
         scene: board,
-        linked: { masterKey: masterTarget.key, scale: place.scale, x: place.x, bar: link.linked.bar, logo: link.linked.logo },
+        linked: {
+          masterKey: masterTarget.key,
+          scale: place.scale,
+          x: place.x,
+          bar: link.linked.bar,
+          logo: link.linked.logo,
+          logoComponent: splashLogoComponentRef(board.logoPreset),
+        },
       };
     }
     return {
@@ -1611,7 +1742,7 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       solution: sceneSolution(ref),
       backgroundColor: scene.background,
       scene: board,
-      ...(board.layers.some((layer) => layer.role === "logo") ? { logo: presetLogo(board.logoPreset) } : {}),
+      ...(hasLogo ? { logo: presetLogo(board.logoPreset), ...(logoComponent ? { logoComponent } : {}) } : {}),
     };
   })), [boardTargets, linkedTargets, outputs, project.name, project.targets, scene.background]);
   const plans = useMemo(() => [...boardPlans, ...nativePlans], [boardPlans, nativePlans]);
@@ -1625,7 +1756,8 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       const all = boardTargets.filter((target) => groupOf(target) === group.id);
       if (!all.length) return [];
       const sorted = group.id === "custom" ? all : [...all].sort((a, b) => indexOf(a) - indexOf(b));
-      const items = sorted.filter((target) => !linkedOf(target));
+      const splash = sorted.filter((target) => boardLayoutGroup(target) === "splash");
+      const items = sorted.filter((target) => !linkedOf(target) && boardLayoutGroup(target) !== "splash");
       /** 站外 / 自定义按画幅族分小段，和第三步的分组对应。 */
       const parts = group.id === "external" || group.id === "custom"
         ? OUTSIDE_SEGMENTS.flatMap(({ id, label }) => {
@@ -1633,7 +1765,7 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
           return list.length ? [{ id, label, items: list }] : [];
         })
         : [{ id: group.id, label: "", items }];
-      return [{ id: group.id, name: group.name, count: all.length, parts, linked: sorted.filter((target) => linkedOf(target)) }];
+      return [{ id: group.id, name: group.name, count: all.length, parts, splash }];
     });
   }, [boardTargets]);
   const needsVisual = boardPlans.length > 0;
@@ -1653,6 +1785,12 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     setWriteProgress(null);
   };
 
+  const resetConnectionReview = () => {
+    const availableStage = pluginConnection.connected ? 2 : 1;
+    setFurthestConnectionStage(availableStage);
+    setViewedConnectionStage(availableStage);
+  };
+
   const recognizeTargetLink = () => {
     resetWriteStatus();
     setError(null);
@@ -1668,6 +1806,7 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     setTargetFigmaUrl("");
     setRecognizedTargetFigmaUrl(null);
     setTargetLinkAttempted(false);
+    resetConnectionReview();
     resetWriteStatus();
     setError(null);
   };
@@ -1710,6 +1849,18 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       setError("第一阶段仅支持写入主视觉和自定义元素所在的同一个 Figma 文件");
       return;
     }
+    if (!pluginConnection.connected) {
+      setError("请先连接 FUTU 延展平台连接器");
+      return;
+    }
+    if (pluginConnection.compatible === false) {
+      setError("插件版本不匹配，请更新 FUTU 延展平台连接器");
+      return;
+    }
+    if (!targetFileValidated) {
+      setError("请在 Figma 中打开目标文件，完成文件校验后再写入");
+      return;
+    }
     if (page === "new" && !pageName.trim()) {
       setError("请填写新建页面的名称");
       return;
@@ -1745,7 +1896,6 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
         page,
         pageName: pageName.trim() || project.name,
         sectionName: project.name,
-        arrange,
         ...(kv && regular.length ? { visualComponent: kv } : {}),
         ...(scene.visualMode === "upload" ? { uploadFeather: { level: scene.feather, color: scene.background } } : {}),
       }, controller.signal);
@@ -1849,14 +1999,15 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
         }
       }
       for (const target of nativeTargets) {
-        for (const outputLang of outputLangs) {
+        for (const [outputIndex, output] of outputs.entries()) {
+          const folder = `${String(outputIndex + 1).padStart(2, "0")}-${safeFileName(output.label)}`;
           for (const skin of NATIVE_SKINS) {
-            const board = buildNativeBoard(native, skin.id, outputLang, measure);
+            const board = buildNativeBoard(native, skin.id, output.lang, measure);
             await capture(
               <NativeBanner board={board} width={target.w} />,
               target.w,
               target.h,
-              `${safeFileName(langName(outputLang))}/${safeFileName(boardFileStem(target))}_${skin.name}.png`,
+              `${folder}/${safeFileName(boardFileStem(target))}_${skin.name}.png`,
             );
           }
         }
@@ -1894,23 +2045,22 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       <Button size="lg" disabled={busy || exportBusy} onClick={onBack}>上一步</Button>
       <Button
         size="lg"
-        aria-label="导出图片"
+        aria-label={`导出${activeOutputLabel}版本图片`}
         icon={exportBusy ? undefined : <Download size={14} />}
         disabled={busy || exportBusy || !plans.length || (needsVisual && !visualReady)}
         onClick={() => void exportImages()}
       >
-        {exportBusy ? <><Loader2 size={14} className="animate-spin" />{exportProgress || "正在导出…"}</> : needsVisual && !visualReady ? "请先准备主视觉" : "导出图片"}
+        {exportBusy ? <><Loader2 size={14} className="animate-spin" />{exportProgress || "正在导出…"}</> : activeOutputHidden ? "当前版本已隐藏" : needsVisual && !visualReady ? "请先准备主视觉" : "导出图片"}
       </Button>
       <Button
         variant={busy ? "secondary" : "workflow"}
         size="lg"
-        aria-label={busy ? "取消并回滚本次写入" : "写入 Figma"}
         icon={busy ? <X size={14} /> : <WorkflowSparkle />}
         className="min-w-[124px]"
-        disabled={!busy && (exportBusy || !plans.length || !writeSettingsReady || !pluginConnection.connected || pluginConnection.compatible === false || (needsVisual && !visualReady))}
+        disabled={!busy && (exportBusy || !plans.length || !writeSettingsReady || !targetFileValidated || pluginConnection.compatible === false || (needsVisual && !visualReady))}
         onClick={busy ? cancelWrite : () => void run()}
       >
-        {busy ? "取消写入" : needsVisual && !visualReady ? "请先准备主视觉" : !pluginConnection.connected ? "请先连接插件" : pluginConnection.compatible === false ? "请更新插件" : "写入 Figma"}
+        {busy ? "取消写入" : activeOutputHidden ? "当前版本已隐藏" : needsVisual && !visualReady ? "请先准备主视觉" : !pluginConnection.connected ? "请先连接插件" : pluginConnection.compatible === false ? "请更新插件" : !targetFileValidated ? "请打开目标文件" : writeActionLabel}
       </Button>
     </div>
   );
@@ -1967,44 +2117,51 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
                 <span className="text-[10px] font-medium text-[var(--app-text-2)]">{channel.name}</span>
                 <span className="text-[9px] tabular-nums text-[var(--app-text-4)]">{channel.count}</span>
               </div>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-1.5">
-                {channel.parts.flatMap((part) => part.items).map((target) => (
-                  <Thumb key={target.key} scene={scene} version={version} target={target} lang={lang} onOpen={() => setOpenKey(target.key)} />
-                ))}
+              <div className="grid gap-1.5">
+                {(["landscape", "square", "portrait"] as const).map((layoutGroup) => {
+                  const targets = channel.parts
+                    .flatMap((part) => part.items)
+                    .filter((target) => boardLayoutGroup(target) === layoutGroup);
+                  return targets.length ? (
+                    <div key={layoutGroup} className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-1.5">
+                      {targets.map((target) => (
+                        <Thumb key={target.key} scene={scene} version={version} target={target} lang={lang} onOpen={() => setOpenKey(target.key)} />
+                      ))}
+                    </div>
+                  ) : null;
+                })}
               </div>
-              {channel.linked.length ? (
-              <div className={cn("grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-1.5", channel.parts.some((part) => part.items.length) && "mt-1.5")}>
-                {channel.linked.map((target) => {
-                  const link = linkedOf(target)!;
+              {channel.splash.length ? (
+              <div className={cn("grid grid-cols-9 gap-1.5", channel.parts.some((part) => part.items.length) && "mt-1.5")}>
+                {channel.splash.map((target) => {
+                  const link = linkedOf(target);
+                  if (!link) {
+                    return (
+                      <Thumb
+                        key={target.key}
+                        scene={scene}
+                        version={version}
+                        target={target}
+                        lang={lang}
+                        compact
+                        onOpen={() => setOpenKey(target.key)}
+                      />
+                    );
+                  }
                   const master = masterOf(target);
                   if (!master) return null;
                   return (
-                    <button
+                    <LinkedThumb
                       key={target.key}
-                      type="button"
-                      onClick={() => setOpenKey(master.key)}
-                      aria-label={`细化 ${boardDisplayLabel(target)}，跟随闪屏母版`}
-                      title={`${boardDisplayLabel(target)} · 跟随闪屏母版`}
-                      className="flex flex-col items-center rounded-[5px] border border-transparent bg-[var(--app-surface-2)] p-2 outline-none transition-colors hover:bg-[var(--app-surface-3)] focus-visible:bg-[var(--app-surface-3)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--app-text-2)]"
-                    >
-                      <div aria-hidden="true" className="grid w-full place-items-center">
-                        <SceneLinkedPreview
-                          scene={sceneVersionView(sceneLanguageBoardView(scene, lang, sceneRef(master)), version)}
-                          master={sceneRef(master)}
-                          board={sceneRef(target)}
-                          linked={link.linked}
-                          lang={lang}
-                          kvUrl={kv?.previewUrl}
-                          logoUrl={splashLogoOf(scene.logoPreset).url}
-                          width={Math.min(110, Math.round((160 * target.w) / target.h))}
-                        />
-                      </div>
-                      <span className="mt-1.5 flex w-full min-w-0 items-baseline justify-center gap-1 truncate text-[10px]">
-                        <span className="shrink-0 font-medium tabular-nums text-[var(--app-text-2)]">{boardSizeLabel(target)}</span>
-                        <span className="truncate text-[var(--app-text-3)]">{boardUseLabel(target)}</span>
-                      </span>
-                      <span className="mt-0.5 w-full truncate text-center text-[9px] text-[var(--app-text-4)]">跟随闪屏母版</span>
-                    </button>
+                      scene={scene}
+                      version={version}
+                      target={target}
+                      master={master}
+                      lang={lang}
+                      kvUrl={kv?.previewUrl}
+                      logoUrl={splashLogoOf(scene.logoPreset).url}
+                      onOpen={() => setOpenKey(master.key)}
+                    />
                   );
                 })}
               </div>
@@ -2018,21 +2175,10 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
                 <span className="text-[9px] tabular-nums text-[var(--app-text-4)]">{nativeTargets.length}</span>
               </div>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-1.5">
-                {nativePlans.filter((plan) => plan.lang === lang).map((plan) => {
+                {nativePlans.map((plan) => {
                   const target = nativeTargets.find((item) => plan.key.startsWith(`${item.key}·`)) ?? nativeTargets[0]!;
                   const skin = NATIVE_SKINS.find((item) => plan.key.endsWith(item.id))?.name ?? "默认";
-                  return (
-                    <button key={plan.key} type="button" aria-label={`返回配置 ${boardDisplayLabel(target)} ${skin}`} title="回第三步修改仿原生" onClick={onBack} className="min-w-0 rounded-[5px] border border-transparent bg-[var(--app-surface-2)] p-2 text-left outline-none transition-colors hover:bg-[var(--app-surface-3)] focus-visible:bg-[var(--app-surface-3)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--app-text-2)]">
-                      <div aria-hidden="true" className="grid h-[136px] place-items-center rounded-[4px] bg-[#111317]">
-                        <NativeBanner board={plan.native!} width={200} />
-                      </div>
-                      <div className="mt-2 flex min-w-0 items-baseline gap-1.5 truncate text-[10px]">
-                        <span className="shrink-0 font-medium tabular-nums text-[var(--app-text-2)]">{boardSizeLabel(target)}</span>
-                        <span className="truncate text-[var(--app-text-3)]">{boardUseLabel(target) ?? "仿原生"}</span>
-                      </div>
-                      <div className="mt-0.5 truncate text-[9px] text-[var(--app-text-4)]">{skin}</div>
-                    </button>
-                  );
+                  return <NativeThumb key={plan.key} board={plan.native!} target={target} skin={skin} onOpen={onBack} />;
                 })}
               </div>
             </div>
@@ -2094,6 +2240,7 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
                         setTargetFigmaUrl(event.target.value);
                         setTargetLinkAttempted(false);
                         setError(null);
+                        resetConnectionReview();
                         resetWriteStatus();
                       }}
                       onKeyDown={(event) => {
@@ -2171,110 +2318,111 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
                 ) : null}
               </div>
               <div className="flex items-center justify-between gap-3">
-                <div className="shrink-0 text-[10px] text-[var(--app-text-3)]">排列方式</div>
-                <Segmented
-                  value={arrange}
-                  disabled={busy}
-                  onChange={(value) => {
-                    setArrange(value);
-                    setError(null);
-                    resetWriteStatus();
-                  }}
-                  options={FIGMA_ARRANGE_OPTIONS}
-                />
+                <div className="shrink-0 text-[10px] text-[var(--app-text-3)]">输出版本</div>
+                <div className="rounded-[4px] bg-[var(--app-surface-2)] px-2.5 py-1 text-[10px] font-medium text-[var(--app-text-2)]">
+                  {activeOutputLabel}{activeOutputHidden ? " · 已隐藏" : ""}
+                </div>
               </div>
               <div className="rounded-[5px] border border-[var(--app-line)] p-2.5">
                 <div className="grid grid-cols-3 gap-1">
-                  {[
+                  {([
                     { id: 1, label: "检测插件" },
                     { id: 2, label: "连接插件" },
                     { id: 3, label: "校验文件" },
-                  ].map((step) => {
-                    const completed = connectionStage > step.id;
-                    const current = connectionStage === step.id;
+                  ] as const).map((step) => {
+                    const available = step.id <= furthestConnectionStage;
+                    const completed = step.id === 3
+                      ? furthestConnectionStage >= 3
+                      : furthestConnectionStage > step.id;
+                    const selected = viewedConnectionStage === step.id;
                     return (
-                      <div key={step.id} className={cn("border-t-2 pt-1.5", completed ? "border-[var(--color-down)]" : current ? "border-[var(--color-warn)]" : "border-[var(--app-line)]")}>
-                        <div className={cn("flex items-center gap-1 text-[10px]", current ? "text-[var(--app-text)]" : "text-[var(--app-text-3)]")}>
+                      <button
+                        key={step.id}
+                        type="button"
+                        disabled={!available}
+                        aria-current={selected ? "step" : undefined}
+                        aria-label={`${available ? "查看" : "尚未进入"}第 ${step.id} 步：${step.label}`}
+                        onClick={() => setViewedConnectionStage(step.id)}
+                        className={cn(
+                          "border-t-2 pt-1.5 text-left disabled:cursor-default",
+                          completed ? "border-[var(--color-down)]" : selected ? "border-[var(--color-warn)]" : "border-[var(--app-line)]",
+                        )}
+                      >
+                        <div className={cn("flex items-center gap-1 text-[10px]", selected ? "text-[var(--app-text)]" : "text-[var(--app-text-3)]")}>
                           {completed ? (
-                            <CheckCircle2 size={10} className="shrink-0 text-[var(--color-down)]" />
-                          ) : current ? (
+                            <span className="size-1.5 shrink-0 rounded-full bg-[var(--color-down)]" />
+                          ) : selected ? (
                             <span className="size-1.5 shrink-0 rounded-full bg-[var(--color-warn)]" />
                           ) : (
                             <span className="size-1.5 shrink-0 rounded-full border border-[var(--app-text-4)]" />
                           )}
                           <span>{step.id}. {step.label}</span>
                         </div>
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
 
                 <div className="mt-3 rounded-[4px] bg-[var(--app-surface-2)] p-2.5">
-                  {connectionStage === 1 ? (
-                    <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-2)]">
-                      <Loader2 size={12} className="animate-spin text-[var(--color-warn)]" />
-                      正在检测插件
-                    </div>
-                  ) : connectionStage === 2 ? (
+                  {viewedConnectionStage === 1 ? (
                     <>
-                      <div className="text-[10px] font-medium">在「延展连接器（ExtendLink）」中输入 5 位连接码</div>
-                      <div className="mt-2 flex items-center justify-between gap-2 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2.5 py-2">
-                        <code className="min-w-0 select-all truncate font-mono text-[16px] font-semibold tracking-[0.2em] text-[var(--app-text)]">{pairingCode}</code>
-                        <button
-                          type="button"
-                          aria-label="复制 Figma 插件连接码"
-                          title="复制连接码"
-                          onClick={() => void copyPairingCode()}
-                          className="grid size-6 shrink-0 place-items-center rounded-[3px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]"
-                        >
-                          {pairingCopied ? <CheckCircle2 size={12} className="text-[var(--color-down)]" /> : <Copy size={12} />}
-                        </button>
-                      </div>
-                      <button
-                        type="button"
-                        aria-expanded={installGuideOpen}
-                        onClick={() => setInstallGuideOpen((open) => !open)}
-                        className={cn(GHOST, "mt-1.5 flex items-center gap-1")}
-                      >
-                        安装方法
-                        <ChevronDown size={11} className={cn("transition-transform", installGuideOpen && "rotate-180")} />
-                      </button>
+                      <div className="text-[10px] text-[var(--app-text-2)]">在「FUTU 延展平台连接器」中输入下方连接码</div>
+                      {pairingCode ? (
+                        <>
+                          <div className="mt-2.5 flex items-center justify-between gap-2 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2.5 py-2">
+                            <code className="min-w-0 select-all truncate font-mono text-[16px] font-semibold tracking-[0.2em] text-[var(--app-text)]">{pairingCode}</code>
+                            <button
+                              type="button"
+                              aria-label={pairingCopied ? "Figma 插件连接码已复制" : "复制 Figma 插件连接码"}
+                              title={pairingCopied ? "已复制" : "复制连接码"}
+                              onClick={() => void copyPairingCode()}
+                              className="grid size-6 shrink-0 place-items-center rounded-[3px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)]"
+                            >
+                              {pairingCopied ? <CheckCircle2 size={12} className="text-[var(--color-down)]" /> : <Copy size={12} />}
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            aria-expanded={installGuideOpen}
+                            onClick={() => setInstallGuideOpen((open) => !open)}
+                            className={cn(GHOST, "mt-1.5 flex items-center gap-1")}
+                          >
+                            安装方法
+                            <ChevronDown size={11} className={cn("transition-transform", installGuideOpen && "rotate-180")} />
+                          </button>
+                        </>
+                      ) : null}
                     </>
-                  ) : connectionStage === 3 ? (
-                    <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-2)]">
-                      {writeError ? (
-                        <span className="size-1.5 rounded-full bg-[var(--color-up)]" />
-                      ) : writeStarted ? (
-                        <Loader2 size={12} className="animate-spin text-[var(--color-warn)]" />
-                      ) : (
-                        <CheckCircle2 size={12} className="text-[var(--color-down)]" />
-                      )}
-                      {writeError
-                        ? "文件校验或写入未完成"
-                        : writeStarted
-                          ? writeProgress?.completed
-                            ? "正在写入 Figma"
-                            : "正在校验并准备写入"
-                          : pluginConnection.compatible === false
-                            ? "插件版本不匹配，请安装最新版"
-                            : `插件已连接${pluginConnection.version ? ` · v${pluginConnection.version}` : ""}`}
+                  ) : viewedConnectionStage === 2 ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-[11px] font-semibold text-[var(--app-text)]">
+                        <CheckCircle2 size={20} className="text-[var(--color-down)]" />
+                        插件已连接
+                      </div>
+                      {pluginConnection.compatible === false ? (
+                        <div className="text-[9px] text-[var(--color-up)]">插件版本不匹配，请安装最新版</div>
+                      ) : furthestConnectionStage === 2 && !targetFileValidated ? (
+                        <div className="text-[9px] text-[var(--app-text-3)]">
+                          {targetLinkRecognized ? "请在 Figma 中打开目标文件" : "请先识别上方目标文件链接"}
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-2)]">
-                      <CheckCircle2 size={12} className="text-[var(--color-down)]" />
-                      文件校验已完成
+                    <div className="flex items-center gap-2 text-[11px] font-semibold text-[var(--app-text)]">
+                      <CheckCircle2 size={20} className="text-[var(--color-down)]" />
+                      目标文件已校验
                     </div>
                   )}
                 </div>
 
-                {installGuideOpen ? (
+                {viewedConnectionStage === 1 && installGuideOpen ? (
                   <div className="mt-2 space-y-1.5 border-t border-[var(--app-line-soft)] pt-2 text-[9px] text-[var(--app-text-3)]">
                     {[
                       "安装并打开 Figma 桌面版（已安装可跳过）",
-                      "下载「延展连接器（ExtendLink）」插件包并解压",
+                      "下载「FUTU 延展平台连接器」插件包并解压",
                       "Figma 桌面版：插件 → 开发 → 从清单导入插件",
                       "选择插件包中的 manifest.json",
-                      "打开「延展连接器（ExtendLink）」并输入上方 5 位连接码",
+                      "打开「FUTU 延展平台连接器」并输入上方 5 位连接码",
                     ].map((item, index) => (
                       <div key={item} className="flex items-start gap-2">
                         <span className="grid size-4 shrink-0 place-items-center rounded-full bg-[var(--app-surface-2)] text-[8px] text-[var(--app-text-2)]">{index + 1}</span>
@@ -2292,32 +2440,21 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
 
           {error ? <p role="alert" className="text-[11px] leading-relaxed text-[var(--color-up)]">{error}</p> : null}
 
-          <div role="status" aria-live="polite" className="rounded-[5px] border border-[var(--app-line)] p-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-[10px] font-semibold">任务进度</div>
-              <div className={cn("text-[10px]", done?.ok ? "text-[var(--color-down)]" : done?.failures.length || writeError ? "text-[var(--color-up)]" : busy ? "text-[var(--color-warn)]" : "text-[var(--app-text-3)]")}>
-                {done
-                  ? (done.ok ? "已完成" : "部分失败")
-                  : writeError
-                    ? "需要处理"
-                    : busy
-                      ? writeProgress?.completed ? `写入 ${writeProgress.completed}/${writeProgress.total}` : "等待插件"
-                      : writeCancelled ? "已取消" : pluginConnection.connected ? "插件已连接" : "等待连接"}
-              </div>
-            </div>
+          <div role="status" aria-live="polite">
+            <div className="text-[11px] font-semibold">任务进度</div>
 
             <div className="mt-2.5">
               {busy ? (
                 <>
                   <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-2)]">
-                    <Loader2 size={11} className="animate-spin text-[var(--color-warn)]" />
+                    <Loader2 size={11} className="animate-spin text-[var(--app-text-4)]" />
                     {writeProgress?.completed
                       ? `正在写入 ${writeProgress.completed} / ${writeProgress.total} 块画板`
-                      : `已提交 ${plans.length} 块画板，等待插件处理`}
+                      : `已提交${activeOutputLabel}版本 ${plans.length} 块画板，等待插件处理`}
                   </div>
                   <div className="mt-2 h-1 overflow-hidden rounded-full bg-[var(--app-surface-3)]">
                     <div
-                      className={cn("h-full rounded-full bg-[var(--color-brand)] opacity-60", writeProgress?.completed ? "transition-[width] duration-200" : "w-full animate-pulse")}
+                      className={cn("h-full rounded-full bg-[var(--app-text-4)] opacity-70", writeProgress?.completed ? "transition-[width] duration-200" : "w-full animate-pulse")}
                       style={writeProgress?.completed ? { width: `${Math.max(4, (writeProgress.completed / writeProgress.total) * 100)}%` } : undefined}
                     />
                   </div>
@@ -2339,7 +2476,7 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
                 </>
               ) : writeError ? (
                 <div className="flex items-start justify-between gap-2">
-                  <p role="alert" className="min-w-0 flex-1 text-[9px] leading-4 text-[var(--color-up)]">{writeError}</p>
+                  <p className="min-w-0 flex-1 text-[9px] leading-4 text-[var(--color-up)]">{writeError}</p>
                   <button type="button" disabled={busy} onClick={() => void run(undefined, true)} className={cn(GHOST, "shrink-0")}>重试</button>
                 </div>
               ) : writeCancelled ? (
@@ -2349,8 +2486,12 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
                 </div>
               ) : (
                 <div className="flex items-center gap-2 text-[10px] text-[var(--app-text-3)]">
-                  <span className={cn("size-1.5 rounded-full", pluginConnection.connected ? "bg-[var(--color-down)]" : "bg-[var(--color-warn)]")} />
-                  {pluginConnection.connected ? "插件已连接，可以开始写入" : "等待连接插件"}
+                  <span className={cn("size-1.5 rounded-full", pluginConnection.compatible === false ? "bg-[var(--color-up)]" : pluginConnection.connected ? "bg-[var(--color-down)]" : "bg-[var(--color-warn)]")} />
+                  {activeOutputHidden
+                    ? "当前版本已隐藏，不参与输出"
+                    : pluginConnection.compatible === false
+                      ? "插件版本不匹配，请更新插件"
+                      : pluginConnection.connected ? `等待写入${activeOutputLabel}版本` : "等待连接插件"}
                 </div>
               )}
             </div>

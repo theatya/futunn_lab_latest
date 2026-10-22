@@ -5,8 +5,13 @@ import "./fonts.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "素材延展平台",
+  title: "FUTU 延展平台",
+  applicationName: "FUTU 延展平台",
   description: "识别 Figma 母版、批量延展资源位与修改文案",
+  icons: {
+    icon: "/brand/platform-icon-circle.png?v=1",
+    apple: "/brand/platform-icon-circle.png?v=1",
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

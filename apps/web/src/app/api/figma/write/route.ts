@@ -23,15 +23,16 @@ type WriteJob = {
 
 type PluginSession = {
   sessionId: string;
-  name: "ExtendLink";
+  name: "FUTU 延展平台连接器";
   version: string;
   fileKey?: string;
   seenAt: number;
 };
 
 const JOB_DIR = join(tmpdir(), "futu-figma-write-jobs");
-const PLUGIN_VERSION = "1.0.0";
-const SESSION_TTL = 60_000;
+const PLUGIN_NAME = "FUTU 延展平台连接器" as const;
+const PLUGIN_VERSION = "1.1.2";
+const SESSION_TTL = 8_000;
 const CLAIM_TTL = 90_000;
 const jobLocks = new Map<string, Promise<void>>();
 const CORS_HEADERS = {
@@ -163,7 +164,7 @@ export async function GET(request: Request) {
         job.claimedAt = Date.now();
         job.activityAt = job.claimedAt;
         await saveJob(job);
-        await saveSession({ sessionId: job.sessionId, name: "ExtendLink", version, fileKey, seenAt: Date.now() });
+        await saveSession({ sessionId: job.sessionId, name: PLUGIN_NAME, version, fileKey, seenAt: Date.now() });
       } else if (job.status === "claimed" && Date.now() - (job.claimedAt ?? 0) > CLAIM_TTL) {
         job.status = "failed";
         job.error = "连接器写入中断，请确认插件保持开启后重试";
@@ -189,7 +190,7 @@ export async function GET(request: Request) {
   if (isPlugin) {
     await saveSession({
       sessionId,
-      name: "ExtendLink",
+      name: PLUGIN_NAME,
       version: pluginVersion,
       ...(pluginFileKey ? { fileKey: pluginFileKey } : {}),
       seenAt: Date.now(),
@@ -276,7 +277,7 @@ export async function POST(request: Request) {
     }
     const pluginSession = await loadSession(body.sessionId);
     if (!pluginSession || Date.now() - pluginSession.seenAt > SESSION_TTL) {
-      return json({ error: "延展连接器尚未连接，请先在插件中输入连接码" }, { status: 409 });
+      return json({ error: "FUTU 延展平台连接器尚未连接，请先在插件中输入连接码" }, { status: 409 });
     }
     if (pluginSession.version !== PLUGIN_VERSION) {
       return json({ error: "连接器版本不匹配，请重新安装最新版" }, { status: 409 });

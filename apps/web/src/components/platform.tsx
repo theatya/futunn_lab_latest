@@ -7,18 +7,18 @@ import {
   ChevronDown,
   Copy,
   FileText,
-  History,
+  Grid2X2,
   Home,
   Info,
   KeyRound,
   Layers3,
   Link2,
+  List,
   Loader2,
   MoreHorizontal,
   Pencil,
   Pipette,
   Plus,
-  Settings,
   Sparkles,
   Trash2,
   UserRound,
@@ -422,26 +422,6 @@ function PlatformInner() {
     setMode("copy");
   };
 
-  const openExtend = () => {
-    const active = tasks.find((task) => task.id === activeTaskId && task.type === "extend")
-      ?? tasks.find((task) => task.type === "extend");
-    if (active) openTask(active);
-    else {
-      setTaskName("");
-      setNamingType("extend");
-    }
-  };
-
-  const openCopy = () => {
-    const active = tasks.find((task) => task.id === activeTaskId && task.type === "copy")
-      ?? tasks.find((task) => task.type === "copy");
-    if (active) openTask(active);
-    else {
-      setTaskName("");
-      setNamingType("copy");
-    }
-  };
-
   const requestNewTask = (type: TaskType) => {
     setTaskName("");
     setEditingTaskId(null);
@@ -544,8 +524,8 @@ function PlatformInner() {
           onDuplicateTask={duplicateTask}
           onDeleteTask={deleteTask}
           onHome={goHome}
-          onExtend={openExtend}
-          onCopy={openCopy}
+          onExtend={() => requestNewTask("extend")}
+          onCopy={() => requestNewTask("copy")}
         />
         <main className="min-w-0 flex-1 bg-[var(--app-workspace-page)]">
           {mode === "home" ? (
@@ -572,7 +552,7 @@ function PlatformInner() {
           ) : null}
           {mode === "copy" ? (
             <Workspace
-              title={activeTask?.name ?? "批量修改文案"}
+              title={activeTask?.name ?? "批量修改"}
               steps={COPY_STEPS}
               step={copyStep}
               onStep={setCopyStep}
@@ -628,7 +608,7 @@ function TaskNamingDialog({
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  const label = type === "extend" ? "延展项目" : "批量改文案任务";
+  const label = type === "extend" ? "延展项目" : "批量修改项目";
   return (
     <div className="absolute inset-0 z-[90] grid place-items-center bg-black/65 p-6">
       <section role="dialog" aria-modal="true" aria-label={`命名${label}`} className="w-full max-w-[420px] rounded-[8px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] shadow-[0_24px_80px_rgb(0_0_0/0.55)]">
@@ -661,7 +641,6 @@ function TaskNamingDialog({
 }
 
 function Topbar() {
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiOpen, setApiOpen] = useState(false);
   const [figmaConfigured, setFigmaConfigured] = useState(false);
 
@@ -670,35 +649,19 @@ function Topbar() {
   }, []);
 
   return (
-    <header className="h-12 border-b border-[var(--app-line)] bg-[var(--app-rail)] px-4 flex items-center">
-      <div className="relative flex items-center gap-2.5 min-w-0">
+    <header className="h-12 border-b border-[var(--app-line)] bg-[var(--app-rail)] px-3 flex items-center">
+      <div className="relative flex min-w-0 items-center gap-1">
         <img
-          src="/brand/platform-logo.svg"
-          width={24}
-          height={24}
-          alt="富途牛牛"
-          className="size-6 rounded-full"
+          src="/brand/platform-icon-transparent.png?v=1"
+          width={20}
+          height={20}
+          alt=""
+          className="size-5 object-contain"
         />
-        <span className="text-[14px] font-semibold text-[var(--app-text)]">素材延展平台</span>
-        <button
-          type="button"
-          aria-label="打开平台设置"
-          aria-expanded={settingsOpen}
-          onClick={() => setSettingsOpen((value) => !value)}
-          className="grid size-6 place-items-center rounded-[4px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]"
-        >
-          <ChevronDown size={14} className={cn("transition-transform duration-[var(--dur-fast)]", settingsOpen && "rotate-180")} />
-        </button>
-        {settingsOpen ? (
-          <div className="absolute left-0 top-[calc(100%+9px)] z-50 w-[216px] rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1.5 shadow-[var(--glass-shadow)]">
-            <div className="px-2.5 py-2 text-[10px] font-medium text-[var(--app-text-4)]">工作区设置</div>
-            <SettingsItem icon={<Sparkles size={13} />} label="界面偏好" detail="深色 · 标准密度" />
-            <div className="mx-1.5 my-1 h-px bg-[var(--app-line)]" />
-            <button className="w-full rounded-[4px] px-2.5 py-2 text-left text-[11px] text-[var(--app-text-2)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]">
-              查看帮助与使用说明
-            </button>
-          </div>
-        ) : null}
+        <div className="flex shrink-0 items-center gap-1 whitespace-nowrap" aria-label="FUTU 延展平台">
+          <img src="/brand/futu-wordmark.svg" width={54} height={14} alt="FUTU" className="h-[14px] w-auto" />
+          <span className="-translate-y-px text-[15px] font-semibold leading-[15px] text-[var(--app-text)]">延展平台</span>
+        </div>
       </div>
       <div className="flex-1" />
       <button className="top-action">
@@ -768,20 +731,8 @@ function ApiConfigDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (
   );
 }
 
-function SettingsItem({ icon, label, detail }: { icon: React.ReactNode; label: string; detail: string }) {
-  return (
-    <button className="grid w-full grid-cols-[18px_1fr_auto] items-center gap-1.5 rounded-[4px] px-2.5 py-2 text-left hover:bg-[var(--app-surface-2)]">
-      <span className="grid place-items-center text-[var(--app-text-3)]">{icon}</span>
-      <span className="text-[11px] text-[var(--app-text)]">{label}</span>
-      <span className="text-[10px] text-[var(--app-text-4)]">{detail}</span>
-    </button>
-  );
-}
-
-function taskMeta(task: WorkspaceTask) {
-  if (task.type === "copy") return `批量改文案 · 第 ${(task.copyStep ?? 0) + 1} 步`;
-  const languages = task.studio?.project.content.langs.length ?? 0;
-  return `${languages} 语言 · 第 ${(task.studio?.step ?? 0) + 1} 步`;
+function taskTypeLabel(type: TaskType) {
+  return type === "extend" ? "延展项目" : "批量修改";
 }
 
 function taskTime(value: string) {
@@ -877,18 +828,19 @@ function Sidebar({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
   const compact = width < 120;
+  const openTaskMenuOutside = width < 156;
 
   return (
-    <aside ref={asideRef} style={{ width }} className="relative flex shrink-0 flex-col bg-[var(--app-primary-nav)] p-2">
+    <aside ref={asideRef} style={{ width }} className="relative flex shrink-0 flex-col bg-[var(--app-primary-nav)] px-2 pb-2 pt-3.5">
       <nav className="space-y-0.5">
         <NavButton active={mode === "home"} icon={<Home size={14} />} onClick={onHome}>
           首页
         </NavButton>
         <NavButton active={mode === "extend"} icon={<Layers3 size={14} />} onClick={onExtend}>
-          延展项目
+          新建项目
         </NavButton>
         <NavButton active={mode === "copy"} icon={<FileText size={14} />} onClick={onCopy}>
-          批量改文案
+          批量修改
         </NavButton>
       </nav>
 
@@ -897,10 +849,9 @@ function Sidebar({
           type="button"
           aria-expanded={recentOpen}
           onClick={() => setRecentOpen((value) => !value)}
-          className="flex h-7 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-[4px] px-0.5 text-[10px] font-medium text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text-2)]"
+          className="flex h-7 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-[4px] px-0.5 text-[11px] font-medium text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text-2)]"
         >
-          <History size={11} className="shrink-0" />
-          <span className="min-w-0 truncate whitespace-nowrap">最近任务</span>
+          <span className="min-w-0 truncate whitespace-nowrap">最近项目</span>
           <ChevronDown size={11} className={cn("ml-auto shrink-0 transition-transform", compact && "hidden", !recentOpen && "-rotate-90")} />
         </button>
         <button
@@ -914,7 +865,7 @@ function Sidebar({
         {newMenuOpen ? (
           <div ref={newMenuRef} className={cn("absolute left-1 top-9 z-40 rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1 shadow-[var(--glass-shadow)]", compact ? "w-[142px]" : "right-1")}>
             <button onClick={() => { setNewMenuOpen(false); onNewTask("extend"); }} className="w-full rounded-[4px] px-2.5 py-2 text-left text-[10px] hover:bg-[var(--app-surface-2)]">新建延展项目</button>
-            <button onClick={() => { setNewMenuOpen(false); onNewTask("copy"); }} className="w-full rounded-[4px] px-2.5 py-2 text-left text-[10px] hover:bg-[var(--app-surface-2)]">新建批量改文案</button>
+            <button onClick={() => { setNewMenuOpen(false); onNewTask("copy"); }} className="w-full rounded-[4px] px-2.5 py-2 text-left text-[10px] hover:bg-[var(--app-surface-2)]">新建批量修改项目</button>
           </div>
         ) : null}
       </div>
@@ -933,7 +884,7 @@ function Sidebar({
             )}
           >
             <button onClick={() => onOpenTask(item)} className="absolute inset-0 rounded-[6px]" aria-label={`打开 ${item.name}`} />
-            <div className={cn("pointer-events-none relative shrink-0 overflow-hidden rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-3)]", compact ? "size-8" : "size-10")}>
+            <div className={cn("pointer-events-none relative shrink-0 overflow-hidden rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-3)]", compact ? "size-7" : "size-9")}>
               {thumbnail ? (
                 <img src={thumbnail} alt="" className="size-full object-cover" />
               ) : (
@@ -944,20 +895,17 @@ function Sidebar({
             </div>
             <div className="relative min-w-0 flex-1 pointer-events-none">
               <div className={cn("truncate text-[11px] font-medium", !compact && "pr-5")}>{item.name}</div>
-              <div className={cn("mt-0.5 truncate text-[9px] text-[var(--app-text-3)]", compact && "hidden")}>
-                {taskMeta(item)} · {taskTime(item.updatedAt)}
-              </div>
             </div>
             <button
               type="button"
               aria-label={`${item.name} 更多操作`}
               onClick={() => setMenuTaskId((current) => current === item.id ? null : item.id)}
-              className={cn("relative z-10 grid shrink-0 place-items-center rounded-[4px] text-[var(--app-text-3)] opacity-60 hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] hover:opacity-100", compact ? "size-5" : "size-6")}
+              className={cn("absolute right-1 top-1/2 z-10 grid -translate-y-1/2 place-items-center rounded-[4px] text-[var(--app-text-3)] opacity-60 hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] hover:opacity-100", compact ? "size-5" : "size-6")}
             >
               <MoreHorizontal size={compact ? 12 : 14} />
             </button>
             {menuTaskId === item.id ? (
-              <div className={cn("absolute z-50 w-[142px] rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1 shadow-[var(--glass-shadow)]", compact ? "left-full top-0 ml-1" : "right-1 top-10")}>
+              <div className={cn("absolute z-50 w-[142px] rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1 shadow-[var(--glass-shadow)]", openTaskMenuOutside ? "left-full top-0 ml-2" : "right-1 top-10")}>
                 <TaskMenuItem icon={<ArrowRight size={13} />} label="打开项目" onClick={() => { setMenuTaskId(null); onOpenTask(item); }} />
                 <TaskMenuItem icon={<Pencil size={13} />} label="重命名" onClick={() => { setMenuTaskId(null); onRenameTask(item); }} />
                 <TaskMenuItem icon={<Copy size={13} />} label="复制项目" onClick={() => { setMenuTaskId(null); onDuplicateTask(item); }} />
@@ -968,7 +916,7 @@ function Sidebar({
           </div>
           );
         })}
-        {!tasks.length ? <div className="px-2 py-3 text-[9px] text-[var(--app-text-3)]">暂无任务</div> : null}
+        {!tasks.length ? <div className="px-2 py-3 text-[9px] text-[var(--app-text-3)]">暂无项目</div> : null}
       </div> : <div className="flex-1" />}
       <div
         role="separator"
@@ -1081,11 +1029,24 @@ function HomeScreen({
   onExtend: () => void;
   onCopy: () => void;
 }) {
+  const [recentLayout, setRecentLayout] = useState<"list" | "grid">("list");
+  const [recentQuery, setRecentQuery] = useState("");
+  const recentSearchRef = useRef<HTMLInputElement>(null);
+  const recentTasks = useMemo(
+    () => {
+      const query = recentQuery.trim().toLocaleLowerCase();
+      return tasks
+        .filter((task) => !query || task.name.toLocaleLowerCase().includes(query))
+        .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+    },
+    [recentQuery, tasks],
+  );
+
   return (
     <div className="h-full overflow-y-auto px-8 py-7 xl:px-12">
       <div className="mx-auto max-w-[1120px]">
         <div className="flex items-end justify-between">
-          <h1 className="text-[24px] font-semibold tracking-[-0.03em]">选择任务</h1>
+          <h1 className="text-[24px] font-semibold tracking-[-0.03em]">选择项目</h1>
         </div>
 
         <div className="mt-6 grid gap-3 lg:grid-cols-2">
@@ -1096,7 +1057,7 @@ function HomeScreen({
             onClick={onExtend}
           />
           <ModeCard
-            title="批量修改文案"
+            title="批量修改"
             icon={<FileText size={18} />}
             action="开始修改"
             onClick={onCopy}
@@ -1104,25 +1065,114 @@ function HomeScreen({
           />
         </div>
 
-        <div className="mt-10 flex items-center justify-between border-b border-[var(--app-line)] pb-3">
-          <h2 className="text-[13px] font-medium">最近任务</h2>
-          <button className="text-[11px] text-[var(--app-text-3)] hover:text-[var(--app-text)]">查看全部</button>
+        <div className="mt-10 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-line)] pb-3">
+          <h2 className="text-[13px] font-medium">最近项目</h2>
+          <div className="flex shrink-0 items-center gap-2">
+            <div role="group" aria-label="排列方式" className="flex h-7 items-center rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface)] p-0.5">
+              <button
+                type="button"
+                aria-label="列表排列"
+                aria-pressed={recentLayout === "list"}
+                title="列表排列"
+                onClick={() => setRecentLayout("list")}
+                className={cn("grid size-6 place-items-center rounded-[4px]", recentLayout === "list" ? "bg-[var(--app-surface-3)] text-[var(--app-text)]" : "text-[var(--app-text-4)] hover:text-[var(--app-text-2)]")}
+              >
+                <List size={12} />
+              </button>
+              <button
+                type="button"
+                aria-label="网格排列"
+                aria-pressed={recentLayout === "grid"}
+                title="网格排列"
+                onClick={() => setRecentLayout("grid")}
+                className={cn("grid size-6 place-items-center rounded-[4px]", recentLayout === "grid" ? "bg-[var(--app-surface-3)] text-[var(--app-text)]" : "text-[var(--app-text-4)] hover:text-[var(--app-text-2)]")}
+              >
+                <Grid2X2 size={11} />
+              </button>
+            </div>
+            <label className="flex h-7 items-center gap-1.5 text-[9px] text-[var(--app-text-3)]">
+              <span className="shrink-0">筛选</span>
+              <span className="relative block w-[132px]">
+                <input
+                  ref={recentSearchRef}
+                  type="text"
+                  aria-label="搜索最近项目"
+                  value={recentQuery}
+                  onChange={(event) => setRecentQuery(event.target.value)}
+                  placeholder="搜索最近项目"
+                  className="h-7 w-full border-0 border-b border-[var(--app-line-strong)] bg-transparent pl-1 pr-5 text-[10px] text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-4)] focus:border-[var(--app-text-2)]"
+                />
+                {recentQuery ? (
+                  <button
+                    type="button"
+                    aria-label="清除搜索"
+                    onClick={() => {
+                      setRecentQuery("");
+                      requestAnimationFrame(() => recentSearchRef.current?.focus());
+                    }}
+                    className="absolute right-0 top-1/2 grid size-5 -translate-y-1/2 place-items-center rounded-[4px] text-[var(--app-text-4)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text-2)]"
+                  >
+                    <X size={10} />
+                  </button>
+                ) : null}
+              </span>
+            </label>
+          </div>
         </div>
-        <div className="divide-y divide-[var(--app-line-soft)]">
-          {tasks.map((item, index) => (
-            <button key={item.id} onClick={() => onOpenTask(item)} className="w-full grid grid-cols-[1.5fr_1fr_90px] gap-4 py-3 text-left hover:bg-[var(--app-surface-2)] px-2">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="size-9 rounded-[4px] bg-[var(--app-surface-3)] grid place-items-center text-[10px] text-[var(--app-text-3)]">
-                  {String(index + 1).padStart(2, "0")}
-                </div>
-                <span className="truncate text-[12px] font-medium">{item.name}</span>
-              </div>
-              <span className="self-center text-[11px] text-[var(--app-text-3)]">{taskMeta(item)}</span>
-              <span className="self-center text-right text-[10px] text-[var(--app-text-4)]">{taskTime(item.updatedAt)}</span>
-            </button>
-          ))}
-          {!tasks.length ? <div className="py-8 text-center text-[11px] text-[var(--app-text-4)]">暂无任务</div> : null}
-        </div>
+        <span className="sr-only" role="status" aria-live="polite">
+          {recentQuery.trim() ? `找到 ${recentTasks.length} 个匹配项目` : `共 ${recentTasks.length} 个最近项目`}
+        </span>
+        {recentLayout === "list" ? (
+          <div className="divide-y divide-[var(--app-line-soft)]">
+            {recentTasks.map((item) => {
+              const thumbnail = taskThumbnail(item);
+              return (
+                <button key={item.id} onClick={() => onOpenTask(item)} className="grid w-full grid-cols-[minmax(0,1fr)_minmax(72px,110px)_minmax(60px,90px)] gap-3 px-2 py-3 text-left hover:bg-[var(--app-surface-2)]">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-[4px] border border-[var(--app-line)] bg-[var(--app-surface-3)] text-[var(--app-text-3)]">
+                      {thumbnail ? (
+                        <img src={thumbnail} alt="" className="size-full object-cover" />
+                      ) : item.type === "copy" ? (
+                        <FileText size={14} />
+                      ) : (
+                        <Layers3 size={14} />
+                      )}
+                    </div>
+                    <span className="truncate text-[12px] font-medium">{item.name}</span>
+                  </div>
+                  <span className="self-center text-[11px] text-[var(--app-text-3)]">{taskTypeLabel(item.type)}</span>
+                  <span className="self-center text-right text-[10px] text-[var(--app-text-4)]">{taskTime(item.updatedAt)}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-3 py-3">
+            {recentTasks.map((item) => {
+              const thumbnail = taskThumbnail(item);
+              return (
+                <button key={item.id} onClick={() => onOpenTask(item)} className="min-w-0 rounded-[6px] p-2 text-left hover:bg-[var(--app-surface-2)]">
+                  <div className="grid aspect-[4/3] w-full place-items-center overflow-hidden rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-3)] text-[var(--app-text-3)]">
+                    {thumbnail ? (
+                      <img src={thumbnail} alt="" className="size-full object-contain" />
+                    ) : item.type === "copy" ? (
+                      <FileText size={20} />
+                    ) : (
+                      <Layers3 size={20} />
+                    )}
+                  </div>
+                  <div className="mt-2 truncate text-[11px] font-medium">{item.name}</div>
+                  <div className="mt-0.5 truncate text-[9px] text-[var(--app-text-4)]">{taskTypeLabel(item.type)} · {taskTime(item.updatedAt)}</div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {!recentTasks.length ? (
+          <div className="py-8 text-center text-[11px] text-[var(--app-text-3)]">
+            {recentQuery.trim() ? "未找到匹配项目" : "暂无项目"}
+          </div>
+        ) : null}
       </div>
     </div>
   );

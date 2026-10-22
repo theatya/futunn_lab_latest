@@ -128,9 +128,9 @@ export async function generate(
   project: Project,
   writer: FigmaWriterPort,
   options: FigmaWriteOptions,
-  deps: { logger?: LoggerPort; measurer?: TextMeasurer } = {},
+  deps: { logger?: LoggerPort; measurer?: TextMeasurer; plans?: BoardPlan[] } = {},
 ): Promise<GenerateOutcome> {
-  const plans = planBoards(project, deps.measurer);
+  const plans = deps.plans ?? planBoards(project, deps.measurer);
   const issues = preflight(plans);
 
   deps.logger?.log("info", `开始生成 ${plans.length} 块画板`, {

@@ -1,5 +1,5 @@
 {
-  "name": "延展连接器（ExtendLink）",
+  "name": "FUTU 延展平台连接器",
   "id": "futu-banner-platform-bridge-local",
   "api": "1.0.0",
   "main": "code.js",

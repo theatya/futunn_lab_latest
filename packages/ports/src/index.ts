@@ -80,6 +80,10 @@ export interface BoardPlan {
     language: string;
     languageGroup?: string;
     languageSection?: string;
+    /** 写入 Figma 时的大类标签，如站内、官网、站外、线下、仿原生。 */
+    channel?: string;
+    /** 渠道内部的排列分组；闪屏单独一行，其余避免横、方、竖版混排。 */
+    layoutGroup?: "landscape" | "square" | "portrait" | "splash";
   };
   solution: Solution;
   /** 第一阶段确认的主视觉组件引用。 */
@@ -99,6 +103,8 @@ export interface BoardPlan {
   scene?: SceneBoard;
   /** 预设 Logo 的矢量源，写入端用 createNodeFromSvg 还原，不退化成文字。 */
   logoSvg?: string;
+  /** Logo 源组件；同文件按 nodeId 创建实例，发布后可跨文件按 key 导入。 */
+  logoComponent?: { fileKey: string; nodeId: string; key?: string };
   /**
    * 联动画板（如闪屏各设备尺寸）：不独立排版，写入端把同语种母版画板转成组件，
    * 这里放它的实例（按 scale 缩放、x 偏移、贴顶），再铺底部白条与 Logo。
@@ -115,6 +121,7 @@ export interface BoardPlan {
     bar: number;
     logo: { x: number; y: number; w: number; h: number };
     logoSvg?: string;
+    logoComponent?: { fileKey: string; nodeId: string; key?: string };
   };
 }
 
@@ -135,8 +142,6 @@ export interface FigmaWriteOptions {
   pageName: string;
   /** Section 名称的项目部分；与用户可编辑的页面名分开。 */
   sectionName?: string;
-  /** 画板怎么排：按尺寸分组 / 按语种分组 / 平铺 */
-  arrange: "group" | "lang" | "flat";
 }
 
 export interface FigmaWriteResult {

@@ -41,8 +41,9 @@
       padding: 18px 20px 16px;
       border-bottom: 1px solid var(--line);
     }
-    .product { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
-    .product-en { margin-top: 4px; color: var(--text-3); font-size: 11px; }
+    .product-lockup { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .product-icon { width: 32px; height: 32px; flex: 0 0 auto; object-fit: contain; }
+    .product { overflow: hidden; font-size: 16px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
     .header-actions { display: flex; align-items: center; gap: 12px; }
     .version { color: var(--text-3); font-variant-numeric: tabular-nums; }
     .platform-link {
@@ -166,13 +167,13 @@
 <body>
   <main class="shell">
     <header class="header">
-      <div>
-        <div class="product">延展连接器</div>
-        <div class="product-en">ExtendLink</div>
+      <div class="product-lockup">
+        <img class="product-icon" src="data:image/png;base64,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" alt="" />
+        <div class="product">FUTU 延展平台连接器</div>
       </div>
       <div class="header-actions">
-        <button id="open-platform" class="platform-link" type="button" aria-label="在浏览器中打开素材延展平台">打开平台 ↗</button>
-        <div id="version" class="version">1.0.0</div>
+        <button id="open-platform" class="platform-link" type="button" aria-label="在浏览器中打开 FUTU 延展平台">打开平台 ↗</button>
+        <div id="version" class="version">1.1.2</div>
       </div>
     </header>
 
@@ -205,7 +206,6 @@
 
   <script>
     const BASE = "http://localhost:3210";
-    const SAVED_CODE_KEY = "extendlink-pairing-code";
     const POLL_INTERVAL = 2000;
     const RECONNECT_GRACE = 60_000;
     const digits = [...document.querySelectorAll(".digit")];
@@ -226,17 +226,25 @@
     let connected = false;
     let writing = false;
     let fileKey = "";
-    let pluginVersion = "1.0.0";
+    let pluginVersion = "1.1.2";
     let activeJob = null;
     let leaseFailures = 0;
     let cancelRequested = false;
-    let pollInFlight = false;
+    let pollInFlightGeneration = null;
     let terminalReporting = false;
     let rollbackErrorMessage = "";
     let reconnectStartedAt = 0;
+    let connectionGeneration = 0;
+    let userEditedCode = false;
 
     const code = () => digits.map((input) => input.value).join("");
     const validCode = () => /^\d{5}$/.test(code());
+    const savePairingCode = () => parent.postMessage({
+      pluginMessage: { type: "save-pairing-code", code: code() },
+    }, "*");
+    const clearPairingCode = () => parent.postMessage({
+      pluginMessage: { type: "clear-pairing-code" },
+    }, "*");
     const setHidden = (node, hidden) => node.classList.toggle("hidden", hidden);
     const setState = (kind, title, description, footer) => {
       stateMark.className = `state-mark ${kind === "connected" || kind === "success" ? "ok" : kind === "error" ? "error" : kind === "working" || kind === "connecting" ? "spin" : ""}`.trim();
@@ -258,6 +266,7 @@
 
     digits.forEach((input, index) => {
       input.addEventListener("input", () => {
+        userEditedCode = true;
         input.value = input.value.replace(/\D/g, "").slice(-1);
         if (input.value && index < digits.length - 1) digits[index + 1].focus();
         updateEntry();
@@ -269,6 +278,7 @@
       });
       input.addEventListener("paste", (event) => {
         event.preventDefault();
+        userEditedCode = true;
         const pasted = event.clipboardData.getData("text").replace(/\D/g, "");
         distribute(pasted, pasted.length >= 5 ? 0 : index);
       });
@@ -294,12 +304,12 @@
       cancelRequested = false;
       rollbackErrorMessage = "";
       reconnectStartedAt = 0;
-      localStorage.setItem(SAVED_CODE_KEY, code());
+      savePairingCode();
       setState("connected", "平台已连接", "连接后将自动等待写入任务", "已连接 · 等待任务");
       setHidden(form, true);
       setHidden(progress, true);
       setHidden(disconnectButton, false);
-      meta.textContent = "请保持连接器开启，并回到素材延展平台开始写入";
+      meta.textContent = "请保持连接器开启，并回到 FUTU 延展平台开始写入";
       updateEntry();
     }
 
@@ -389,8 +399,9 @@
     }
 
     async function poll() {
-      if (!validCode() || pollInFlight || terminalReporting) return;
-      pollInFlight = true;
+      const generation = connectionGeneration;
+      if (!validCode() || pollInFlightGeneration === generation || terminalReporting) return;
+      pollInFlightGeneration = generation;
       const polledJob = activeJob;
       try {
         if (writing && activeJob) {
@@ -403,6 +414,7 @@
           });
           const response = await fetch(`${BASE}/api/figma/write?${query}`);
           const payload = await response.json();
+          if (generation !== connectionGeneration) return;
           if (terminalReporting || activeJob !== polledJob) return;
           if (!response.ok) {
             const error = new Error(payload.error || "写入任务连接已中断");
@@ -429,6 +441,7 @@
         });
         const response = await fetch(`${BASE}/api/figma/write?${query}`);
         const payload = await response.json();
+        if (generation !== connectionGeneration) return;
         if (!response.ok || payload.compatible === false) {
           const error = new Error(payload.error || "连接器版本不匹配，请重新安装最新版");
           error.permanent = payload.compatible === false
@@ -455,6 +468,7 @@
           showConnected();
         }
       } catch (error) {
+        if (generation !== connectionGeneration) return;
         if (terminalReporting || (polledJob && activeJob !== polledJob)) return;
         if (!error.permanent) {
           if (!reconnectStartedAt) reconnectStartedAt = Date.now();
@@ -479,13 +493,14 @@
         }
         showError(error.message || "连接失败");
       } finally {
-        pollInFlight = false;
+        if (pollInFlightGeneration === generation) pollInFlightGeneration = null;
       }
     }
 
     function startPolling() {
       stopPolling();
       if (!validCode()) return;
+      connectionGeneration += 1;
       connected = false;
       writing = false;
       activeJob = null;
@@ -493,7 +508,7 @@
       cancelRequested = false;
       rollbackErrorMessage = "";
       reconnectStartedAt = 0;
-      localStorage.setItem(SAVED_CODE_KEY, code());
+      savePairingCode();
       setState("connecting", "正在连接平台", "正在校验 5 位连接码", "连接中");
       setHidden(form, true);
       setHidden(disconnectButton, true);
@@ -505,10 +520,12 @@
 
     function disconnect() {
       stopPolling();
+      connectionGeneration += 1;
       connected = false;
       writing = false;
+      activeJob = null;
       reconnectStartedAt = 0;
-      localStorage.removeItem(SAVED_CODE_KEY);
+      clearPairingCode();
       digits.forEach((input) => { input.value = ""; });
       setState("", "等待连接平台", "粘贴或输入平台显示的 5 位连接码", "待连接");
       setHidden(form, false);
@@ -521,7 +538,10 @@
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (validCode()) startPolling();
+      if (validCode()) {
+        userEditedCode = true;
+        startPolling();
+      }
     });
     disconnectButton.addEventListener("click", disconnect);
 
@@ -532,8 +552,8 @@
         fileKey = message.fileKey || "";
         pluginVersion = message.version || pluginVersion;
         version.textContent = pluginVersion;
-        const savedCode = localStorage.getItem(SAVED_CODE_KEY) || "";
-        if (/^\d{5}$/.test(savedCode)) {
+        const savedCode = message.savedCode || "";
+        if (/^\d{5}$/.test(savedCode) && !userEditedCode && !connected && !writing && !timer) {
           distribute(savedCode);
           startPolling();
         }

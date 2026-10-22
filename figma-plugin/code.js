@@ -1,4 +1,6 @@
-const EXTEND_LINK_VERSION = "1.0.0";
+const PLUGIN_VERSION = "1.1.2";
+const PAIRING_CODE_STORAGE_KEY = "futu-extend-platform-pairing-code";
+const LEGACY_PAIRING_CODE_STORAGE_KEY = ["extend", "link-pairing-code"].join("");
 const cancelledClaims = new Set();
 let activeClaim = null;
 let activeRun = null;
@@ -78,13 +80,31 @@ async function cleanupRunArtifacts(runId) {
   }
 }
 
-figma.showUI(__html__, { width: 390, height: 560, title: "延展连接器（ExtendLink）" });
-figma.ui.postMessage({
-  type: "context",
-  version: EXTEND_LINK_VERSION,
-  fileKey: figma.fileKey || "",
-  fileName: figma.root.name,
-});
+figma.showUI(__html__, { width: 390, height: 560, title: "FUTU 延展平台连接器" });
+async function sendPluginContext() {
+  let savedCode = "";
+  try {
+    let stored = await figma.clientStorage.getAsync(PAIRING_CODE_STORAGE_KEY);
+    if (typeof stored !== "string" || !/^\d{5}$/.test(stored)) {
+      stored = await figma.clientStorage.getAsync(LEGACY_PAIRING_CODE_STORAGE_KEY);
+      if (typeof stored === "string" && /^\d{5}$/.test(stored)) {
+        await figma.clientStorage.setAsync(PAIRING_CODE_STORAGE_KEY, stored);
+        await figma.clientStorage.deleteAsync(LEGACY_PAIRING_CODE_STORAGE_KEY);
+      }
+    }
+    if (typeof stored === "string" && /^\d{5}$/.test(stored)) savedCode = stored;
+  } catch {
+    // 存储读取失败不应阻止用户手动连接。
+  }
+  figma.ui.postMessage({
+    type: "context",
+    version: PLUGIN_VERSION,
+    fileKey: figma.fileKey || "",
+    fileName: figma.root.name,
+    savedCode,
+  });
+}
+void sendPluginContext();
 
 function at(rect, board) {
   return {
@@ -228,7 +248,7 @@ async function addText(frame, text, rect, size, weight, color) {
   frame.appendChild(node);
 }
 
-async function appendAsset(frame, asset, rect, fallbackLabel) {
+async function appendAsset(frame, asset, rect, fallbackLabel, allowTextFallback = true) {
   if (!rect || !asset) return;
   const box = at(rect, { w: frame.width, h: frame.height });
   try {
@@ -240,6 +260,9 @@ async function appendAsset(frame, asset, rect, fallbackLabel) {
     instance.y = box.y + (box.h - instance.height) / 2;
     frame.appendChild(instance);
   } catch {
+    if (!allowTextFallback) {
+      throw new Error(`Logo「${fallbackLabel || asset.name}」无法读取，请回平台重新选择。`);
+    }
     await addText(frame, fallbackLabel || asset.name, rect, Math.max(10, box.h * 0.45), "bold", "#ffffff");
   }
 }
@@ -253,6 +276,71 @@ async function sourceComponent(componentId) {
     if (mainComponent) return mainComponent;
   }
   throw new Error("主视觉链接不再指向 Component 或 Instance，请回平台重新识别。");
+}
+
+async function resolveLogoComponent(ref, asset) {
+  if (ref?.fileKey === figma.fileKey && ref.nodeId) {
+    try {
+      return await sourceComponent(ref.nodeId);
+    } catch {
+      // 源文件内组件被删除或改型时，继续尝试组件 Key / SVG。
+    }
+  }
+  if (ref?.key) {
+    try {
+      return await figma.importComponentByKeyAsync(ref.key);
+    } catch {
+      // 未发布或当前账号没有库权限时，稳定回退到 SVG。
+    }
+  }
+  if (asset?.source === "figma" && asset.id) {
+    try {
+      return await sourceComponent(asset.id);
+    } catch {
+      // 用户识别的 Logo 组件失效时，仍可使用随任务传入的 SVG。
+    }
+  }
+  return null;
+}
+
+function cleanSvgNode(svg, name) {
+  const raw = protectCreatedNode(figma.createNodeFromSvg(svg));
+  raw.name = name;
+  if (!raw.children.length || !raw.parent) return raw;
+  try {
+    const parent = raw.parent;
+    const index = parent.children.indexOf(raw);
+    const vector = protectCreatedNode(figma.flatten([...raw.children], parent, index));
+    vector.name = name;
+    raw.remove();
+    return vector;
+  } catch {
+    let index = 1;
+    const pending = [...raw.children];
+    while (pending.length) {
+      const node = pending.shift();
+      node.name = node.type === "VECTOR" ? `矢量 ${index}` : `Logo 图形 ${index}`;
+      index += 1;
+      if ("children" in node) pending.push(...node.children);
+    }
+    return raw;
+  }
+}
+
+async function createLogoNode({ componentRef, svg, asset, name, box }) {
+  const component = await resolveLogoComponent(componentRef, asset);
+  const node = component
+    ? protectCreatedNode(component.createInstance())
+    : svg
+      ? cleanSvgNode(svg, name)
+      : null;
+  if (!node) throw new Error(`Logo「${name}」缺少可用的组件或 SVG，请回平台重新选择。`);
+  node.name = name;
+  const scale = Math.min(box.w / node.width, box.h / node.height);
+  node.rescale(scale);
+  node.x = Math.round(box.x + (box.w - node.width) / 2);
+  node.y = Math.round(box.y + (box.h - node.height) / 2);
+  return node;
 }
 
 async function cloneCustomElement(source) {
@@ -297,7 +385,7 @@ async function writeResolvedRecipe(frame, plan, component) {
   }
 
   const logoLayer = layer("logo");
-  if (logoLayer && plan.logo) await appendAsset(frame, plan.logo, logoLayer.bounds, logoLayer.name || "Logo");
+  if (logoLayer && plan.logo) await appendAsset(frame, plan.logo, logoLayer.bounds, logoLayer.name || "Logo", false);
 
   const groupLayer = layer("titleGroup");
   const titleLayer = layer("title");
@@ -677,17 +765,14 @@ async function writeScene(frame, plan, component) {
       continue;
     }
     if (layer.role === "logo") {
-      if (plan.logoSvg) {
-        const logo = protectCreatedNode(figma.createNodeFromSvg(plan.logoSvg));
-        logo.name = plan.logo ? plan.logo.name : "Logo";
-        logo.rescale(layer.box.h / logo.height);
-        logo.x = Math.round(layer.box.x);
-        logo.y = Math.round(layer.box.y);
-        frame.appendChild(logo);
-      } else {
-        const rect = { x: layer.box.x / scene.board.w, y: layer.box.y / scene.board.h, w: layer.box.w / scene.board.w, h: layer.box.h / scene.board.h };
-        await appendAsset(frame, plan.logo, rect, "Logo");
-      }
+      const logo = await createLogoNode({
+        componentRef: plan.logoComponent,
+        svg: plan.logoSvg,
+        asset: plan.logo,
+        name: plan.logo ? plan.logo.name : "Logo",
+        box: layer.box,
+      });
+      frame.appendChild(logo);
       continue;
     }
     if (layer.role === "module" && layer.module) {
@@ -899,6 +984,29 @@ function planSize(plan) {
   return { width, height, label: plan.figmaLayout?.size || `${width} × ${height}` };
 }
 
+const OUTPUT_CHANNEL_ORDER = ["站内", "官网", "站外", "线下", "仿原生", "自定义"];
+const OUTPUT_LAYOUT_ORDER = ["landscape", "square", "portrait", "splash"];
+
+function planLayoutGroup(plan) {
+  const configured = plan.figmaLayout?.layoutGroup;
+  if (OUTPUT_LAYOUT_ORDER.includes(configured)) return configured;
+  if (plan.linked) return "splash";
+  const size = planSize(plan);
+  const ratio = size.width / size.height;
+  if (ratio > 1.18) return "landscape";
+  if (ratio < 0.82) return "portrait";
+  return "square";
+}
+
+function planChannelCategory(plan) {
+  const layout = plan.figmaLayout || {};
+  const channel = OUTPUT_CHANNEL_ORDER.includes(layout.channel) ? layout.channel : "自定义";
+  return {
+    key: channel,
+    label: channel,
+  };
+}
+
 function groupedBy(items, keyOf, labelOf = keyOf) {
   const groups = new Map();
   for (const item of items) {
@@ -909,43 +1017,63 @@ function groupedBy(items, keyOf, labelOf = keyOf) {
   return [...groups.values()];
 }
 
-async function createCategoryLabel(section, name, x, y) {
-  await figma.loadFontAsync({ family: "Inter", style: "Bold" });
+async function loadCategoryLabelFont() {
+  const candidates = [
+    { family: "Microsoft YaHei", style: "Bold" },
+    { family: "Noto Sans CJK SC", style: "Bold" },
+    { family: "PingFang SC", style: "Semibold" },
+    { family: "Inter", style: "Bold" },
+  ];
+  for (const font of candidates) {
+    try {
+      await figma.loadFontAsync(font);
+      return font;
+    } catch {
+      // 尝试下一种覆盖中英日文字形的本机字体。
+    }
+  }
+  throw new Error("缺少分类标签字体，请安装 Microsoft YaHei、Noto Sans CJK 或 Inter。");
+}
+
+async function createCategoryLabel(section, name, x, y, width) {
+  const fontName = await loadCategoryLabelFont();
   const label = protectCreatedNode(figma.createFrame());
-  label.name = `分类标签｜${name}`;
+  label.name = name;
   label.layoutMode = "HORIZONTAL";
-  label.primaryAxisSizingMode = "AUTO";
-  label.counterAxisSizingMode = "AUTO";
+  label.primaryAxisSizingMode = "FIXED";
+  label.counterAxisSizingMode = "FIXED";
   label.primaryAxisAlignItems = "CENTER";
   label.counterAxisAlignItems = "CENTER";
-  label.paddingLeft = 28;
-  label.paddingRight = 28;
-  label.paddingTop = 12;
-  label.paddingBottom = 12;
+  label.paddingLeft = 0;
+  label.paddingRight = 0;
+  label.paddingTop = 0;
+  label.paddingBottom = 0;
   label.fills = [solidPaint("#000000")];
   label.clipsContent = false;
   const text = protectCreatedNode(figma.createText());
-  text.name = name;
-  text.fontName = { family: "Inter", style: "Bold" };
-  text.fontSize = 32;
+  text.name = "标签文案";
+  text.fontName = fontName;
+  text.fontSize = 120;
   text.fills = [solidPaint("#FFFFFF")];
   text.characters = name;
   label.appendChild(text);
+  label.resize(Math.max(1200, width), 295);
   section.appendChild(label);
   label.x = x;
   label.y = y;
   return label;
 }
 
-async function createOutputSection(page, name, categories, startX, writeMarker, flat = false) {
-  const PADDING = 140;
-  const LABEL_TO_FRAMES = 36;
-  const FRAME_GAP = 100;
-  const FRAME_ROW_GAP = 100;
-  const CATEGORY_COLUMN_GAP = 180;
-  const CATEGORY_ROW_GAP = 220;
-  const TARGET_CONTENT_WIDTH = 6400;
-  const FLAT_CONTENT_WIDTH = 6200;
+async function createOutputSection(page, name, categories, startX, writeMarker) {
+  const PADDING = 160;
+  const LABEL_HEIGHT = 295;
+  const LABEL_TO_FRAMES = 96;
+  const FRAME_GAP = 120;
+  const FRAME_ROW_GAP = 140;
+  const LAYOUT_GROUP_GAP = 220;
+  const CATEGORY_ROW_GAP = 280;
+  const DEFAULT_FRAMES_PER_ROW = 6;
+  const SPLASH_FRAMES_PER_ROW = 9;
   const section = protectCreatedNode(figma.createSection());
   section.setPluginData("futuWriteJob", writeMarker);
   section.name = name;
@@ -954,58 +1082,58 @@ async function createOutputSection(page, name, categories, startX, writeMarker, 
   try {
     const layouts = [];
     for (const category of categories) {
-      const label = await createCategoryLabel(section, category.label, 0, 0);
-      const sizes = category.items.map((plan) => planSize(plan));
-      const widest = Math.max(...sizes.map((size) => size.width), 1);
-      const internalColumns = flat ? Number.MAX_SAFE_INTEGER : widest <= 600 ? 3 : widest <= 1400 ? 2 : 1;
-      const contentWidth = flat
-        ? FLAT_CONTENT_WIDTH
-        : Math.max(1200, Math.min(category.items.length, internalColumns) * widest + Math.max(0, Math.min(category.items.length, internalColumns) - 1) * FRAME_GAP);
       const slots = new Map();
-      let x = 0;
-      let y = label.height + LABEL_TO_FRAMES;
-      let rowHeight = 0;
-      let maxRight = 0;
-      for (const [index, plan] of category.items.entries()) {
-        const size = sizes[index];
-        if (x > 0 && x + size.width > contentWidth) {
-          x = 0;
-          y += rowHeight + FRAME_ROW_GAP;
-          rowHeight = 0;
+      let y = LABEL_HEIGHT + LABEL_TO_FRAMES;
+      let contentWidth = 0;
+      const layoutGroups = OUTPUT_LAYOUT_ORDER
+        .map((layoutGroup) => ({
+          layoutGroup,
+          items: category.items.filter((plan) => planLayoutGroup(plan) === layoutGroup),
+        }))
+        .filter((group) => group.items.length);
+      for (let groupIndex = 0; groupIndex < layoutGroups.length; groupIndex += 1) {
+        const group = layoutGroups[groupIndex];
+        const rowLimit = group.layoutGroup === "splash" ? SPLASH_FRAMES_PER_ROW : DEFAULT_FRAMES_PER_ROW;
+        for (let rowStart = 0; rowStart < group.items.length; rowStart += rowLimit) {
+          const rowEnd = Math.min(group.items.length, rowStart + rowLimit);
+          let x = 0;
+          let rowHeight = 0;
+          for (let index = rowStart; index < rowEnd; index += 1) {
+            const plan = group.items[index];
+            const size = planSize(plan);
+            slots.set(plan, { x, y });
+            x += size.width;
+            if (index < rowEnd - 1) x += FRAME_GAP;
+            rowHeight = Math.max(rowHeight, size.height);
+          }
+          contentWidth = Math.max(contentWidth, x);
+          y += rowHeight;
+          if (rowEnd < group.items.length) y += FRAME_ROW_GAP;
         }
-        slots.set(plan, { x, y });
-        maxRight = Math.max(maxRight, x + size.width);
-        x += size.width + FRAME_GAP;
-        rowHeight = Math.max(rowHeight, size.height);
+        if (groupIndex < layoutGroups.length - 1) y += LAYOUT_GROUP_GAP;
       }
+      contentWidth = Math.max(1200, contentWidth);
+      const label = await createCategoryLabel(section, category.label, 0, 0, contentWidth);
       layouts.push({
         label,
         slots,
-        width: Math.max(label.width, maxRight, contentWidth),
-        height: y + rowHeight,
+        width: contentWidth,
+        height: y,
       });
     }
 
-    const widestCategory = Math.max(...layouts.map((layout) => layout.width), 1);
-    const categoryColumns = flat
-      ? 1
-      : Math.max(2, Math.min(4, Math.floor((TARGET_CONTENT_WIDTH + CATEGORY_COLUMN_GAP) / (widestCategory + CATEGORY_COLUMN_GAP))));
     const placements = new Map();
-    let y = 126;
+    let y = PADDING;
     let maxRight = PADDING;
-    for (let start = 0; start < layouts.length; start += categoryColumns) {
-      const row = layouts.slice(start, start + categoryColumns);
-      const rowHeight = Math.max(...row.map((layout) => layout.height), 0);
-      row.forEach((layout, column) => {
-        const x = PADDING + column * (widestCategory + CATEGORY_COLUMN_GAP);
-        layout.label.x = x;
-        layout.label.y = y;
-        for (const [plan, slot] of layout.slots) {
-          placements.set(plan, { section, x: x + slot.x, y: y + slot.y });
-        }
-        maxRight = Math.max(maxRight, x + layout.width);
-      });
-      y += rowHeight + CATEGORY_ROW_GAP;
+    for (const layout of layouts) {
+      const x = PADDING;
+      layout.label.x = x;
+      layout.label.y = y;
+      for (const [plan, slot] of layout.slots) {
+        placements.set(plan, { section, x: x + slot.x, y: y + slot.y });
+      }
+      maxRight = Math.max(maxRight, x + layout.width);
+      y += layout.height + CATEGORY_ROW_GAP;
     }
 
     const width = Math.max(1600, maxRight + PADDING);
@@ -1023,45 +1151,20 @@ async function createOutputSection(page, name, categories, startX, writeMarker, 
 
 async function prepareOutputSections(page, plans, options, writeMarker, startX) {
   const projectName = options.sectionName || options.pageName || "素材延展";
-  let definitions;
-  if (options.arrange === "lang") {
-    definitions = groupedBy(
-      plans,
-      (plan) => plan.figmaLayout?.languageGroup || plan.lang,
-      (plan) => plan.figmaLayout?.languageSection || plan.figmaLayout?.language || plan.lang,
-    ).map((group) => ({
-      name: `${projectName}｜${group.label}`,
-      categories: groupedBy(group.items, (plan) => planSize(plan).label),
-    }));
-  } else if (options.arrange === "flat") {
-    definitions = [{
-      name: `${projectName}｜平铺`,
-      categories: [{ label: "全部版式", items: plans }],
-      flat: true,
-    }];
-  } else {
-    definitions = [{
-      name: `${projectName}｜按尺寸`,
-      categories: groupedBy(plans, (plan) => planSize(plan).label),
-    }];
-  }
-
-  const sections = [];
-  const placements = new Map();
-  let x = startX;
-  try {
-    for (const definition of definitions) {
-      const prepared = await createOutputSection(page, definition.name, definition.categories, x, writeMarker, definition.flat);
-      const section = prepared.section;
-      sections.push(section);
-      for (const [plan, placement] of prepared.placements) placements.set(plan, placement);
-      x += section.width + 400;
-    }
-    return { sections, placements };
-  } catch (error) {
-    for (const section of sections) if (section.parent) section.remove();
-    throw error;
-  }
+  const language = plans[0]?.figmaLayout?.languageSection || plans[0]?.figmaLayout?.language || plans[0]?.lang || "当前版本";
+  const categories = groupedBy(
+    plans,
+    (plan) => planChannelCategory(plan).key,
+    (plan) => planChannelCategory(plan).label,
+  ).sort((a, b) => {
+    const indexOf = (label) => {
+      const index = OUTPUT_CHANNEL_ORDER.indexOf(label);
+      return index < 0 ? OUTPUT_CHANNEL_ORDER.length : index;
+    };
+    return indexOf(a.label) - indexOf(b.label);
+  });
+  const prepared = await createOutputSection(page, `${projectName}｜${language}`, categories, startX, writeMarker);
+  return { sections: [prepared.section], placements: prepared.placements };
 }
 
 async function write(job) {
@@ -1139,12 +1242,14 @@ async function write(job) {
     bar.y = h - plan.linked.bar;
     bar.fills = [solidPaint("#FFFFFF")];
     frame.appendChild(bar);
-    if (plan.linked.logoSvg) {
-      const logo = protectCreatedNode(figma.createNodeFromSvg(plan.linked.logoSvg));
-      logo.name = "闪屏底部logo";
-      logo.rescale(plan.linked.logo.w / logo.width);
-      logo.x = plan.linked.logo.x;
-      logo.y = plan.linked.logo.y;
+    if (plan.linked.logoSvg || plan.linked.logoComponent) {
+      const logo = await createLogoNode({
+        componentRef: plan.linked.logoComponent,
+        svg: plan.linked.logoSvg,
+        asset: plan.logo,
+        name: "闪屏底部 Logo",
+        box: plan.linked.logo,
+      });
       frame.appendChild(logo);
     }
   };
@@ -1194,7 +1299,7 @@ async function write(job) {
           instance.y = box.y + (box.h - instance.height) / 2;
           frame.appendChild(instance);
         }
-        await appendAsset(frame, plan.logo, plan.solution.logo, plan.logo?.name || "Logo");
+        await appendAsset(frame, plan.logo, plan.solution.logo, plan.logo?.name || "Logo", false);
         await addText(frame, plan.solution.titleLines.join("\n"), plan.solution.title, plan.solution.titlePx, "bold", "#ffffff");
         await addText(frame, plan.subLabel || "", plan.solution.sub, plan.solution.subPx, "regular", "#ffffff");
         if (plan.solution.cta) {
@@ -1263,6 +1368,15 @@ async function write(job) {
 }
 
 figma.ui.onmessage = async (message) => {
+  if (message.type === "save-pairing-code" && /^\d{5}$/.test(message.code || "")) {
+    await figma.clientStorage.setAsync(PAIRING_CODE_STORAGE_KEY, message.code);
+    return;
+  }
+  if (message.type === "clear-pairing-code") {
+    await figma.clientStorage.deleteAsync(PAIRING_CODE_STORAGE_KEY);
+    await figma.clientStorage.deleteAsync(LEGACY_PAIRING_CODE_STORAGE_KEY);
+    return;
+  }
   if (message.type === "open-platform") {
     figma.openExternal("http://localhost:3210");
     return;
