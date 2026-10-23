@@ -510,12 +510,58 @@ function validateResolvedFrame(frame, plan) {
   }
 }
 
-const FEATHER_RATIO = [0, 0.08, 0.14, 0.2];
+const FEATHER_RATIO = [0, 0.14, 0.26, 0.44];
+const FEATHER_HOLD = [0, 0, 0.08, 0.2];
+const UPLOAD_COMPONENT = { w: 1884, h: 1096 };
+const UPLOAD_FOCUS = { x: 457, y: 174, w: 991, h: 655 };
 const VERTICAL_GRADIENT = [[0, 1, 0], [-1, 0, 1]];
 const HORIZONTAL_GRADIENT = [[1, 0, 0], [0, 1, 0]];
 
-async function uploadedComponent(options, page, writeMarker) {
+function uploadedCropFrame(crop) {
+  const raw = crop && crop.frame;
+  if (!raw) return { ...UPLOAD_FOCUS };
+  const w = Math.max(120, Math.min(UPLOAD_COMPONENT.w, Number(raw.w) * UPLOAD_COMPONENT.w || UPLOAD_FOCUS.w));
+  const h = Math.max(90, Math.min(UPLOAD_COMPONENT.h, Number(raw.h) * UPLOAD_COMPONENT.h || UPLOAD_FOCUS.h));
+  return {
+    x: Math.max(0, Math.min(UPLOAD_COMPONENT.w - w, Number(raw.x) * UPLOAD_COMPONENT.w || 0)),
+    y: Math.max(0, Math.min(UPLOAD_COMPONENT.h - h, Number(raw.y) * UPLOAD_COMPONENT.h || 0)),
+    w,
+    h,
+  };
+}
+
+function uploadedImageLayout(size, crop) {
+  const frame = uploadedCropFrame(crop);
+  const aspect = size.width / Math.max(1, size.height);
+  const focusAspect = frame.w / frame.h;
+  const zoom = Math.max(1, Math.min(4, Number(crop && crop.zoom) || 1));
+  let w;
+  let h;
+  if (aspect >= focusAspect) {
+    h = frame.h * zoom;
+    w = h * aspect;
+  } else {
+    w = frame.w * zoom;
+    h = w / aspect;
+  }
+  const halfVisibleX = frame.w / (2 * w);
+  const halfVisibleY = frame.h / (2 * h);
+  const x = Math.max(halfVisibleX, Math.min(1 - halfVisibleX, Number(crop && crop.x) || 0.5));
+  const y = Math.max(halfVisibleY, Math.min(1 - halfVisibleY, Number(crop && crop.y) || 0.5));
+  return {
+    frame,
+    image: {
+      x: frame.x + frame.w / 2 - x * w,
+      y: frame.y + frame.h / 2 - y * h,
+      w,
+      h,
+    },
+  };
+}
+
+async function uploadedComponent(options, page, writeMarker, boardFeather) {
   const asset = options.visualComponent;
+  const feather = boardFeather || options.uploadFeather;
   const match = /^data:image\/(png|jpeg);base64,(.+)$/.exec(asset.previewUrl || "");
   if (!match) throw new Error("上传图片数据缺失，请回平台第一步重新上传。");
   const image = figma.createImage(figma.base64Decode(match[2]));
@@ -523,25 +569,44 @@ async function uploadedComponent(options, page, writeMarker) {
   const component = protectCreatedNode(figma.createComponent());
   component.setPluginData("futuWriteJob", writeMarker);
   component.name = `主视觉 / ${asset.name}`;
-  component.resize(size.width, size.height);
+  component.resize(UPLOAD_COMPONENT.w, UPLOAD_COMPONENT.h);
   component.fills = [];
   component.clipsContent = true;
+  const color = solidPaint(feather ? feather.color : "#121212").color;
+  const background = protectCreatedNode(figma.createRectangle());
+  background.name = "画板底色";
+  background.resize(UPLOAD_COMPONENT.w, UPLOAD_COMPONENT.h);
+  background.fills = [{ type: "SOLID", color }];
+  component.appendChild(background);
+  const layout = uploadedImageLayout(size, feather && feather.crop);
+  const cropBox = layout.frame;
+  const cropFrame = protectCreatedNode(figma.createFrame());
+  cropFrame.name = "裁切区域";
+  cropFrame.x = cropBox.x;
+  cropFrame.y = cropBox.y;
+  cropFrame.resize(cropBox.w, cropBox.h);
+  cropFrame.fills = [];
+  cropFrame.clipsContent = true;
+  component.appendChild(cropFrame);
+  const box = layout.image;
   const base = protectCreatedNode(figma.createRectangle());
   base.name = "底图";
-  base.resize(size.width, size.height);
+  base.x = box.x - cropBox.x;
+  base.y = box.y - cropBox.y;
+  base.resize(box.w, box.h);
   base.fills = [{ type: "IMAGE", imageHash: image.hash, scaleMode: "FILL" }];
-  component.appendChild(base);
+  cropFrame.appendChild(base);
 
-  const level = options.uploadFeather ? options.uploadFeather.level : 0;
+  const level = feather ? feather.level : 0;
   const ratio = FEATHER_RATIO[level] || 0;
   if (ratio > 0) {
-    const t = Math.max(1, Math.round(Math.min(size.width, size.height) * ratio));
-    const color = solidPaint(options.uploadFeather.color).color;
+    const t = Math.max(1, Math.round(Math.min(cropBox.w, cropBox.h) * ratio));
+    const hold = FEATHER_HOLD[level] || 0;
     const edges = [
-      ["左侧过渡", 0, 0, t, size.height, HORIZONTAL_GRADIENT, true],
-      ["右侧过渡", size.width - t, 0, t, size.height, HORIZONTAL_GRADIENT, false],
-      ["顶部过渡", 0, 0, size.width, t, VERTICAL_GRADIENT, true],
-      ["底部过渡", 0, size.height - t, size.width, t, VERTICAL_GRADIENT, false],
+      ["左侧过渡", 0, 0, t, cropBox.h, HORIZONTAL_GRADIENT, true],
+      ["右侧过渡", cropBox.w - t, 0, t, cropBox.h, HORIZONTAL_GRADIENT, false],
+      ["顶部过渡", 0, 0, cropBox.w, t, VERTICAL_GRADIENT, true],
+      ["底部过渡", 0, cropBox.h - t, cropBox.w, t, VERTICAL_GRADIENT, false],
     ];
     for (const [name, x, y, w, h, transform, opaqueFirst] of edges) {
       const rect = protectCreatedNode(figma.createRectangle());
@@ -552,16 +617,23 @@ async function uploadedComponent(options, page, writeMarker) {
       rect.fills = [{
         type: "GRADIENT_LINEAR",
         gradientTransform: transform,
-        gradientStops: [
-          { position: 0, color: { ...color, a: opaqueFirst ? 1 : 0 } },
-          { position: 1, color: { ...color, a: opaqueFirst ? 0 : 1 } },
-        ],
+        gradientStops: opaqueFirst
+          ? [
+              { position: 0, color: { ...color, a: 1 } },
+              ...(hold > 0 ? [{ position: hold, color: { ...color, a: 1 } }] : []),
+              { position: 1, color: { ...color, a: 0 } },
+            ]
+          : [
+              { position: 0, color: { ...color, a: 0 } },
+              ...(hold > 0 ? [{ position: 1 - hold, color: { ...color, a: 1 } }] : []),
+              { position: 1, color: { ...color, a: 1 } },
+            ],
       }];
-      component.appendChild(rect);
+      cropFrame.appendChild(rect);
     }
   }
   page.appendChild(component);
-  component.x = -size.width - 400;
+  component.x = -UPLOAD_COMPONENT.w - 400;
   component.y = 0;
   return component;
 }
@@ -1195,13 +1267,30 @@ async function write(job) {
   }
   await page.loadAsync();
   const existingRight = page.children.reduce((right, node) => Math.max(right, node.x + node.width), 0);
-  const component = needsVisual ? existing || await uploadedComponent(job.options, page, writeMarker) : null;
+  const uploadedComponents = new Map();
+  if (uploaded) {
+    /** 联动画板只实例化已写好的闪屏母版，不直接使用主视觉组件。 */
+    for (const plan of job.boards.filter((item) => !item.native && !item.linked)) {
+      const feather = plan.uploadFeather || job.options.uploadFeather;
+      const key = JSON.stringify(feather || {});
+      if (!uploadedComponents.has(key)) {
+        uploadedComponents.set(key, await uploadedComponent(job.options, page, writeMarker, feather));
+      }
+    }
+  }
+  const component = needsVisual ? existing || uploadedComponents.values().next().value : null;
+  const componentForPlan = (plan) => uploaded
+    ? uploadedComponents.get(JSON.stringify(plan.uploadFeather || job.options.uploadFeather || {})) || component
+    : component;
   assertJobActive(job);
   let sectionStartX = existingRight > 0 ? existingRight + 400 : 0;
-  if (uploaded && component) {
-    component.x = sectionStartX;
-    component.y = 0;
-    sectionStartX += component.width + 400;
+  if (uploaded) {
+    for (const item of uploadedComponents.values()) {
+      item.x = sectionStartX;
+      item.y = 0;
+      sectionStartX += item.width + 120;
+    }
+    if (uploadedComponents.size) sectionStartX += 280;
   }
   const preparedOutput = await prepareOutputSections(page, job.boards, job.options, writeMarker, sectionStartX);
   const { sections, placements } = preparedOutput;
@@ -1287,11 +1376,12 @@ async function write(job) {
       framesByKey.set(`${plan.key}|${plan.lang}`, frame);
 
       const usedScene = Boolean(plan.scene);
-      if (usedScene) await writeScene(frame, plan, component);
-      const usedRecipe = usedScene || await writeResolvedRecipe(frame, plan, component);
+      const planComponent = componentForPlan(plan);
+      if (usedScene) await writeScene(frame, plan, planComponent);
+      const usedRecipe = usedScene || await writeResolvedRecipe(frame, plan, planComponent);
       if (!usedRecipe) {
         if (plan.solution.kv) {
-          const instance = protectCreatedNode(component.createInstance());
+          const instance = protectCreatedNode(planComponent.createInstance());
           const box = at(plan.solution.kv, plan.solution.board);
           const scale = Math.min(box.w / instance.width, box.h / instance.height);
           instance.rescale(scale);
@@ -1354,7 +1444,9 @@ async function write(job) {
   }
   assertJobActive(job);
   if (!createdItems.length) {
-    if (uploaded && component?.parent) component.remove();
+    for (const item of uploadedComponents.values()) {
+      if (item?.parent) item.remove();
+    }
     if (job.options.page === "new" && page.parent) page.remove();
     return { ok: false, nodes: [], failures };
   }

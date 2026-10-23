@@ -1,17 +1,18 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { toBlob } from "html-to-image";
 import JSZip from "jszip";
-import { ArrowLeft, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Copy, CopyPlus, Download, Eye, EyeOff, ImageUp, Layers3, Link2, Loader2, Lock, LockOpen, MousePointerClick, RotateCcw, X } from "lucide-react";
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Copy, CopyPlus, Download, Eye, EyeOff, ImageUp, Info, Layers3, Link2, Loader2, Lock, LockOpen, MousePointerClick, RotateCcw, X } from "lucide-react";
 import {
   LANGS,
   NATIVE_SKINS,
   SCENE_FAMILY_LABEL,
   buildNativeBoard,
   buildSceneBoard,
+  isSceneHex,
   linkedPlacement,
   presetLogo,
   sceneBoardLocked,
@@ -35,24 +36,27 @@ import {
 import type { BoardPlan, FigmaWriteResult } from "@futu/ports";
 import { SIZE_GROUPS, isOfflineSlot, linkedOf, nativeOf, slotBoardRef, slotBucket, specOf } from "@futu/specs";
 import { createWebPorts } from "@futu/adapters-web";
-import { colorToHex } from "@/components/color-control";
+import { BackgroundColorControl, colorToHex } from "@/components/color-control";
 import { Button, WorkflowSparkle } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { parseFigmaUrl } from "@/lib/figma-link";
 import type { FigmaRecognitionResult } from "@/lib/figma-recognition";
 import { buildLogoSvg, logoComponentRef, splashLogoComponentRef } from "@/lib/logo-svg";
 import { useFitBoard } from "@/lib/use-fit-board";
+import { UPLOAD_COMPONENT_ASPECT, UPLOAD_COMPONENT_HEIGHT, UPLOAD_COMPONENT_WIDTH, UPLOAD_FEATHER_HOLDS, UPLOAD_FEATHER_RATIOS, UPLOAD_FOCUS_REGION, uploadCropLayout } from "@/lib/upload-visual";
+import { CAMPAIGN_PACK, CAMPAIGN_VISUAL_ASPECT, CAMPAIGN_VISUAL_HEIGHT, CAMPAIGN_VISUAL_WIDTH, campaignScenarioOf, campaignSlotOfTargetKey } from "@/lib/campaigns";
 import { useScene, useStudio } from "@/lib/studio-store";
 import { cn } from "@/lib/utils";
 import { Dropdown } from "./font-picker";
 import { SceneArtboard, SceneLinkedPreview } from "./scene-artboard";
 import { SceneEditor } from "./scene-editor";
 import { NativeBanner, NativeEditor, useNative, useNativeMeasure } from "./native-editor";
+import { CROP_CORNERS } from "./visual-crop";
 
 const ports = createWebPorts();
 const INPUT = "h-8 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] pl-8 pr-2.5 text-[10px] outline-none hover:border-[var(--app-line-strong)] focus:border-[var(--app-line-strong)]";
 const GHOST = "h-7 rounded-[4px] px-2.5 text-[10px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]";
-const PILL_TABS = "flex rounded-full bg-[var(--app-surface-2)] p-1 text-[10px]";
+const PILL_TABS = "inline-flex rounded-full bg-[var(--app-surface-2)] p-1 text-[10px]";
 const FEATHER_LABELS = ["关", "弱", "中", "强"] as const;
 const FAMILY_ORDER: SceneFamily[] = ["strip", "landscape", "square", "portrait"];
 const FAMILY_IDEAL: Record<SceneFamily, number> = { strip: 1080 / 225, landscape: 1.91, square: 1, portrait: 810 / 1110 };
@@ -128,7 +132,12 @@ function InstallGuideVisual({ step }: { step: 3 | 4 }) {
   );
 }
 
-export const sceneRef = slotBoardRef;
+export function sceneRef(target: TargetBoard) {
+  const ref = slotBoardRef(target);
+  return target.key.startsWith(`campaign:${CAMPAIGN_PACK.id}:`) && ref.ctaSpec
+    ? { ...ref, ctaSpec: { ...ref.ctaSpec, soft: true } }
+    : ref;
+}
 
 function safeFileName(value: string) {
   return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").replace(/\s+/g, " ").trim() || "未命名";
@@ -171,7 +180,8 @@ const boardLayoutGroup = (target: TargetBoard): FigmaLayoutGroup => {
   if (family === "portrait") return "portrait";
   return "landscape";
 };
-const boardUseLabel = (target: Pick<TargetBoard, "sizeId" | "use">) => {
+const boardUseLabel = (target: Pick<TargetBoard, "key" | "sizeId" | "use">) => {
+  if (target.key.startsWith("campaign:")) return target.use;
   const item = target.sizeId ? SLOT_ITEM_BY_ID.get(target.sizeId) : undefined;
   return item ? `${item.use}${item.variant ? ` ${item.variant}` : ""}` : target.use;
 };
@@ -187,19 +197,19 @@ const externalBoardName = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use
   const category = externalCategoryLabel(target);
   return category ? `${category}｜${target.w}*${target.h}` : null;
 };
-const boardDisplayLabel = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => (
+const boardDisplayLabel = (target: Pick<TargetBoard, "key" | "w" | "h" | "sizeId" | "use">) => (
   (externalCategoryLabel(target) ? `${boardSizeLabel(target)} ${externalCategoryLabel(target)}` : null)
     ?? (!boardUseLabel(target) ? boardSizeLabel(target) : `${boardSizeLabel(target)} ${boardUseLabel(target)}`)
 );
-const boardFileStem = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => (
+const boardFileStem = (target: Pick<TargetBoard, "key" | "w" | "h" | "sizeId" | "use">) => (
   isExternalTarget(target) || !boardUseLabel(target)
     ? boardSizeLabel(target)
     : `${boardSizeLabel(target)}_${boardUseLabel(target)}`
 );
-const figmaBoardName = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">) => (
+const figmaBoardName = (target: Pick<TargetBoard, "key" | "w" | "h" | "sizeId" | "use">) => (
   externalBoardName(target) ?? (boardUseLabel(target)?.trim() || "自定义画幅")
 );
-const figmaFrameName = (target: Pick<TargetBoard, "w" | "h" | "sizeId" | "use">, language: string) => (
+const figmaFrameName = (target: Pick<TargetBoard, "key" | "w" | "h" | "sizeId" | "use">, language: string) => (
   externalBoardName(target) ?? `${figmaBoardName(target)}｜${boardSizeLabel(target)}｜${language}`
 );
 
@@ -287,12 +297,12 @@ async function inlineNativeAssets(boards: NativeBoard[], signal?: AbortSignal) {
 
 function pillTab(active: boolean) {
   return cn(
-    "h-7 rounded-full px-4 transition-colors",
+    "h-7 min-w-[116px] rounded-full px-5 text-center transition-colors",
     active ? "bg-[var(--app-page)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-3)] hover:text-[var(--app-text)]",
   );
 }
 
-/** 取图片四边像素的平均色作为默认画板底色；跨域图片读不到像素时返回 null。 */
+/** 优先取图片四边的平均色；透明图片四边无有效像素时回退到主体平均色。 */
 async function sampleEdgeColor(src: string): Promise<string | null> {
   try {
     const image = new Image();
@@ -316,6 +326,15 @@ async function sampleEdgeColor(src: string): Promise<string | null> {
         if (x > 1 && y > 1 && x < size - 2 && y < size - 2) continue;
         const offset = (y * size + x) * 4;
         if (data[offset + 3]! < 200) continue;
+        r += data[offset]!;
+        g += data[offset + 1]!;
+        b += data[offset + 2]!;
+        count += 1;
+      }
+    }
+    if (!count) {
+      for (let offset = 0; offset < data.length; offset += 4) {
+        if (data[offset + 3]! < 64) continue;
         r += data[offset]!;
         g += data[offset + 1]!;
         b += data[offset + 2]!;
@@ -496,6 +515,9 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
   const { project, lang, versionId, setLang, setVersion, toggleLang } = useStudio();
   const { scene, updateScene } = useScene();
   const langs = project.content.langs;
+  const campaignLanguages = project.mode === "campaign"
+    ? campaignScenarioOf(project.campaign?.scenarioId)?.languages ?? null
+    : null;
   const versions = langsOnly ? [] : (scene.versions ?? []);
   const activeVersion = versions.find((item) => item.id === versionId && item.lang === lang) ?? null;
   const activeLang = activeVersion?.lang ?? (langs.includes(lang) ? lang : langs[0]!);
@@ -565,6 +587,7 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
         badgeStyles: structuredClone(view.badgeStyles ?? {}),
         familyEdits: structuredClone(view.familyEdits),
         boardOverrides: structuredClone(view.boardOverrides),
+        boardStyles: structuredClone(original?.boardStyles ?? current.languageBoardStyles?.[sourceLang] ?? {}),
       };
       const versions = [...(current.versions ?? [])];
       const sourceIndex = source
@@ -700,7 +723,7 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
                   <CopyPlus size={10} />
                 </button>
               ) : null}
-              {langs.length > 1 && !scene.lockedLanguages?.includes(id)
+              {!campaignLanguages && langs.length > 1 && !scene.lockedLanguages?.includes(id)
                 ? removeButton(`移除${langName(id)}`, () => toggleLang(id))
                 : <span aria-hidden className="size-4 shrink-0" />}
             </div>
@@ -823,7 +846,7 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
         </div>
       ) : null}
       <div className="mt-2 flex flex-col items-start gap-1">
-        {LANGS.filter((item) => !langs.includes(item.id)).map((item) => (
+        {LANGS.filter((item) => !langs.includes(item.id) && (!campaignLanguages || campaignLanguages.includes(item.id))).map((item) => (
           <button key={item.id} type="button" onClick={() => toggleLang(item.id)} className={cn(GHOST, "px-2")}>+ {item.name}</button>
         ))}
         {adding || langsOnly ? null : (
@@ -857,127 +880,262 @@ function VersionRail({ langsOnly = false }: { langsOnly?: boolean }) {
 /* 第一步：准备主视觉                                                   */
 /* ------------------------------------------------------------------ */
 
-function SubjectEditor({ src, aspect }: { src?: string; aspect: number }) {
+function SubjectEditor({ src, contentAspect, componentAspect = UPLOAD_COMPONENT_ASPECT, backgroundVisible = true }: { src?: string; contentAspect: number; componentAspect?: number; backgroundVisible?: boolean }) {
   const { scene, updateScene } = useScene();
   const ref = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ kind: "move" | "resize" | "focal"; x: number; y: number; box: typeof scene.safeBox; focal: typeof scene.focal } | null>(null);
+  const cropDrag = useRef<{
+    kind: "move" | "scale";
+    sign: number;
+    corner?: (typeof CROP_CORNERS)[number]["id"];
+    x: number;
+    y: number;
+    crop: { zoom: number; x: number; y: number; frame: { x: number; y: number; w: number; h: number } };
+    imageW: number;
+    imageH: number;
+  } | null>(null);
+  const upload = scene.visualMode === "upload";
+  const previewAspect = upload ? componentAspect : contentAspect;
+  const componentHeight = UPLOAD_COMPONENT_HEIGHT;
+  const componentWidth = componentHeight * componentAspect;
+  const cropLayout = uploadCropLayout(contentAspect, scene.uploadCrop, componentAspect);
+  const imageBox = cropLayout.image;
+  const cropFrame = cropLayout.frame;
+  const feather = UPLOAD_FEATHER_RATIOS[scene.feather] ?? 0;
+  const featherHold = (UPLOAD_FEATHER_HOLDS[scene.feather] ?? 0) * 100;
+  const focusWidth = cropFrame.w * componentWidth;
+  const focusHeight = cropFrame.h * componentHeight;
+  const featherSize = Math.min(focusWidth, focusHeight) * feather;
+  const featherX = focusWidth > 0 ? (featherSize / focusWidth) * 100 : 0;
+  const featherY = focusHeight > 0 ? (featherSize / focusHeight) * 100 : 0;
 
-  const begin = (event: ReactPointerEvent<HTMLElement>, kind: "move" | "resize" | "focal") => {
+  const beginCrop = (
+    event: ReactPointerEvent<HTMLElement>,
+    kind: "move" | "scale" = "move",
+    sign = 1,
+    corner?: (typeof CROP_CORNERS)[number]["id"],
+  ) => {
+    event.preventDefault();
     event.stopPropagation();
-    drag.current = { kind, x: event.clientX, y: event.clientY, box: scene.safeBox, focal: scene.focal };
+    cropDrag.current = {
+      kind,
+      sign,
+      corner,
+      x: event.clientX,
+      y: event.clientY,
+      crop: cropLayout.crop,
+      imageW: imageBox.w * componentWidth,
+      imageH: imageBox.h * componentHeight,
+    };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
-  const move = (event: ReactPointerEvent<HTMLElement>) => {
-    const state = drag.current;
+  const moveCrop = (event: ReactPointerEvent<HTMLElement>) => {
+    const state = cropDrag.current;
     const rect = ref.current?.getBoundingClientRect();
     if (!state || !rect) return;
-    const dx = (event.clientX - state.x) / rect.width;
-    const dy = (event.clientY - state.y) / rect.height;
-    const clamp = (value: number, min = 0, max = 1) => Math.max(min, Math.min(max, value));
-    const round = (value: number) => Math.round(value * 1000) / 1000;
-    updateScene((current) => {
-      if (state.kind === "focal") {
-        return { ...current, focal: { x: round(clamp(state.focal.x + dx)), y: round(clamp(state.focal.y + dy)) } };
-      }
-      if (state.kind === "move") {
-        return {
-          ...current,
-          safeBox: {
-            ...state.box,
-            x: round(clamp(state.box.x + dx, 0, 1 - state.box.w)),
-            y: round(clamp(state.box.y + dy, 0, 1 - state.box.h)),
-          },
-        };
-      }
-      return {
-        ...current,
-        safeBox: {
-          ...state.box,
-          w: round(clamp(state.box.w + dx, 0.08, 1 - state.box.x)),
-          h: round(clamp(state.box.h + dy, 0.08, 1 - state.box.y)),
-        },
-      };
-    });
+    const dx = ((event.clientX - state.x) / rect.width) * componentWidth;
+    const dy = ((event.clientY - state.y) / rect.height) * componentHeight;
+    if (state.kind === "scale") {
+      const minW = 120 / componentWidth;
+      const minH = 90 / componentHeight;
+      const dxUnit = dx / componentWidth;
+      const dyUnit = dy / componentHeight;
+      let left = state.crop.frame.x;
+      let right = left + state.crop.frame.w;
+      let top = state.crop.frame.y;
+      let bottom = top + state.crop.frame.h;
+      if (state.corner?.includes("w")) left = Math.max(0, Math.min(right - minW, left + dxUnit));
+      if (state.corner?.includes("e")) right = Math.min(1, Math.max(left + minW, right + dxUnit));
+      if (state.corner?.includes("n")) top = Math.max(0, Math.min(bottom - minH, top + dyUnit));
+      if (state.corner?.includes("s")) bottom = Math.min(1, Math.max(top + minH, bottom + dyUnit));
+      const frame = { x: left, y: top, w: right - left, h: bottom - top };
+      updateScene((current) => ({ ...current, uploadCrop: uploadCropLayout(contentAspect, { ...state.crop, frame }, componentAspect).crop }));
+      return;
+    }
+    const next = uploadCropLayout(contentAspect, {
+      ...state.crop,
+      x: state.crop.x - dx / Math.max(1, state.imageW),
+      y: state.crop.y - dy / Math.max(1, state.imageH),
+    }, componentAspect).crop;
+    updateScene((current) => ({ ...current, uploadCrop: next }));
   };
-  const end = (event: ReactPointerEvent<HTMLElement>) => {
-    drag.current = null;
+  const endCrop = (event: ReactPointerEvent<HTMLElement>) => {
+    cropDrag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
-  const handlers = { onPointerMove: move, onPointerUp: end, onPointerCancel: end };
+  const wheelCrop = (event: ReactWheelEvent<HTMLElement>) => {
+    event.preventDefault();
+    const zoom = cropLayout.crop.zoom * Math.exp(-event.deltaY * 0.001);
+    updateScene((current) => ({ ...current, uploadCrop: uploadCropLayout(contentAspect, { ...cropLayout.crop, zoom }, componentAspect).crop }));
+  };
+  const keyCrop = (event: ReactKeyboardEvent<HTMLElement>) => {
+    const step = event.shiftKey ? 0.05 : 0.01;
+    const delta = {
+      ArrowLeft: { x: step, y: 0 },
+      ArrowRight: { x: -step, y: 0 },
+      ArrowUp: { x: 0, y: step },
+      ArrowDown: { x: 0, y: -step },
+    }[event.key];
+    if (!delta) return;
+    event.preventDefault();
+    updateScene((current) => ({
+      ...current,
+      uploadCrop: uploadCropLayout(contentAspect, {
+        ...cropLayout.crop,
+        x: cropLayout.crop.x + delta.x,
+        y: cropLayout.crop.y + delta.y,
+      }, componentAspect).crop,
+    }));
+  };
 
   return (
-    <div ref={ref} className="relative max-h-full max-w-full select-none" style={{ aspectRatio: `${aspect}`, width: "100%" }}>
-      {src ? <img src={src} alt="" draggable={false} className="absolute inset-0 size-full object-contain" /> : null}
-      {scene.visualMode === "upload" && scene.feather > 0 ? (
-        <div className="pointer-events-none absolute inset-0">
-          {(["right", "left", "bottom", "top"] as const).map((direction) => {
-            const edge = `${[0, 8, 14, 20][scene.feather]! * (direction === "left" || direction === "right" ? Math.min(1, 1 / aspect) : Math.min(1, aspect))}%`;
-            const side = direction === "right" ? { left: 0, top: 0, bottom: 0, width: edge } : direction === "left" ? { right: 0, top: 0, bottom: 0, width: edge } : direction === "bottom" ? { top: 0, left: 0, right: 0, height: edge } : { bottom: 0, left: 0, right: 0, height: edge };
-            return <span key={direction} className="absolute" style={{ ...side, backgroundImage: `linear-gradient(to ${direction}, ${scene.background}, transparent)` }} />;
-          })}
-        </div>
-      ) : null}
-      <div
-        role="presentation"
-        onPointerDown={(event) => begin(event, "move")}
-        {...handlers}
-        className="absolute cursor-move border border-dashed border-[var(--color-brand)]"
-        style={{ left: `${scene.safeBox.x * 100}%`, top: `${scene.safeBox.y * 100}%`, width: `${scene.safeBox.w * 100}%`, height: `${scene.safeBox.h * 100}%` }}
-      >
-        <span className="absolute left-1 top-1 rounded-[3px] bg-[#111317] px-1.5 py-0.5 text-[8px] text-[var(--app-text-2)]">主体保护区</span>
-        <span
-          role="presentation"
-          onPointerDown={(event) => begin(event, "resize")}
-          {...handlers}
-          className="absolute -bottom-1 -right-1 size-2 cursor-nwse-resize rounded-[1px] border border-[var(--color-brand)] bg-white"
-        />
-      </div>
-      <span
-        role="presentation"
-        onPointerDown={(event) => begin(event, "focal")}
-        {...handlers}
-        title="焦点：延展时这一点对齐到主视觉锚点"
-        className="absolute grid size-4 -translate-x-1/2 -translate-y-1/2 cursor-crosshair place-items-center rounded-full border-2 border-white shadow-[0_0_0_1px_rgb(0_0_0/0.45)]"
-        style={{ left: `${scene.focal.x * 100}%`, top: `${scene.focal.y * 100}%` }}
-      >
-        <span className="size-1 rounded-full bg-[var(--color-brand)]" />
-      </span>
+    <div ref={ref} className="relative max-h-full max-w-full select-none overflow-hidden" style={{ aspectRatio: `${previewAspect}`, width: "100%", background: upload && backgroundVisible ? scene.background : undefined }}>
+      {src && upload ? (
+        <div
+            role="group"
+            tabIndex={0}
+            aria-label="图片裁切区域；拖动或方向键调整位置，滚轮调整缩放"
+            title="拖动图片调整裁切；滚轮或上方缩放控件调整大小"
+            onPointerDown={beginCrop}
+            onPointerMove={moveCrop}
+            onPointerUp={endCrop}
+            onPointerCancel={endCrop}
+            onWheel={wheelCrop}
+            onKeyDown={keyCrop}
+            className="touch-none absolute cursor-move border border-white/85"
+            style={{
+              left: `${cropFrame.x * 100}%`,
+              top: `${cropFrame.y * 100}%`,
+              width: `${cropFrame.w * 100}%`,
+              height: `${cropFrame.h * 100}%`,
+            }}
+          >
+            <div className="pointer-events-none absolute inset-0 overflow-hidden">
+              <img
+                src={src}
+                alt=""
+                draggable={false}
+                className="absolute select-none"
+                style={{
+                  left: `${((imageBox.x - cropFrame.x) / cropFrame.w) * 100}%`,
+                  top: `${((imageBox.y - cropFrame.y) / cropFrame.h) * 100}%`,
+                  width: `${(imageBox.w / cropFrame.w) * 100}%`,
+                  height: `${(imageBox.h / cropFrame.h) * 100}%`,
+                  maxWidth: "none",
+                  maxHeight: "none",
+                }}
+              />
+              {backgroundVisible && feather > 0 ? (
+                <div className="absolute inset-0">
+                  <span className="absolute inset-y-0 left-0" style={{ width: `${featherX}%`, backgroundImage: `linear-gradient(to right, ${scene.background} 0%, ${scene.background} ${featherHold}%, transparent 100%)` }} />
+                  <span className="absolute inset-y-0 right-0" style={{ width: `${featherX}%`, backgroundImage: `linear-gradient(to left, ${scene.background} 0%, ${scene.background} ${featherHold}%, transparent 100%)` }} />
+                  <span className="absolute inset-x-0 top-0" style={{ height: `${featherY}%`, backgroundImage: `linear-gradient(to bottom, ${scene.background} 0%, ${scene.background} ${featherHold}%, transparent 100%)` }} />
+                  <span className="absolute inset-x-0 bottom-0" style={{ height: `${featherY}%`, backgroundImage: `linear-gradient(to top, ${scene.background} 0%, ${scene.background} ${featherHold}%, transparent 100%)` }} />
+                </div>
+              ) : null}
+            </div>
+            {CROP_CORNERS.map((corner) => (
+              <span
+                key={corner.id}
+                role="presentation"
+                onPointerDown={(event) => beginCrop(event, "scale", corner.sign, corner.id)}
+                onPointerMove={moveCrop}
+                onPointerUp={endCrop}
+                onPointerCancel={endCrop}
+                className="absolute size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-[2px] border border-white bg-white"
+                style={{ left: `${corner.x * 100}%`, top: `${corner.y * 100}%`, cursor: corner.cursor }}
+              />
+            ))}
+          </div>
+      ) : src ? <img src={src} alt="" draggable={false} className="absolute inset-0 size-full object-contain" /> : null}
     </div>
   );
 }
 
 export function ScenePrepareStep({ onNext }: { onNext: () => void }) {
   const { project, updateContent } = useStudio();
-  const { scene, updateScene } = useScene();
+  const { scene, updateScene, undoScene, redoScene } = useScene();
+  const campaignMode = project.mode === "campaign";
+  const componentAspect = campaignMode ? CAMPAIGN_VISUAL_ASPECT : UPLOAD_COMPONENT_ASPECT;
   const kv = project.content.kv;
   const [url, setUrl] = useState(kv?.source === "figma" ? kv.figmaUrl ?? "" : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [frame, setFrame] = useState<{ w: number; h: number } | null>(null);
+  const [recognitionStartedAt, setRecognitionStartedAt] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [showUploadBackground, setShowUploadBackground] = useState(true);
+  const urlRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const abortReasonRef = useRef<"cancel" | "timeout" | null>(null);
+  const mountedRef = useRef(true);
   const mode = scene.visualMode;
   const figmaReady = kv?.source === "figma" && Boolean(kv.figmaUrl);
   const uploadReady = kv?.source === "upload" && Boolean(kv.previewUrl?.startsWith("data:"));
   const ready = mode === "figma" ? figmaReady : uploadReady;
   const previewSrc = ready ? kv?.previewUrl : undefined;
-  const fit = useFitBoard(scene.visualAspect * 1000, 1000, 48);
+  const uploadAspect = scene.upload && scene.upload.height > 0 ? scene.upload.width / scene.upload.height : 1;
+  const uploadCrop = uploadCropLayout(uploadAspect, scene.uploadCrop, componentAspect).crop;
+  const previewAspect = mode === "upload" ? componentAspect : scene.visualAspect;
+  const fit = useFitBoard(previewAspect * 1000, 1000, 48);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortReasonRef.current = "cancel";
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!busy || mode !== "figma" || recognitionStartedAt === null) return;
+    const refresh = () => setElapsedSeconds(Math.floor((Date.now() - recognitionStartedAt) / 1000));
+    refresh();
+    const timer = window.setInterval(refresh, 250);
+    return () => window.clearInterval(timer);
+  }, [busy, mode, recognitionStartedAt]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const textInput = target instanceof HTMLInputElement && !["range", "color", "checkbox", "radio", "button", "file"].includes(target.type);
+      if (target && (textInput || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undoScene();
+      } else if ((key === "z" && event.shiftKey) || key === "y") {
+        event.preventDefault();
+        redoScene();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [redoScene, undoScene]);
 
   const adoptBackground = async (src: string | undefined) => {
     if (!src) return;
     const edge = await sampleEdgeColor(src);
-    if (edge) updateScene((current) => ({ ...current, background: edge }));
+    if (edge && mountedRef.current) updateScene((current) => ({ ...current, background: edge }));
   };
 
   const recognize = async () => {
     if (busy) {
+      abortReasonRef.current = "cancel";
       abortRef.current?.abort();
       return;
     }
     if (!url.trim()) return;
     const controller = new AbortController();
     abortRef.current = controller;
-    const timeout = window.setTimeout(() => controller.abort(), 90_000);
+    abortReasonRef.current = null;
+    const timeout = window.setTimeout(() => {
+      abortReasonRef.current = "timeout";
+      controller.abort();
+    }, 90_000);
+    setRecognitionStartedAt(Date.now());
+    setElapsedSeconds(0);
     setBusy(true);
     setError(null);
     try {
@@ -993,6 +1151,10 @@ export function ScenePrepareStep({ onNext }: { onNext: () => void }) {
       });
       const data = (await response.json()) as FigmaRecognitionResult | { error: string };
       if (!response.ok || "error" in data) throw new Error("error" in data ? data.error : "识别失败");
+      if (!mountedRef.current) return;
+      if (campaignMode && (Math.round(data.frame.width) !== CAMPAIGN_VISUAL_WIDTH || Math.round(data.frame.height) !== CAMPAIGN_VISUAL_HEIGHT)) {
+        throw new Error(`专项主视觉组件需为 ${CAMPAIGN_VISUAL_WIDTH} × ${CAMPAIGN_VISUAL_HEIGHT}，当前为 ${Math.round(data.frame.width)} × ${Math.round(data.frame.height)}`);
+      }
       updateContent({
         kv: {
           id: data.frame.componentId ?? data.frame.id,
@@ -1003,16 +1165,47 @@ export function ScenePrepareStep({ onNext }: { onNext: () => void }) {
           previewUrl: data.previewUrl,
         },
       });
-      setFrame({ w: data.frame.width, h: data.frame.height });
-      updateScene((current) => ({ ...current, visualMode: "figma", feather: 0, visualAspect: data.frame.width / Math.max(1, data.frame.height) }));
+      updateScene((current) => ({
+        ...current,
+        visualMode: "figma",
+        feather: 0,
+        visualAspect: campaignMode ? CAMPAIGN_VISUAL_ASPECT : data.frame.width / Math.max(1, data.frame.height),
+        focal: { x: 0.5, y: 0.5 },
+        safeBox: campaignMode ? { x: 0, y: 0, w: 1, h: 1 } : { ...UPLOAD_FOCUS_REGION },
+      }));
       void adoptBackground(data.previewUrl);
+      requestAnimationFrame(() => {
+        urlRef.current?.blur();
+        if (urlRef.current) urlRef.current.scrollLeft = 0;
+      });
     } catch (cause) {
-      setError(controller.signal.aborted ? "已取消或识别超时，请重试" : cause instanceof Error ? cause.message : "识别失败");
+      if (mountedRef.current) {
+        setError(controller.signal.aborted
+          ? abortReasonRef.current === "timeout" ? "识别超时，请重试" : "已取消识别"
+          : cause instanceof Error ? cause.message : "识别失败");
+      }
     } finally {
       window.clearTimeout(timeout);
-      setBusy(false);
+      if (mountedRef.current) {
+        setBusy(false);
+        setRecognitionStartedAt(null);
+      }
       abortRef.current = null;
+      abortReasonRef.current = null;
     }
+  };
+
+  const clearFigma = () => {
+    abortReasonRef.current = "cancel";
+    abortRef.current?.abort();
+    setBusy(false);
+    setRecognitionStartedAt(null);
+    setElapsedSeconds(0);
+    setError(null);
+    setUrl("");
+    updateContent({ kv: undefined });
+    updateScene((current) => ({ ...current, focal: { x: 0.5, y: 0.5 }, safeBox: campaignMode ? { x: 0, y: 0, w: 1, h: 1 } : { ...UPLOAD_FOCUS_REGION } }));
+    requestAnimationFrame(() => urlRef.current?.focus());
   };
 
   const upload = async (file: File | undefined) => {
@@ -1025,6 +1218,7 @@ export function ScenePrepareStep({ onNext }: { onNext: () => void }) {
     setBusy(true);
     try {
       const image = await readUpload(file);
+      if (!mountedRef.current) return;
       updateContent({
         kv: {
           id: `upload-${Date.now().toString(36)}`,
@@ -1039,56 +1233,69 @@ export function ScenePrepareStep({ onNext }: { onNext: () => void }) {
         visualMode: "upload",
         uploadType: image.type,
         upload: { name: file.name, width: image.width, height: image.height },
-        visualAspect: image.width / image.height,
+        uploadCrop: campaignMode
+          ? { zoom: 1, x: 0.5, y: 0.5, frame: { x: 0, y: 0, w: 1, h: 1 } }
+          : { zoom: 1, x: 0.5, y: 0.5 },
+        visualAspect: componentAspect,
         feather: image.transparent ? 0 : Math.max(current.feather, 2),
+        focal: { x: 0.5, y: 0.5 },
+        safeBox: campaignMode ? { x: 0, y: 0, w: 1, h: 1 } : { ...UPLOAD_FOCUS_REGION },
       }));
-      setFrame({ w: image.width, h: image.height });
-      if (!image.transparent) void adoptBackground(image.dataUrl);
+      void adoptBackground(image.dataUrl);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "图片读取失败");
+      if (mountedRef.current) setError(cause instanceof Error ? cause.message : "图片读取失败");
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
-  const size = frame ?? (scene.upload && mode === "upload" ? { w: scene.upload.width, h: scene.upload.height } : null);
-  const generatedLayers = mode === "upload"
-    ? [
-      ["主视觉组件", "Component · 写入时在 Figma 创建"],
-      ["底图", `Image · ${scene.uploadType.toUpperCase()}`],
-      ...(scene.feather > 0 ? [["四边过渡 × 4", `渐变到画板底色 ${scene.background.toUpperCase()}`]] : []),
-    ]
-    : [];
-
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mx-auto mb-4 flex shrink-0">
+      <div className="mb-4 flex shrink-0 overflow-x-auto">
         <div className={PILL_TABS}>
-          <button type="button" className={pillTab(mode === "figma")} onClick={() => updateScene((current) => ({ ...current, visualMode: "figma" }))}>识别 Figma 主视觉组件</button>
-          <button type="button" className={pillTab(mode === "upload")} onClick={() => updateScene((current) => ({ ...current, visualMode: "upload" }))}>上传图片并转换为组件</button>
+          <button type="button" disabled={busy} className={cn(pillTab(mode === "figma"), "disabled:cursor-wait disabled:opacity-50")} onClick={() => updateScene((current) => ({ ...current, visualMode: "figma" }))}>识别 Figma 主视觉组件</button>
+          <button type="button" disabled={busy} className={cn(pillTab(mode === "upload"), "disabled:cursor-wait disabled:opacity-50")} onClick={() => updateScene((current) => ({ ...current, visualMode: "upload" }))}>上传图片并转换为组件</button>
         </div>
       </div>
 
-      <div className="grid shrink-0 grid-cols-1 gap-3 rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-2)] p-3">
+      <div className="grid shrink-0 grid-cols-1 gap-3 rounded-[5px] bg-[var(--app-surface-2)] p-3">
         {mode === "figma" ? (
           <div className="flex min-w-0 items-center gap-2">
             <h2 className="shrink-0 text-[10px] font-medium">主视觉组件链接</h2>
             <label className="relative block min-w-0 flex-1">
               <Link2 size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-3)]" />
               <input
+                ref={urlRef}
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
                 onKeyDown={(event) => event.key === "Enter" && !busy && recognize()}
+                onBlur={(event) => {
+                  event.currentTarget.scrollLeft = 0;
+                }}
                 placeholder="粘贴主视觉 Component / Instance 链接"
-                className={INPUT}
+                title={url ? "点击后可编辑或复制完整链接" : undefined}
+                className={cn(INPUT, "truncate border-transparent hover:border-transparent focus:border-transparent focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/45")}
               />
             </label>
-            <Button size="sm" disabled={!busy && !url.trim()} onClick={recognize}>
-              {busy ? <><X size={12} />取消识别</> : figmaReady ? "重新识别" : "识别组件"}
-            </Button>
+            {busy ? (
+              <button type="button" aria-label="取消识别" title="取消识别" onClick={recognize} className={cn(GHOST, "grid size-7 shrink-0 place-items-center px-0 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/45")}>
+                <X size={12} />
+              </button>
+            ) : figmaReady ? (
+              <div className="flex shrink-0 items-center gap-0.5">
+                <button type="button" aria-label="重新识别主视觉组件" title="重新识别" onClick={recognize} className={cn(GHOST, "grid size-7 place-items-center px-0 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/45")}>
+                  <RotateCcw size={12} />
+                </button>
+                <button type="button" aria-label="删除主视觉组件链接" title="删除链接" onClick={clearFigma} className={cn(GHOST, "grid size-7 place-items-center px-0 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/45")}>
+                  <X size={12} />
+                </button>
+              </div>
+            ) : (
+              <Button size="sm" disabled={!url.trim()} onClick={recognize}>识别</Button>
+            )}
           </div>
         ) : (
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
             <h2 className="shrink-0 text-[10px] font-medium">主视觉图片</h2>
             <input ref={fileRef} type="file" accept="image/png,image/jpeg" className="hidden" onChange={(event) => {
               void upload(event.target.files?.[0]);
@@ -1098,8 +1305,42 @@ export function ScenePrepareStep({ onNext }: { onNext: () => void }) {
               {uploadReady ? "更换图片" : "选择 PNG / JPG"}
             </Button>
             <span className="min-w-0 flex-1 truncate text-[10px] text-[var(--app-text-3)]">
-              {uploadReady && scene.upload ? `${scene.upload.name} · ${scene.upload.width} × ${scene.upload.height}` : "PNG 保留透明通道作为主体；JPG 没有透明通道，靠主体保护区和四边过渡融入底色"}
+              {uploadReady && scene.upload ? `${scene.upload.name} · ${scene.upload.width} × ${scene.upload.height}` : "PNG 保留透明通道作为主体；JPG 通过四边过渡融入底色"}
             </span>
+            {uploadReady ? (
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="text-[9px] text-[var(--app-text-4)]">裁切缩放</span>
+                <input
+                  type="range"
+                  min={100}
+                  max={400}
+                  step={1}
+                  value={Math.round(uploadCrop.zoom * 100)}
+                  aria-label="裁切图片缩放"
+                  aria-valuetext={`${uploadCrop.zoom.toFixed(1)} 倍`}
+                  className="h-1 w-20 cursor-pointer accent-white"
+                  onChange={(event) => updateScene((current) => ({
+                    ...current,
+                    uploadCrop: uploadCropLayout(uploadAspect, { ...uploadCrop, zoom: Number(event.target.value) / 100 }, componentAspect).crop,
+                  }))}
+                />
+                <span className="w-8 text-right text-[9px] tabular-nums text-[var(--app-text-3)]">{uploadCrop.zoom.toFixed(1)}×</span>
+                <button
+                  type="button"
+                  title="恢复默认裁切"
+                  aria-label="恢复默认裁切"
+                  className="text-[var(--app-text-4)] hover:text-[var(--app-text)]"
+                  onClick={() => updateScene((current) => ({
+                    ...current,
+                    uploadCrop: campaignMode
+                      ? { zoom: 1, x: 0.5, y: 0.5, frame: { x: 0, y: 0, w: 1, h: 1 } }
+                      : { zoom: 1, x: 0.5, y: 0.5 },
+                  }))}
+                >
+                  <RotateCcw size={12} />
+                </button>
+              </div>
+            ) : null}
             <div className="flex shrink-0 items-center gap-2">
               <span className="text-[9px] text-[var(--app-text-4)]">四边过渡</span>
               <Segmented
@@ -1109,26 +1350,64 @@ export function ScenePrepareStep({ onNext }: { onNext: () => void }) {
                 options={FEATHER_LABELS.map((label, index) => ({ id: String(index), label }))}
               />
             </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <span className="text-[9px] text-[var(--app-text-4)]">画板底色</span>
+              <BackgroundColorControl
+                label="画板底色"
+                value={scene.background}
+                onChange={(value) => isSceneHex(value) && updateScene((current) => ({ ...current, background: value }))}
+              />
+              <button
+                type="button"
+                title={showUploadBackground ? "隐藏底色预览" : "显示底色预览"}
+                aria-label={showUploadBackground ? "隐藏画板底色预览" : "显示画板底色预览"}
+                aria-pressed={showUploadBackground}
+                onClick={() => setShowUploadBackground((value) => !value)}
+                className="grid size-6 place-items-center text-[var(--app-text-3)] hover:text-[var(--app-text)]"
+              >
+                {showUploadBackground ? <Eye size={13} /> : <EyeOff size={13} />}
+              </button>
+            </div>
           </div>
         )}
+        {campaignMode ? (
+          <p className="flex min-w-0 items-center gap-1.5 text-[9px] leading-4 text-[var(--app-text-3)]">
+            <Info size={10} className="shrink-0 text-[var(--color-brand)]" />
+            <span className="truncate">专项主视觉统一为 {CAMPAIGN_VISUAL_WIDTH} × {CAMPAIGN_VISUAL_HEIGHT}；平台将按财报季语料自动适配各资源位。</span>
+          </p>
+        ) : null}
       </div>
       {error ? <div className="mt-1.5 px-1 text-[9px] text-[var(--color-up)]">{error}</div> : null}
 
-      <div className="mt-4 grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_280px] gap-3">
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-[5px] border border-[var(--app-line)] bg-[#111317]">
+      <div className="mt-4 min-h-0 flex-1">
+        <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[5px] border border-[var(--app-line)] bg-[#111317]">
           <div className="flex items-center justify-between border-b border-[var(--app-line)] bg-[var(--app-surface-2)] px-3 py-2 text-[9px]">
             <span className="text-[var(--app-text-3)]">主视觉组件</span>
             <span className={busy ? "text-[var(--color-brand)]" : ready ? "text-[var(--color-down)]" : "text-[var(--color-warn)]"}>
-              {busy ? (mode === "figma" ? "识别中" : "读取中") : ready ? (mode === "figma" ? "已识别" : "已转换") : "待准备"}
+              {busy ? (mode === "figma" ? `已等待 ${String(elapsedSeconds).padStart(2, "0")} 秒` : "读取中") : ready ? (mode === "figma" ? "已识别" : "已转换") : "待准备"}
             </span>
           </div>
           <div ref={fit.ref} className="grid min-h-0 flex-1 place-items-center overflow-hidden p-6">
-            {ready ? (
-              <div style={{ width: fit.width, background: scene.background }}>
-                <SubjectEditor src={previewSrc} aspect={scene.visualAspect} />
+            {busy ? (
+              mode === "figma" ? (
+                <div role="status" aria-live="polite" className="text-center">
+                  <div aria-hidden="true" className="mx-auto grid size-11 place-items-center rounded-full border-2 border-[var(--app-line-strong)] border-t-[var(--app-text-2)] text-[9px] tabular-nums text-[var(--app-text-2)]">
+                    {String(elapsedSeconds).padStart(2, "0")}s
+                  </div>
+                  <div className="mt-3 text-[11px] text-[var(--app-text-2)]">正在识别主视觉组件</div>
+                  <div className="mt-1 text-[9px] text-[var(--app-text-4)]">识别时间会因节点复杂度不同</div>
+                  <button type="button" onClick={recognize} className={cn(GHOST, "mt-3 border border-[var(--app-line)] bg-[var(--app-surface-2)]")}>取消识别</button>
+                </div>
+              ) : <Loader2 size={20} className="animate-spin text-[var(--app-text-4)]" />
+            ) : ready ? (
+              <div style={{ width: fit.width, background: mode !== "upload" || showUploadBackground ? scene.background : "transparent" }}>
+                <SubjectEditor
+                  src={previewSrc}
+                  contentAspect={mode === "upload" ? uploadAspect : scene.visualAspect}
+                  componentAspect={componentAspect}
+                  backgroundVisible={mode !== "upload" || showUploadBackground}
+                />
               </div>
-            ) : busy ? (
-              <Loader2 size={20} className="animate-spin text-[var(--app-text-4)]" />
             ) : (
               <div className="text-center">
                 {mode === "figma" ? <Layers3 size={21} className="mx-auto text-[var(--app-text-4)]" /> : <ImageUp size={21} className="mx-auto text-[var(--app-text-4)]" />}
@@ -1137,53 +1416,25 @@ export function ScenePrepareStep({ onNext }: { onNext: () => void }) {
             )}
           </div>
           {ready ? (
-            <div className="border-t border-[var(--app-line)] px-3 py-2 text-[9px] text-[var(--app-text-4)]">
-              拖动虚线框标出不可遮挡的主体，拖右下角调整大小；拖动白色圆点设置焦点，延展时焦点对齐到主视觉锚点。
+            <div className="px-3 py-2 text-[9px] leading-4 text-[var(--app-text-2)]">
+              {mode === "upload"
+                ? "写入 Figma 时将同步创建主视觉组件，所有生成画板均使用该组件实例，后续可统一替换或调整。"
+                : "所有生成画板均使用已识别的主视觉组件实例，后续可在 Figma 中统一替换或调整。"}
             </div>
           ) : null}
         </div>
-
-        <aside className="min-h-0 overflow-y-auto border-l border-[var(--app-line)] pl-4">
-          <div className="text-[11px] font-semibold">组件信息</div>
-          <dl className="mt-2 space-y-1.5 text-[10px]">
-            <div className="flex justify-between gap-3"><dt className="text-[var(--app-text-4)]">名称</dt><dd className="truncate">{ready ? kv?.name : "—"}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-[var(--app-text-4)]">来源</dt><dd>{ready ? (mode === "figma" ? "Figma 组件" : `上传 ${scene.uploadType.toUpperCase()}`) : "—"}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-[var(--app-text-4)]">尺寸</dt><dd className="tabular-nums">{ready && size ? `${size.w} × ${size.h}` : ready ? `比例 ${scene.visualAspect.toFixed(2)}` : "—"}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-[var(--app-text-4)]">焦点</dt><dd className="tabular-nums">{scene.focal.x.toFixed(2)}, {scene.focal.y.toFixed(2)}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-[var(--app-text-4)]">主体保护区</dt><dd className="tabular-nums">{Math.round(scene.safeBox.w * 100)}% × {Math.round(scene.safeBox.h * 100)}%</dd></div>
-          </dl>
-
-          {mode === "upload" ? (
-            <>
-              <div className="mt-5 text-[11px] font-semibold">将生成的图层</div>
-              <div className="mt-2 space-y-1">
-                {generatedLayers.map(([name, note]) => (
-                  <div key={name} className="rounded-[4px] bg-[var(--app-surface-2)] px-2.5 py-2 text-[10px]">
-                    <div>{name}</div>
-                    <div className="mt-0.5 text-[9px] text-[var(--app-text-4)]">{note}</div>
-                  </div>
-                ))}
-              </div>
-              <p className="mt-2 text-[9px] leading-relaxed text-[var(--app-text-4)]">
-                {scene.uploadType === "jpg" ? "JPG 不做自动抠图：主体保护区用于避让检查，四边过渡负责与底色衔接。" : "PNG 透明区域直接透出画板底色。"}
-              </p>
-            </>
-          ) : (
-            <p className="mt-5 text-[9px] leading-relaxed text-[var(--app-text-4)]">写入时创建该组件的 Instance，不复制图层；组件自带的暗角和过渡保持原样。</p>
-          )}
-        </aside>
       </div>
 
       <div className="mt-3 flex shrink-0 items-center justify-end gap-2">
         <Button size="lg" disabled>上一步</Button>
-        <Button variant="workflow" size="lg" disabled={!ready || busy} onClick={onNext}>下一步：选择资源位</Button>
+        <Button variant="workflow" size="lg" className="min-w-[96px]" disabled={!ready || busy} onClick={onNext}>下一步</Button>
       </div>
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/* 第三步：配置内容与样式                                               */
+/* 第三步：配置内容与版式                                               */
 /* ------------------------------------------------------------------ */
 
 export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
@@ -1195,7 +1446,7 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
     ? (scene.savedFamiliesByLanguage[lang] ?? [])
     : (scene.savedFamilies ?? []);
   /** 锁版式的规范组按规范生成，不用保存预设；其余分组要逐个保存。 */
-  const required = groups.filter((item) => !item.locked);
+  const required = project.mode === "campaign" ? [] : groups.filter((item) => !item.locked);
   const [groupId, setGroupId] = useState<SceneBucket | "native" | null>(() => required.find((item) => !saved.includes(item.id))?.id ?? groups[0]?.id ?? (hasNative ? "native" : null));
   const nativeOpen = hasNative && (groupId === "native" || !groups.length);
   const active = nativeOpen ? undefined : groups.find((item) => item.id === groupId) ?? groups[0];
@@ -1258,8 +1509,8 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
     return (
       <div className="grid h-full place-items-center">
         <div className="text-center">
-          <div className="text-[13px] font-semibold">还没有选择资源位</div>
-          <Button className="mt-4" variant="workflow" size="lg" onClick={onBack}>返回选择资源位</Button>
+          <div className="text-[13px] font-semibold">{project.mode === "campaign" ? "还没有选择专项资源位" : "还没有选择资源位"}</div>
+          <Button className="mt-4" variant="primary" size="lg" onClick={onBack}>{project.mode === "campaign" ? "返回选择专项" : "返回选择资源位"}</Button>
         </div>
       </div>
     );
@@ -1268,19 +1519,22 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
   return (
     <div className="flex h-full min-h-0 flex-col">
       {kinds.length + (hasNative ? 1 : 0) > 1 || activeKind === "offline" ? (
-        <div className="mb-2 flex shrink-0 items-center gap-2">
-          <div className={PILL_TABS}>
+        <div className="mb-2 shrink-0 overflow-x-auto">
+          <div className="flex w-max items-center">
+            <div className={PILL_TABS}>
             {kinds.map(({ kind, list }) => (
               <button key={kind} type="button" onClick={() => openKind(kind)} className={pillTab(activeKind === kind)}>
                 {kindLabel(kind, list)}{kind === "splash" ? "" : ` · ${list.length}`}
               </button>
             ))}
             {hasNative ? <button type="button" onClick={() => setGroupId("native")} className={pillTab(nativeOpen)}>仿原生</button> : null}
+            </div>
           </div>
         </div>
       ) : null}
       {siblings.length > 1 || (siblings.length === 1 && activeKind !== "splash") ? (
-        <div className={cn("mb-3 flex shrink-0 items-center gap-2", siblingRows.length > 1 ? "flex-wrap gap-y-1" : "overflow-x-auto")}>
+        <div className="mb-3 shrink-0 overflow-x-auto">
+        <div className={cn("flex w-max items-center gap-2", siblingRows.length > 1 && "flex-wrap gap-y-1")}>
         {siblingRows.map((row, index) => (
         <Fragment key={row.label}>
           {index > 0 ? <span className="mx-1 h-4 w-px shrink-0 bg-[var(--app-line)]" /> : null}
@@ -1293,7 +1547,7 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
                 type="button"
                 title={group.items.map((item) => `${item.w}×${item.h} ${item.use ?? ""}`.trim()).join("\n")}
                 onClick={() => setGroupId(group.id)}
-                className={cn("flex h-7 max-w-[260px] shrink-0 items-center gap-1.5 rounded-[4px] px-3 text-[10px]", active?.id === group.id ? "bg-[var(--color-brand-soft)] text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)]")}
+                className={cn("flex h-7 min-w-[112px] max-w-[260px] shrink-0 items-center justify-center gap-1.5 rounded-[4px] px-3 text-[10px]", active?.id === group.id ? "bg-[var(--color-brand-soft)] text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)]")}
               >
                 {group.locked ? <Lock size={10} className="shrink-0 text-[var(--app-text-4)]" /> : done ? <CheckCircle2 size={11} className="shrink-0 text-[var(--color-down)]" /> : <span className="size-1.5 shrink-0 rounded-full border border-[var(--app-text-4)]" />}
                 <span className="truncate">{group.label}</span>
@@ -1303,6 +1557,7 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
           })}
         </Fragment>
         ))}
+        </div>
         </div>
       ) : <div className="mb-1 shrink-0" />}
       {unspecified.length ? (
@@ -1318,7 +1573,6 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
               mode="family"
               board={{ ...sceneRef(active.representative), use: active.items.length > 1 ? `${active.representative.use ?? ""} 等 ${active.items.length} 个资源位`.trim() : active.representative.use }}
               lang={lang}
-              familyBoards={active.items}
               groupLabel={active.locked ? `规范 ${active.label}` : active.label}
               locked={active.locked}
             />
@@ -1330,11 +1584,13 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
       <div className="mt-3 flex shrink-0 items-center justify-end">
         <div className="flex gap-2">
           <Button size="lg" onClick={onBack}>上一步</Button>
-          {!active ? (
-            nextUnsaved ? <Button size="lg" onClick={() => setGroupId(nextUnsaved.id)}>下一个：{nextUnsaved.label}</Button> : null
-          ) : (
-            <Button size="lg" title={nextUnsaved ? `保存后进入下一个：${nextUnsaved.label}` : undefined} onClick={savePreset}>保存预设</Button>
-          )}
+          {project.mode !== "campaign" ? (
+            !active ? (
+              nextUnsaved ? <Button size="lg" onClick={() => setGroupId(nextUnsaved.id)}>下一个：{nextUnsaved.label}</Button> : null
+            ) : (
+              <Button size="lg" title={nextUnsaved ? `保存后进入下一个：${nextUnsaved.label}` : undefined} onClick={savePreset}>保存预设</Button>
+            )
+          ) : null}
           <Button variant="workflow" size="lg" disabled={unsaved.length > 0} onClick={onNext}>批量生成</Button>
         </div>
       </div>
@@ -1343,13 +1599,13 @@ export function SceneConfigStep({ onBack, onNext }: { onBack: () => void; onNext
 }
 
 /* ------------------------------------------------------------------ */
-/* 第四步：批量生成并细化                                               */
+/* 第四步：批量生成与输出                                               */
 /* ------------------------------------------------------------------ */
 
 function Thumb({ scene, version, target, lang, selected, compact = false, onOpen }: { scene: SceneState; version?: SceneVersion | null; target: TargetBoard; lang: Lang; selected?: boolean; compact?: boolean; onOpen: () => void }) {
   const { project } = useStudio();
   const ref = sceneRef(target);
-  const resolved = sceneVersionView(sceneLanguageBoardView(scene, lang, ref), version);
+  const resolved = sceneVersionView(sceneLanguageBoardView(scene, lang, ref, undefined, !version), version, ref);
   const fit = useFitBoard(target.w, target.h, compact ? 8 : 16, compact ? 1 : 80);
   const width = Math.min(compact ? 100 : 220, fit.width);
   const external = isExternalTarget(target);
@@ -1409,7 +1665,7 @@ function LinkedThumb({
     >
       <div ref={fit.ref} aria-hidden="true" className="grid h-[136px] w-full min-w-0 place-items-center overflow-hidden rounded-[4px] bg-[#111317]">
         <SceneLinkedPreview
-          scene={sceneVersionView(sceneLanguageBoardView(scene, lang, sceneRef(master)), version)}
+          scene={sceneVersionView(sceneLanguageBoardView(scene, lang, sceneRef(master), undefined, !version), version, sceneRef(master))}
           master={sceneRef(master)}
           board={sceneRef(target)}
           linked={link.linked}
@@ -1500,7 +1756,8 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     if (visualLink?.ok) keys.add(visualLink.fileKey);
     for (const target of project.targets) {
       if (nativeOf(target)) continue;
-      const activeScene = sceneVersionView(sceneLanguageBoardView(scene, lang, sceneRef(target)), version);
+      const targetRef = sceneRef(target);
+      const activeScene = sceneVersionView(sceneLanguageBoardView(scene, lang, targetRef, undefined, !version), version, targetRef);
       for (const element of activeScene.elements) {
         if (element.visible && element.role === "module" && element.module?.fileKey) keys.add(element.module.fileKey);
       }
@@ -1664,8 +1921,25 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     }],
     [activeOutputHidden, activeOutputLabel, lang, version],
   );
-  const boardTargets = useMemo(() => project.targets.filter((target) => !nativeOf(target)), [project.targets]);
-  const nativeTargets = useMemo(() => project.targets.filter((target) => nativeOf(target)), [project.targets]);
+  const batchCampaign = project.mode === "campaign" ? campaignScenarioOf(project.campaign?.scenarioId) : undefined;
+  const boardTargets = useMemo(
+    () => project.targets.filter((target) => {
+      if (nativeOf(target)) return false;
+      if (!batchCampaign) return true;
+      const slot = campaignSlotOfTargetKey(batchCampaign, target.key);
+      return Boolean(slot && (slot.languages ?? batchCampaign.languages).includes(lang));
+    }),
+    [batchCampaign, lang, project.targets],
+  );
+  const nativeTargets = useMemo(
+    () => project.targets.filter((target) => {
+      if (!nativeOf(target)) return false;
+      if (!batchCampaign) return true;
+      const slot = campaignSlotOfTargetKey(batchCampaign, target.key);
+      return Boolean(slot && (slot.languages ?? batchCampaign.languages).includes(lang));
+    }),
+    [batchCampaign, lang, project.targets],
+  );
   const linkedTargets = useMemo(() => boardTargets.filter((target) => linkedOf(target)), [boardTargets]);
   const { state: native } = useNative();
   const { measure, version: fontVersion } = useNativeMeasure();
@@ -1700,8 +1974,9 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
     const link = linkedOf(target);
     const masterTarget = link ? project.targets.find((item) => item.sizeId === link.master.id) : undefined;
     const ref = sceneRef(masterTarget ?? target);
-    const languageScene = sceneLanguageBoardView(scene, output.lang, ref);
-    const board = buildSceneBoard(sceneVersionView(languageScene, output.version), ref, output.lang);
+    const languageScene = sceneLanguageBoardView(scene, output.lang, ref, undefined, !output.version);
+    const resolvedScene = sceneVersionView(languageScene, output.version, ref);
+    const board = buildSceneBoard(resolvedScene, ref, output.lang);
     const hasLogo = board.layers.some((layer) => layer.role === "logo");
     const logoComponent = hasLogo ? logoComponentRef(board.logoPreset) : undefined;
     const name = figmaFrameName(target, output.label);
@@ -1740,11 +2015,22 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
       name,
       figmaLayout,
       solution: sceneSolution(ref),
-      backgroundColor: scene.background,
+      backgroundColor: board.background,
       scene: board,
+      ...(resolvedScene.visualMode === "upload" ? {
+        uploadFeather: {
+          level: resolvedScene.feather,
+          color: resolvedScene.background,
+          crop: uploadCropLayout(
+            resolvedScene.upload && resolvedScene.upload.height > 0 ? resolvedScene.upload.width / resolvedScene.upload.height : 1,
+            resolvedScene.uploadCrop,
+            resolvedScene.visualAspect,
+          ).crop,
+        },
+      } : {}),
       ...(hasLogo ? { logo: presetLogo(board.logoPreset), ...(logoComponent ? { logoComponent } : {}) } : {}),
     };
-  })), [boardTargets, linkedTargets, outputs, project.name, project.targets, scene.background]);
+  })), [boardTargets, linkedTargets, outputs, project.name, project.targets, scene]);
   const plans = useMemo(() => [...boardPlans, ...nativePlans], [boardPlans, nativePlans]);
   /** 按第二步的资源位分类分区（站内 / 官网 / 站外 / 自定义），区内按目录顺序平铺；闪屏设备尺寸排在站内末尾。 */
   const channels = useMemo(() => {
@@ -1897,7 +2183,13 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
         pageName: pageName.trim() || project.name,
         sectionName: project.name,
         ...(kv && regular.length ? { visualComponent: kv } : {}),
-        ...(scene.visualMode === "upload" ? { uploadFeather: { level: scene.feather, color: scene.background } } : {}),
+        ...(scene.visualMode === "upload" ? {
+          uploadFeather: {
+            level: scene.feather,
+            color: scene.background,
+            crop: uploadCropLayout(scene.upload && scene.upload.height > 0 ? scene.upload.width / scene.upload.height : 1, scene.uploadCrop, scene.visualAspect).crop,
+          },
+        } : {}),
       }, controller.signal);
       if (writeAbortRef.current !== controller) return;
       setDone(result);
@@ -1974,7 +2266,7 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
           const master = link ? masterOf(target) : undefined;
           const sourceTarget = master ?? target;
           const ref = sceneRef(sourceTarget);
-          const resolved = sceneVersionView(sceneLanguageBoardView(scene, output.lang, ref), output.version);
+          const resolved = sceneVersionView(sceneLanguageBoardView(scene, output.lang, ref, undefined, !output.version), output.version, ref);
           const name = `${safeFileName(boardFileStem(target))}.png`;
           await capture(
             link && master
@@ -2066,7 +2358,6 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
   );
   if (openTarget) {
     const openGroup = families.find((item) => item.items.some((target) => target.key === openTarget.key));
-    const familyBoards = openGroup?.items ?? [openTarget];
     const step = (delta: number) => {
       const next = boardTargets[(openIndex + delta + boardTargets.length) % boardTargets.length];
       if (next) setOpenKey(next.key);
@@ -2086,7 +2377,6 @@ export function SceneBatchStep({ onBack }: { onBack: () => void }) {
               mode="board"
               board={{ ...sceneRef(openTarget), use: openTarget.use }}
               lang={lang}
-              familyBoards={familyBoards}
               {...(openGroup ? { groupLabel: openGroup.locked ? `规范 ${openGroup.label}` : openGroup.label } : {})}
             />
           </div>

@@ -135,11 +135,23 @@ export interface SceneUpload {
   height: number;
 }
 
+export interface SceneUploadCrop {
+  /** 相对“刚好铺满裁切框”的缩放倍数，1 为默认铺满。 */
+  zoom: number;
+  /** 裁切框中心对应到原图的归一化坐标。 */
+  x: number;
+  y: number;
+  /** 裁切框在 1884×1096 主视觉组件内的归一化位置与尺寸。 */
+  frame?: { x: number; y: number; w: number; h: number };
+}
+
 export interface SceneState {
   version: 1;
   visualMode: "figma" | "upload";
   uploadType: "png" | "jpg";
   upload?: SceneUpload;
+  /** 上传图片在固定重点视觉区域内的裁切与缩放；旧项目缺省时取居中铺满。 */
+  uploadCrop?: SceneUploadCrop;
   /** 主视觉组件宽高比，识别或上传后写入。 */
   visualAspect: number;
   /** 上传图片转组件时生成的四边过渡强度，0 = 关。Figma 组件自带暗角，不再叠加。 */
@@ -214,6 +226,8 @@ export interface SceneState {
   languageFamilyEdits?: Partial<Record<Lang, Partial<Record<SceneBucket, Record<string, ScenePlacementPatch>>>>>;
   /** 基础语言各自的单板精调参数。 */
   languageBoardOverrides?: Partial<Record<Lang, Record<string, Record<string, ScenePlacementPatch>>>>;
+  /** 第四步的单画板内容与样式覆盖；只作用于当前语言的当前画板。 */
+  languageBoardStyles?: Partial<Record<Lang, Record<string, SceneBoardStyleOverride>>>;
   /** 锁定的基础语言；锁定后该语言及其自定义版本不可编辑。 */
   lockedLanguages?: Lang[];
   /** 批量生成时跳过的基础语言；语言及内容仍完整保留、可继续编辑。 */
@@ -238,6 +252,118 @@ export interface SceneFamilyContent {
   copyVariant?: string;
   /** 只出现在视图里：该族内容已经叠过，再取视图时原样返回 */
   viewed?: true;
+}
+
+/** 第四步允许局部覆盖的场景字段；基础版式后续更新时，未改过的字段仍继续继承。 */
+export const SCENE_BOARD_STYLE_KEYS = [
+  "visualMode",
+  "uploadType",
+  "upload",
+  "uploadCrop",
+  "visualAspect",
+  "feather",
+  "focal",
+  "safeBox",
+  "nextModuleNumber",
+  "background",
+  "textColors",
+  "highlights",
+  "customHighlight",
+  "customGradient",
+  "customSolid",
+  "logoPreset",
+  "ctaPreset",
+  "ctaCustom",
+  "strokes",
+  "copyKind",
+  "copyStructure",
+  "fonts",
+  "languageFonts",
+  "copyVariant",
+  "lineRatios",
+  "familyLineRatios",
+  "badgeStyle",
+  "badgeStyles",
+  "badgeLength",
+  "tracking",
+  "leading",
+  "lineLeading",
+  "lineTracking",
+  "ctaFontUnlocked",
+  "fontRuns",
+  "layoutSchemes",
+  "hiddenLayoutSchemes",
+] as const satisfies readonly (keyof SceneState)[];
+
+export type SceneBoardStyleKey = (typeof SCENE_BOARD_STYLE_KEYS)[number];
+
+export interface SceneBoardElementOverride {
+  added?: SceneElement;
+  removed?: boolean;
+  name?: string;
+  visible?: boolean;
+  texts?: Partial<Record<Lang, string>>;
+  module?: SceneCustomModule | null;
+}
+
+export interface SceneBoardStyleOverride {
+  values?: Partial<Pick<SceneState, SceneBoardStyleKey>>;
+  elements?: Record<string, SceneBoardElementOverride>;
+  order?: string[];
+  /** 少数标题组操作仍产出族参数；在单画板视图中只覆盖当前族。 */
+  familyEdit?: Record<string, ScenePlacementPatch>;
+}
+
+function applySceneBoardValue(base: unknown, patch: unknown): unknown {
+  if (patch === null) return undefined;
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const next: Record<string, unknown> = base && typeof base === "object" && !Array.isArray(base) ? { ...(base as Record<string, unknown>) } : {};
+  for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
+    const applied = applySceneBoardValue(next[key], value);
+    if (applied === undefined) delete next[key];
+    else next[key] = applied;
+  }
+  return next;
+}
+
+/** 把第四步的单画板内容与样式覆盖叠到版式视图上。 */
+export function sceneBoardStyleView(scene: SceneState, board: SceneBoardRef, override?: SceneBoardStyleOverride): SceneState {
+  if (!override) return scene;
+  const values = override.values ?? {};
+  let result = { ...scene };
+  for (const key of SCENE_BOARD_STYLE_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(values, key)) continue;
+    (result as unknown as Record<string, unknown>)[key] = applySceneBoardValue(result[key], values[key]);
+  }
+  const byId = override.elements ?? {};
+  let elements = result.elements.flatMap((element) => {
+    const patch = byId[element.id];
+    if (patch?.removed) return [];
+    if (!patch) return [element];
+    const next: SceneElement = {
+      ...element,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.visible !== undefined ? { visible: patch.visible } : {}),
+      ...(patch.texts ? { texts: { ...element.texts, ...patch.texts } } : {}),
+    };
+    if (patch.module === null) delete next.module;
+    else if (patch.module) next.module = patch.module;
+    return [next];
+  });
+  for (const patch of Object.values(byId)) {
+    if (!patch.added || patch.removed || elements.some((element) => element.id === patch.added!.id)) continue;
+    elements.push(patch.added);
+  }
+  if (override.order?.length) {
+    const rank = new Map(override.order.map((id, index) => [id, index]));
+    elements = elements.sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+  }
+  result.elements = elements;
+  if (override.familyEdit) {
+    const family = sceneBucketOf(board);
+    result.familyEdits = { ...result.familyEdits, [family]: override.familyEdit };
+  }
+  return result;
 }
 
 type LangMap<T> = Record<string, Partial<Record<Lang, T>>>;
@@ -276,8 +402,14 @@ export function sceneFamilyView(scene: SceneState, family: SceneBucket, show?: r
   };
 }
 
-/** 编辑器与批量生成共用：按语言、版式族、单板精调解析最终场景。 */
-export function sceneLanguageBoardView(scene: SceneState, lang: Lang, board: SceneBoardRef, show?: readonly SceneRole[]): SceneState {
+/** 编辑器与批量生成共用：按语言、版式族、单板精调解析最终场景。自定义版本传 false，避免继承基础语言的第四步单板改动。 */
+export function sceneLanguageBoardView(
+  scene: SceneState,
+  lang: Lang,
+  board: SceneBoardRef,
+  show?: readonly SceneRole[],
+  includeLanguageBoardOverrides = true,
+): SceneState {
   const family = sceneBucketOf(board);
   /** 旧共享显隐只归简体；其它语言从角色默认显隐开始。 */
   let raw = scene;
@@ -301,7 +433,7 @@ export function sceneLanguageBoardView(scene: SceneState, lang: Lang, board: Sce
     };
   }
   const familyEdit = raw.languageFamilyEdits?.[lang]?.[family];
-  const boardEdit = raw.languageBoardOverrides?.[lang]?.[board.key];
+  const boardEdit = includeLanguageBoardOverrides ? raw.languageBoardOverrides?.[lang]?.[board.key] : undefined;
   const languageModules = raw.languageModules?.[lang];
   const laid = sceneFamilyView({
     ...raw,
@@ -323,7 +455,11 @@ export function sceneLanguageBoardView(scene: SceneState, lang: Lang, board: Sce
       }),
     };
   };
-  return applyVisibility(applyVisibility(applyVisibility(laid, "*"), family), `board:${board.key}`);
+  const familyVisible = applyVisibility(applyVisibility(laid, "*"), family);
+  const visible = includeLanguageBoardOverrides ? applyVisibility(familyVisible, `board:${board.key}`) : familyVisible;
+  return includeLanguageBoardOverrides
+    ? sceneBoardStyleView(visible, board, raw.languageBoardStyles?.[lang]?.[board.key])
+    : visible;
 }
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -948,12 +1084,13 @@ export interface SceneVersion {
   modules?: Record<string, SceneCustomModule>;
   familyEdits?: ScenePatchMap;
   boardOverrides?: ScenePatchMap;
+  boardStyles?: Record<string, SceneBoardStyleOverride>;
   removed?: string[];
   badgeStyles?: Record<string, SceneBadgeStyle>;
 }
 
 /** 把自定义版本叠到场景上：版本里改过的文案、高亮、显隐覆盖基础语种，其余沿用。 */
-export function sceneVersionView(scene: SceneState, version?: SceneVersion | null): SceneState {
+export function sceneVersionView(scene: SceneState, version?: SceneVersion | null, board?: SceneBoardRef): SceneState {
   if (!version) return scene;
   const highlights = { ...scene.highlights };
   const fontRuns = { ...scene.fontRuns };
@@ -976,7 +1113,7 @@ export function sceneVersionView(scene: SceneState, version?: SceneVersion | nul
       ...(module ? { module } : {}),
     };
   });
-  return {
+  const viewed = {
     ...scene,
     elements,
     highlights,
@@ -985,6 +1122,7 @@ export function sceneVersionView(scene: SceneState, version?: SceneVersion | nul
     familyEdits: version.familyEdits ? { ...scene.familyEdits, ...version.familyEdits } : scene.familyEdits,
     boardOverrides: version.boardOverrides ? { ...scene.boardOverrides, ...version.boardOverrides } : scene.boardOverrides,
   };
+  return board ? sceneBoardStyleView(viewed, board, version.boardStyles?.[board.key]) : viewed;
 }
 
 /** 站内规范 CTA：有规范时高度、字号、内边距与宽度上下限全部锁定。 */
@@ -1031,6 +1169,12 @@ export interface SceneBoardRef {
 }
 
 export const SCENE_COMPONENT_ASPECT = 1884 / 1096;
+export const SCENE_UPLOAD_FOCUS_REGION = {
+  x: 457 / 1884,
+  y: 174 / 1096,
+  w: 991 / 1884,
+  h: 655 / 1096,
+} as const;
 
 export const SCENE_FAMILY_LABEL: Record<SceneFamily, string> = {
   strip: "通栏族",
@@ -1841,8 +1985,9 @@ function specPosition(scene: SceneState, board: SceneBoardRef, role: SceneRole):
   if (!layout) return null;
   if (role === "visual" && layout.visualFill) {
     const baseH = SIZE_FACTOR[sceneBoardFamily(board)].visual * unitOf(board);
-    const scale = Math.max(board.h / baseH, board.w / (baseH * scene.visualAspect));
-    const w = baseH * scale * scene.visualAspect;
+    const visualAspect = scene.visualAspect;
+    const scale = Math.max(board.h / baseH, board.w / (baseH * visualAspect));
+    const w = baseH * scale * visualAspect;
     const h = baseH * scale;
     return { x: (board.w / 2 + (scene.focal.x - 0.5) * w) / board.w, y: (board.h / 2 + (scene.focal.y - 0.5) * h) / board.h, scale };
   }
@@ -2278,9 +2423,13 @@ export function layoutScene(input: SceneState, board: SceneBoardRef, lang: Lang)
   const unitIds = new Set([...core, ...attached].map((item) => item.el.id));
   const rider = board.layout?.cta && "afterSubtitle" in board.layout.cta ? laid.find((item) => item.el.role === "cta") : undefined;
   if (rider) unitIds.add(rider.el.id);
-  fitSceneZones(board, laid, unitIds);
-  if (avoidTopElements(board, laid, core, attached, rider, stacked?.gap ?? 0)) fitSceneZones(board, laid, unitIds);
-  keepBadgeInside(board, laid);
+  /** 财报季训练画板使用逐图层原始坐标：不再套通用安全区、避让和角标收边。 */
+  const campaignCorpusLayout = board.key.startsWith("campaign:earnings-season:earnings-general:");
+  if (!campaignCorpusLayout) {
+    fitSceneZones(board, laid, unitIds);
+    if (avoidTopElements(board, laid, core, attached, rider, stacked?.gap ?? 0)) fitSceneZones(board, laid, unitIds);
+    keepBadgeInside(board, laid);
+  }
   if (!stacked || !groupBox) return { laid, group: null };
   const fitted = stackBox(core);
   return {
@@ -2452,11 +2601,12 @@ export function checkSceneBoard(input: SceneState, board: SceneBoardRef, lang: L
   }
   for (const { el, metrics, box } of result.laid) {
     if (el.role === "visual") {
+      const safeBox = scene.visualMode === "upload" ? (scene.uploadCrop?.frame ?? SCENE_UPLOAD_FOCUS_REGION) : scene.safeBox;
       subject = {
-        x: box.x + scene.safeBox.x * box.w,
-        y: box.y + scene.safeBox.y * box.h,
-        w: scene.safeBox.w * box.w,
-        h: scene.safeBox.h * box.h,
+        x: box.x + safeBox.x * box.w,
+        y: box.y + safeBox.y * box.h,
+        w: safeBox.w * box.w,
+        h: safeBox.h * box.h,
       };
       const visibleW = Math.max(0, Math.min(board.w, subject.x + subject.w) - Math.max(0, subject.x));
       const visibleH = Math.max(0, Math.min(board.h, subject.y + subject.h) - Math.max(0, subject.y));
@@ -2955,10 +3105,11 @@ export function createDefaultScene(copy: Partial<Record<Lang, LangCopy>>): Scene
     version: 1,
     visualMode: "figma",
     uploadType: "png",
+    uploadCrop: { zoom: 1, x: 0.5, y: 0.5 },
     visualAspect: SCENE_COMPONENT_ASPECT,
     feather: 2,
     focal: { x: 0.5, y: 0.5 },
-    safeBox: { x: 0.31, y: 0.2, w: 0.38, h: 0.6 },
+    safeBox: { ...SCENE_UPLOAD_FOCUS_REGION },
     elements: [
       { id: "visual", role: "visual", name: "主视觉组件", visible: true, texts: {} },
       { id: "logo", role: "logo", name: "Logo", visible: false, texts: {} },

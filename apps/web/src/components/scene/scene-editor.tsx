@@ -5,7 +5,7 @@ import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEn
 import { LAYOUT_PRESETS, recipeById, type LayoutPresetRecord } from "@futu/corpus";
 import {
   CTA_STYLE_PRESETS,
-  SCENE_BACKGROUND_PRESETS,
+  SCENE_BOARD_STYLE_KEYS,
   SCENE_BADGE_STYLES,
   SCENE_FAMILY_LABEL,
   SCENE_FONTS,
@@ -41,6 +41,7 @@ import {
   sceneFilledStructure,
   sceneBucketFamily,
   sceneBoardLocked,
+  sceneBoardStyleView,
   sceneBucketOf,
   sceneGroupBaseGap,
   sceneFontId,
@@ -82,6 +83,7 @@ import {
   type SceneBadgeLength,
   type SceneBadgeStyle,
   type SceneBoardRef,
+  type SceneBoardStyleOverride,
   type SceneBox,
   type SceneCopyKind,
   type SceneCtaLength,
@@ -315,18 +317,105 @@ function withoutEntry(map: SceneState["familyEdits"], scope: string, id?: string
   return next;
 }
 
+const sameBoardValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const NO_BOARD_DIFF = Symbol("no-board-diff");
+
+function boardValueDiff(before: unknown, after: unknown): unknown | typeof NO_BOARD_DIFF {
+  if (sameBoardValue(before, after)) return NO_BOARD_DIFF;
+  if (after === undefined) return null;
+  if (!after || typeof after !== "object" || Array.isArray(after)) return after;
+  const previous = before && typeof before === "object" && !Array.isArray(before) ? before as Record<string, unknown> : {};
+  const next = after as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+    const value = boardValueDiff(previous[key], next[key]);
+    if (value !== NO_BOARD_DIFF) patch[key] = value;
+  }
+  return patch;
+}
+
+function mergeBoardValuePatch(current: unknown, patch: unknown): unknown {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const next = current && typeof current === "object" && !Array.isArray(current) ? { ...(current as Record<string, unknown>) } : {};
+  for (const [key, value] of Object.entries(patch as Record<string, unknown>)) next[key] = mergeBoardValuePatch(next[key], value);
+  return next;
+}
+
+/** 只记录本次真正改变的字段；未改过的内容继续继承第三步版式族。 */
+function mergeBoardStyleOverride(
+  current: SceneBoardStyleOverride | undefined,
+  before: SceneState,
+  after: SceneState,
+  family: ReturnType<typeof sceneBucketOf>,
+): SceneBoardStyleOverride {
+  const values = { ...current?.values };
+  for (const key of SCENE_BOARD_STYLE_KEYS) {
+    const patch = boardValueDiff(before[key], after[key]);
+    if (patch === NO_BOARD_DIFF) continue;
+    (values as Record<string, unknown>)[key] = mergeBoardValuePatch((values as Record<string, unknown>)[key], patch);
+  }
+  const elements = { ...current?.elements };
+  const beforeById = new Map(before.elements.map((element) => [element.id, element]));
+  const afterById = new Map(after.elements.map((element) => [element.id, element]));
+  for (const id of new Set([...beforeById.keys(), ...afterById.keys()])) {
+    const previous = beforeById.get(id);
+    const next = afterById.get(id);
+    if (!previous && next) {
+      elements[id] = { ...elements[id], added: next, removed: false };
+      continue;
+    }
+    if (previous && !next) {
+      elements[id] = { ...elements[id], removed: true };
+      continue;
+    }
+    if (!previous || !next) continue;
+    const patch = { ...elements[id] };
+    let changed = false;
+    if (previous.name !== next.name) {
+      patch.name = next.name;
+      changed = true;
+    }
+    if (previous.visible !== next.visible) {
+      patch.visible = next.visible;
+      changed = true;
+    }
+    if (!sameBoardValue(previous.texts, next.texts)) {
+      const texts = { ...patch.texts };
+      for (const language of new Set([...Object.keys(previous.texts), ...Object.keys(next.texts)]) as Set<Lang>) {
+        if (previous.texts[language] !== next.texts[language]) texts[language] = next.texts[language] ?? "";
+      }
+      patch.texts = texts;
+      changed = true;
+    }
+    if (!sameBoardValue(previous.module, next.module)) {
+      patch.module = next.module ?? null;
+      changed = true;
+    }
+    if (changed) elements[id] = patch;
+  }
+  const beforeOrder = before.elements.map((element) => element.id);
+  const afterOrder = after.elements.map((element) => element.id);
+  const familyEdit = sameBoardValue(before.familyEdits[family], after.familyEdits[family])
+    ? current?.familyEdit
+    : after.familyEdits[family] ?? {};
+  return {
+    ...(Object.keys(values).length ? { values } : {}),
+    ...(Object.keys(elements).length ? { elements } : {}),
+    ...(!sameBoardValue(beforeOrder, afterOrder) ? { order: afterOrder } : current?.order ? { order: current.order } : {}),
+    ...(familyEdit ? { familyEdit } : {}),
+  };
+}
+
 export function SceneEditor({
   mode,
   board,
   lang,
-  familyBoards,
   groupLabel,
   locked,
 }: {
   mode: "family" | "board";
   board: SceneBoardRef & { use?: string };
   lang: Lang;
-  familyBoards: SceneBoardRef[];
   /** 编辑分组的名称，缺省为画幅族名。 */
   groupLabel?: string;
   /** 分组是否按规范锁版式，缺省按画板自身判断。 */
@@ -341,8 +430,18 @@ export function SceneEditor({
   /** 规范模板分组：族里只改内容与样式，位置、对齐、字号、CTA 按规范；主视觉裁切仍可调。 */
   const specBoard = mode === "family" && locked !== undefined ? locked : sceneBoardLocked(board);
   const layoutLocked = mode === "family" && specBoard;
-  const frozen = (current: SceneState, id: string) => layoutLocked && current.elements.find((el) => el.id === id)?.role !== "visual";
-  const layoutBlock = (node: ReactNode) => layoutLocked ? <fieldset disabled className="m-0 min-w-0 border-0 p-0 opacity-50">{node}</fieldset> : node;
+  /** 牛牛圈 Feed 保留规范安全区，但标题组与 CTA 允许按实际素材自由挪位。 */
+  const freeFeedPosition = board.w === 1080
+    && board.h === 540
+    && (board.layout?.source === "230:4246" || Boolean(board.use?.includes("牛牛圈tab_牛牛圈feed")));
+  const freePositionTarget = (current: SceneState, id: string) => freeFeedPosition
+    && (id === SCENE_GROUP_ID || current.elements.find((el) => el.id === id)?.role === "cta");
+  const frozen = (current: SceneState, id: string) => layoutLocked
+    && current.elements.find((el) => el.id === id)?.role !== "visual"
+    && !freePositionTarget(current, id);
+  const layoutBlock = (node: ReactNode, allow = false) => layoutLocked && !allow
+    ? <fieldset disabled className="m-0 min-w-0 border-0 p-0 opacity-50">{node}</fieldset>
+    : node;
   const show = board.show;
   const showKey = show?.join() ?? "";
   const visibilityScope = mode === "board" ? `board:${board.key}` : family;
@@ -359,7 +458,8 @@ export function SceneEditor({
   };
   const withLanguageLayout = (current: SceneState) => {
     const familyEdit = current.languageFamilyEdits?.[lang]?.[family];
-    const boardEdit = current.languageBoardOverrides?.[lang]?.[board.key];
+    /** 自定义版本独立于基础语言第四步的位置覆盖，和预览、导出、写入保持同一解析顺序。 */
+    const boardEdit = mode === "board" && version ? undefined : current.languageBoardOverrides?.[lang]?.[board.key];
     return {
       ...current,
       familyEdits: familyEdit ? { ...current.familyEdits, [family]: familyEdit } : current.familyEdits,
@@ -398,12 +498,17 @@ export function SceneEditor({
       : isolated, family, show);
     return withLanguageVisibility(withLanguageVisibility(base, "*"), family);
   };
-  const languageScopedView = (current: SceneState) => mode === "board"
-    ? withLanguageVisibility(languageFamilyView(current), `board:${board.key}`)
-    : languageFamilyView(current);
+  const languageScopedView = (current: SceneState) => {
+    const familyView = languageFamilyView(current);
+    if (mode !== "board") return familyView;
+    /** 自定义版本有自己的单板快照，不继承基础语言第四步的单板调整。 */
+    if (version) return familyView;
+    const visible = withLanguageVisibility(familyView, `board:${board.key}`);
+    return sceneBoardStyleView(visible, board, current.languageBoardStyles?.[lang]?.[board.key]);
+  };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const familyScene = useMemo(() => languageScopedView(rawScene), [rawScene, family, showKey, lang, mode, board.key]);
-  const scene = useMemo(() => sceneVersionView(familyScene, version), [familyScene, version]);
+  const scene = useMemo(() => sceneVersionView(familyScene, version, mode === "board" ? board : undefined), [board, familyScene, mode, version]);
   /** 编辑器改动落回当前族；基础语言的图层显隐另存，绝不污染其它语言。 */
   const updateScene = (recipe: (current: SceneState) => SceneState) =>
     updateRawScene((current) => {
@@ -414,10 +519,35 @@ export function SceneEditor({
       const scopeBase = mode === "board" ? withLanguageVisibility(globalBase, family) : globalBase;
       const view = languageScopedView(current);
       const activeVersion = version ? current.versions?.find((item) => item.id === version.id) : null;
-      const editableView = activeVersion ? sceneVersionView(view, activeVersion) : view;
+      const editableView = activeVersion ? sceneVersionView(view, activeVersion, mode === "board" ? board : undefined) : view;
       const next = recipe(editableView);
-      const languageFamilyEdit = next.familyEdits[family] ?? {};
-      const languageBoardEdit = next.boardOverrides[board.key] ?? {};
+      /** 单板 recipe 已经基于解析后的版本视图执行，不能再次叠旧覆盖，否则刚改的值会被旧值覆盖。 */
+      const scopedNext = next;
+      const languageFamilyEdit = scopedNext.familyEdits[family] ?? {};
+      const languageBoardEdit = scopedNext.boardOverrides[board.key] ?? {};
+      if (mode === "board") {
+        if (activeVersion) {
+          const boardStyle = mergeBoardStyleOverride(activeVersion.boardStyles?.[board.key], editableView, scopedNext, family);
+          const versions = (current.versions ?? []).map((item) => item.id === activeVersion.id ? {
+            ...item,
+            boardOverrides: { ...item.boardOverrides, [board.key]: languageBoardEdit },
+            boardStyles: { ...item.boardStyles, [board.key]: boardStyle },
+          } : item);
+          return { ...current, versions };
+        }
+        const boardStyle = mergeBoardStyleOverride(current.languageBoardStyles?.[lang]?.[board.key], editableView, scopedNext, family);
+        return {
+          ...current,
+          languageBoardOverrides: {
+            ...current.languageBoardOverrides,
+            [lang]: { ...current.languageBoardOverrides?.[lang], [board.key]: languageBoardEdit },
+          },
+          languageBoardStyles: {
+            ...current.languageBoardStyles,
+            [lang]: { ...current.languageBoardStyles?.[lang], [board.key]: boardStyle },
+          },
+        };
+      }
       const baseById = new Map(scopeBase.elements.map((el) => [el.id, el]));
       const visibility = { ...current.languageVisibility?.[lang]?.[visibilityScope] };
       if (!version) {
@@ -454,9 +584,8 @@ export function SceneEditor({
         ...(version ? { highlights: current.highlights, fontRuns: current.fontRuns } : {}),
         ...(version ? { badgeStyles: current.badgeStyles } : {}),
         familyEdits: { ...next.familyEdits, [family]: current.familyEdits[family] ?? {} },
-        boardOverrides: mode === "board"
-          ? { ...next.boardOverrides, [board.key]: current.boardOverrides[board.key] ?? {} }
-          : next.boardOverrides,
+        /** 当前视图叠了语言/版本单板覆盖；共享层始终保留原值，覆盖仅写回各自作用域。 */
+        boardOverrides: current.boardOverrides,
       };
       const committed = sceneCommitFamily(current, family, sharedSafe, show);
       const languageScopes = { ...committed.languageVisibility?.[lang] };
@@ -472,16 +601,24 @@ export function SceneEditor({
       const languageBoardOverrides = { ...committed.languageBoardOverrides };
       let versions = committed.versions;
       if (version) {
-        versions = (committed.versions ?? []).map((item) => item.id === version.id ? {
-          ...item,
-          visibility: Object.fromEntries(next.elements.map((el) => [el.id, el.visible])),
-          badgeStyles: next.badgeStyles,
-          familyEdits: { ...item.familyEdits, [family]: languageFamilyEdit },
-          ...(mode === "board" ? { boardOverrides: { ...item.boardOverrides, [board.key]: languageBoardEdit } } : {}),
-        } : item);
+        versions = (committed.versions ?? []).map((item) => {
+          if (item.id !== version.id) return item;
+          const boardOverrides = { ...item.boardOverrides };
+          /** 空对象是显式 tombstone：阻止已清除的共享/语言单板覆盖再次继承回来。 */
+          boardOverrides[board.key] = languageBoardEdit;
+          return {
+            ...item,
+            visibility: Object.fromEntries(next.elements.map((el) => [el.id, el.visible])),
+            badgeStyles: next.badgeStyles,
+            familyEdits: { ...item.familyEdits, [family]: languageFamilyEdit },
+            boardOverrides,
+          };
+        });
       } else {
         languageFamilyEdits[lang] = { ...languageFamilyEdits[lang], [family]: languageFamilyEdit };
-        if (mode === "board") languageBoardOverrides[lang] = { ...languageBoardOverrides[lang], [board.key]: languageBoardEdit };
+        const ownBoardOverrides = { ...languageBoardOverrides[lang] };
+        ownBoardOverrides[board.key] = languageBoardEdit;
+        languageBoardOverrides[lang] = ownBoardOverrides;
       }
       /** 当前语言当前版式族一有改动就重新标为待保存。 */
       const savedFamiliesByLanguage = { ...committed.savedFamiliesByLanguage };
@@ -532,6 +669,7 @@ export function SceneEditor({
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
+      if (languageLocked) return;
       /** 选中标题组里的一层时，↑ / ↓ 调整它在组里的顺序。 */
       if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
         if (groupKeys.current.move(event.key === "ArrowUp" ? -1 : 1)) event.preventDefault();
@@ -553,7 +691,7 @@ export function SceneEditor({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [undoScene, redoScene]);
+  }, [languageLocked, undoScene, redoScene]);
   const [selectedId, setSelectedId] = useState<string | null>(SCENE_GROUP_ID);
   const propsRef = useRef<HTMLElement>(null);
   /** 每次点选都展开并定位参数；重复点同一对象时 selectedId 不变，也必须定位。 */
@@ -633,6 +771,17 @@ export function SceneEditor({
   const laid = useMemo(() => layoutScene(scene, board, lang).laid, [board, lang, scene]);
   const issueIds = useMemo(() => new Set(output.issues.flatMap((issue) => issue.ids)), [output.issues]);
   const boardPatch = scene.boardOverrides[board.key] ?? {};
+  const boardStyle = version
+    ? version.boardStyles?.[board.key]
+    : rawScene.languageBoardStyles?.[lang]?.[board.key];
+  const legacyBoardScope = rawScene.languageVisibility?.[lang]?.[`board:${board.key}`];
+  const legacyBoardRemoved = rawScene.languageRemoved?.[lang]?.[`board:${board.key}`];
+  const boardHasEdits = Boolean(
+    Object.keys(boardPatch).length
+    || boardStyle
+    || (!version && legacyBoardScope && Object.keys(legacyBoardScope).length)
+    || (!version && legacyBoardRemoved?.length),
+  );
   const kvUrl = project.content.kv?.previewUrl;
   const script = sceneFontScript(lang);
 
@@ -726,7 +875,7 @@ export function SceneEditor({
 
   /** 高亮写到当前版本：语种本身写 scene.highlights，自定义版本写版本自己的高亮。 */
   const writeHighlights = (id: string, recipe: (list: SceneHighlight[]) => SceneHighlight[]) => updateScene((current) => {
-    if (version) {
+    if (version && mode !== "board") {
       const item = current.versions?.find((entry) => entry.id === version.id);
       if (!item) return current;
       const list = recipe(sceneVersionView(current, item).highlights[id]?.[lang] ?? []);
@@ -737,6 +886,11 @@ export function SceneEditor({
 
   const removeElement = (id: string) => {
     if (languageLocked) return;
+    if (mode === "board") {
+      updateScene((current) => ({ ...current, elements: current.elements.filter((item) => item.id !== id) }));
+      if (selectedId === id) setSelectedId(null);
+      return;
+    }
     updateRawScene((current) => {
       if (version) {
         return {
@@ -1061,10 +1215,10 @@ export function SceneEditor({
         const module = moduleSource(result, value, latest.placementMode, latest.backdropTarget);
         return {
           ...current,
-          elements: version
+          elements: version && mode !== "board"
             ? current.elements
             : current.elements.map((item) => item.id === el.id ? { ...item, module } : item),
-          versions: version
+          versions: version && mode !== "board"
             ? (current.versions ?? []).map((item) => item.id === version.id ? { ...item, modules: { ...item.modules, [el.id]: module } } : item)
             : current.versions,
         };
@@ -1087,10 +1241,10 @@ export function SceneEditor({
     delete module.previewUrl;
     updateScene((current) => ({
       ...current,
-      elements: version
+      elements: version && mode !== "board"
         ? current.elements
         : current.elements.map((item) => item.id === el.id ? { ...item, module } : item),
-      versions: version
+      versions: version && mode !== "board"
         ? (current.versions ?? []).map((item) => item.id === version.id ? { ...item, modules: { ...item.modules, [el.id]: module } } : item)
         : current.versions,
     }));
@@ -1205,7 +1359,7 @@ export function SceneEditor({
   /** 往隐藏或还没有的文案层里输入：恢复显示，新建的层其它语种留空，避免回退显示别的语言。 */
   const fillSlot = (role: SceneRole, text: string) => updateScene((current) => {
     const existing = current.elements.find((el) => el.role === role);
-    if (version) {
+    if (version && mode !== "board") {
       const fresh = sceneDefaultElement(role, 0);
       const base = existing ?? { ...fresh, texts: Object.fromEntries(Object.keys(fresh.texts).map((key) => [key, ""])) };
       const next = existing ? current : { ...current, elements: [...current.elements, { ...base, visible: false }] };
@@ -1238,12 +1392,14 @@ export function SceneEditor({
 
   const setText = (el: SceneElement, text: string) => {
     updateScene((current) => {
-      const viewed = version ? sceneVersionView(current, current.versions?.find((item) => item.id === version.id)) : current;
+      const viewed = version && mode !== "board"
+        ? sceneVersionView(current, current.versions?.find((item) => item.id === version.id))
+        : current;
       const viewedEl = viewed.elements.find((item) => item.id === el.id);
       const before = viewedEl ? sceneText(viewedEl, lang) : "";
       const ranges = shiftRanges(viewed.highlights[el.id]?.[lang] ?? [], before, text);
       const fontRuns = shiftRanges(viewed.fontRuns?.[el.id]?.[lang] ?? [], before, text);
-      if (version) {
+      if (version && mode !== "board") {
         return editVersion(current, (item) => ({
           ...item,
           texts: { ...item.texts, [el.id]: text },
@@ -1290,7 +1446,7 @@ export function SceneEditor({
   }));
 
   const writeFontRuns = (id: string, recipe: (list: SceneFontRun[]) => SceneFontRun[]) => updateScene((current) => {
-    if (version) {
+    if (version && mode !== "board") {
       const item = current.versions?.find((entry) => entry.id === version.id);
       if (!item) return current;
       const list = recipe(sceneVersionView(current, item).fontRuns?.[id]?.[lang] ?? []);
@@ -1335,18 +1491,47 @@ export function SceneEditor({
     };
   });
 
-  const resetBoard = () => updateScene((current) => ({ ...current, boardOverrides: withoutEntry(current.boardOverrides, board.key) }));
-
-  const syncToFamily = () => updateScene((current) => {
-    const patch = current.boardOverrides[board.key] ?? {};
-    const familyPatch = { ...current.familyEdits[family] };
-    for (const [id, value] of Object.entries(patch)) familyPatch[id] = { ...familyPatch[id], ...value };
-    return {
-      ...current,
-      familyEdits: { ...current.familyEdits, [family]: familyPatch },
-      boardOverrides: withoutEntry(current.boardOverrides, board.key),
-    };
-  });
+  const resetBoard = () => {
+    if (languageLocked) return;
+    updateRawScene((current) => {
+      if (version) {
+        return {
+          ...current,
+          versions: (current.versions ?? []).map((item) => {
+            if (item.id !== version.id) return item;
+            const boardStyles = { ...item.boardStyles };
+            delete boardStyles[board.key];
+            return { ...item, boardOverrides: { ...item.boardOverrides, [board.key]: {} }, boardStyles };
+          }),
+        };
+      }
+      const languageStyles = { ...current.languageBoardStyles?.[lang] };
+      delete languageStyles[board.key];
+      const visibilityScopes = { ...current.languageVisibility?.[lang] };
+      delete visibilityScopes[`board:${board.key}`];
+      const languageVisibility = { ...current.languageVisibility };
+      if (Object.keys(visibilityScopes).length) languageVisibility[lang] = visibilityScopes;
+      else delete languageVisibility[lang];
+      const removedScopes = { ...current.languageRemoved?.[lang] };
+      delete removedScopes[`board:${board.key}`];
+      const languageRemoved = { ...current.languageRemoved };
+      if (Object.keys(removedScopes).length) languageRemoved[lang] = removedScopes;
+      else delete languageRemoved[lang];
+      return {
+        ...current,
+        languageBoardOverrides: {
+          ...current.languageBoardOverrides,
+          [lang]: { ...current.languageBoardOverrides?.[lang], [board.key]: {} },
+        },
+        languageBoardStyles: {
+          ...current.languageBoardStyles,
+          [lang]: languageStyles,
+        },
+        languageVisibility,
+        languageRemoved: Object.keys(languageRemoved).length ? languageRemoved : undefined,
+      };
+    });
+  };
 
   /** 切换对齐时锚点移到外框对应边，元素视觉位置不跳。 */
   const changeAlign = (id: string, align: SceneAlign) => {
@@ -1382,17 +1567,36 @@ export function SceneEditor({
   const metricsOf = (el: SceneElement) => laidOf(el)?.metrics ?? sceneMetrics(scene, board, el, resolveScenePlacement(scene, board, el), lang);
   const elementVisible = (el: SceneElement) => resolveScenePlacement(scene, board, el).visible;
   /** 规范 CTA 没解除锁定时位置也锁住，解除锁定后才能挪。 */
-  const ctaPinned = (el: SceneElement) => el.role === "cta" && Boolean(board.ctaSpec) && Boolean(metricsOf(el).locked) && !scene.ctaFontUnlocked;
+  const ctaPinned = (el: SceneElement) => el.role === "cta"
+    && Boolean(board.ctaSpec)
+    && Boolean(metricsOf(el).locked)
+    && !scene.ctaFontUnlocked
+    && !freeFeedPosition;
   const pinnedIds = new Set(scene.elements.filter(ctaPinned).map((el) => el.id));
+  const movableWhileFixed = freeFeedPosition
+    ? new Set([SCENE_GROUP_ID, ...scene.elements.filter((el) => el.role === "cta").map((el) => el.id)])
+    : undefined;
   const firstMemberIndex = scene.elements.findIndex((el) => isSceneGroupRole(el.role));
   const hasLayerContent = (el: SceneElement) => (el.role === "module" && Boolean(el.module)) || Boolean(sceneText(el, lang).trim()) || (el.role === "badge" && sceneBadgeStyle(scene, el.id).id === "earnings");
+  /** 其它版式族新增的层会以全局隐藏占位保留层序；当前族没显隐记录且实际隐藏时，不应出现在图层栏。 */
+  const participatesInCurrentLayers = (el: SceneElement) => {
+    if (el.role === "visual" || el.role === "logo" || isSceneGroupRole(el.role) || elementVisible(el)) return true;
+    /** 独立版本里 CTA 可能被用户隐藏；仍保留图层入口，才能再次显示。 */
+    if (version && el.role === "cta") return true;
+    if (rawScene.familyContent?.[family]?.visibility?.[el.id] !== undefined) return true;
+    if (rawScene.languageVisibility?.[lang]?.[visibilityScope]?.[el.id] !== undefined) return true;
+    if (mode === "board" && rawScene.languageVisibility?.[lang]?.[family]?.[el.id] !== undefined) return true;
+    if (mode === "board" && boardStyle?.elements?.[el.id] !== undefined) return true;
+    if (version?.familyEdits?.[family]?.[el.id] || version?.boardOverrides?.[board.key]?.[el.id]) return true;
+    return false;
+  };
   const attachedIds = scene.elements
     .filter((el) => SCENE_ATTACH_ROLES.includes(el.role) && Boolean(resolveScenePlacement(scene, board, el).attach))
     .map((el) => el.id);
-  const attachedEls = scene.elements.filter((el) => attachedIds.includes(el.id) && (el.role === "logo" || hasLayerContent(el)));
+  const attachedEls = scene.elements.filter((el) => attachedIds.includes(el.id) && participatesInCurrentLayers(el) && (el.role === "logo" || hasLayerContent(el)));
   /** 元素的放置模式就是它与标题组的关系，不提供第二套取消编组入口。 */
   const detachableEls = attachedEls.filter((el) => el.role !== "module");
-  const listed = scene.elements.filter((el) => !isSceneGroupRole(el.role) && !attachedEls.includes(el) && (!MODULE_ROLES.has(el.role) || el.role === "logo" || hasLayerContent(el) || elementVisible(el)));
+  const listed = scene.elements.filter((el) => participatesInCurrentLayers(el) && !isSceneGroupRole(el.role) && !attachedEls.includes(el) && (!MODULE_ROLES.has(el.role) || el.role === "logo" || hasLayerContent(el) || elementVisible(el)));
   /** 图层栏里标题组的子层按层序排，并排编入的图层排在最后。 */
   const groupOrder = sceneGroupOrder(scene, family, board.key);
   const orderRank = (el: SceneElement) => groupOrder.includes(el.id) ? groupOrder.indexOf(el.id) : groupOrder.length;
@@ -1400,6 +1604,8 @@ export function SceneEditor({
     ...SCENE_GROUP_ROLES.flatMap((role) => scene.elements.filter((el) => el.role === role && hasLayerContent(el))),
     ...attachedEls,
   ].sort((a, b) => orderRank(a) - orderRank(b));
+  /** 参数栏严格跟随图层栏：左侧不存在的占位层，不在右侧生成“幽灵参数”。 */
+  const layerElementIds = new Set([...listed, ...groupChildren].map((el) => el.id));
   const layerMembers = groupChildren.filter((el) => isSceneGroupRole(el.role));
   const stackIds = output.group?.stackIds ?? [];
   const canReorder = mode === "family" && !layoutLocked && Boolean(output.group);
@@ -1588,7 +1794,7 @@ export function SceneEditor({
             {visible ? <Eye size={12} /> : <EyeOff size={12} />}
           </button>
         ) : null}
-        {mode === "family" && SCENE_REMOVABLE_ROLES.includes(el.role) ? (
+        {SCENE_REMOVABLE_ROLES.includes(el.role) ? (
           <button
             type="button"
             aria-label={`删除${label}`}
@@ -1596,7 +1802,7 @@ export function SceneEditor({
               event.stopPropagation();
               removeElement(el.id);
             }}
-            className="grid size-5 place-items-center rounded-[3px] text-[var(--app-text-4)] opacity-0 hover:text-[var(--color-up)] group-hover:opacity-100"
+            className="grid size-5 place-items-center rounded-[3px] text-[var(--app-text-4)] opacity-0 hover:text-[var(--color-up)] focus-visible:opacity-100 group-hover:opacity-100"
           >
             <Trash2 size={11} />
           </button>
@@ -1835,7 +2041,7 @@ export function SceneEditor({
   };
 
   /** 文案只在当前版式族改过时：可同步给全部版式族，或恢复通用文案。 */
-  const familyCopyNote = (el: SceneElement) => !version && sceneFamilyCopyEdited(rawScene, family, el.id) ? (
+  const familyCopyNote = (el: SceneElement) => mode === "family" && !version && sceneFamilyCopyEdited(rawScene, family, el.id) ? (
     <div className="mt-1.5 flex items-center gap-2 text-[9px] text-[var(--app-text-4)]">
       <span className="min-w-0 flex-1 truncate">文案仅{groupName}使用</span>
       <button type="button" onClick={() => updateRawScene((current) => sceneSyncCopyToAll(current, family, el.id))} className="shrink-0 text-[var(--app-text-3)] hover:text-[var(--app-text)]">
@@ -2486,6 +2692,11 @@ export function SceneEditor({
     return (
       <div>
         {fontPicker(el)}
+        {mode === "family" ? (
+          <p className="mt-4 text-[10px] leading-relaxed text-[var(--app-text-3)]">
+            CTA样式默认随当前版式统一设置；如需单独调整，请前往「批量生成与输出」
+          </p>
+        ) : null}
         <div className="mt-3 grid grid-cols-2 gap-1.5">
           {CTA_STYLE_PRESETS.map((item) => tile(item.id, item.name, { backgroundColor: item.backgroundColor, ...(item.backgroundImage ? { backgroundImage: item.backgroundImage } : {}) }, item.defaultTextColor))}
         </div>
@@ -2518,7 +2729,6 @@ export function SceneEditor({
             </div>
           ) : null}
         </div>
-
         {spec && (locked || spec.soft) && !(layoutLocked && !spec.soft) ? (
           <div className="mt-3 flex h-7 items-center gap-1.5 rounded-[4px] bg-[var(--app-surface-2)] px-2 text-[9px]">
             {fontLocked ? <Lock size={10} className="shrink-0 text-[var(--app-text-3)]" /> : <LockOpen size={10} className="shrink-0 text-[var(--app-text-3)]" />}
@@ -2600,7 +2810,28 @@ export function SceneEditor({
         ))}
         </div>
 
-        {pinnedIds.has(el.id) ? null : <div className="mt-3">{placementFields(el, false)}</div>}
+        {freeFeedPosition ? (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <ScrubField
+              label="X"
+              ariaLabel="CTA X 坐标"
+              value={Math.round((laidOf(el)?.placement.x ?? placement.x) * board.w)}
+              min={-board.w}
+              max={board.w * 2}
+              suffix="px"
+              onCommit={(value) => patchPlacement(el.id, { x: value / board.w })}
+            />
+            <ScrubField
+              label="Y"
+              ariaLabel="CTA Y 坐标"
+              value={Math.round(placement.y * board.h)}
+              min={-board.h}
+              max={board.h * 2}
+              suffix="px"
+              onCommit={(value) => patchPlacement(el.id, { y: value / board.h })}
+            />
+          </div>
+        ) : pinnedIds.has(el.id) ? null : <div className="mt-3">{placementFields(el, false)}</div>}
       </div>
     );
   };
@@ -2625,6 +2856,13 @@ export function SceneEditor({
             kvUrl={kvUrl}
             box={item.box}
             board={board}
+            upload={scene.visualMode === "upload" ? {
+              imageAspect: scene.upload && scene.upload.height > 0 ? scene.upload.width / scene.upload.height : 1,
+              componentAspect: scene.visualAspect,
+              crop: scene.uploadCrop,
+              background: scene.background,
+              feather: scene.feather,
+            } : undefined}
             onChange={(next) => patchPlacement(el.id, {
               x: (next.x + scene.focal.x * next.w) / board.w,
               y: (next.y + scene.focal.y * next.h) / board.h,
@@ -2738,7 +2976,7 @@ export function SceneEditor({
   );
 
   const customElementsPanel = () => {
-    const modules = scene.elements.filter((el) => el.role === "module" && el.module);
+    const modules = scene.elements.filter((el) => el.role === "module" && el.module && layerElementIds.has(el.id));
     const nextModuleName = `元素${sceneNextModuleNumber(scene)}`;
     return (
       <>
@@ -2802,7 +3040,7 @@ export function SceneEditor({
               muted={!shown}
               open={isOpen(el.id)}
               onToggle={() => togglePanel(el.id)}
-              aside={!version && !sourceCleared ? (
+              aside={mode === "family" && !version && !sourceCleared ? (
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
@@ -3036,7 +3274,7 @@ export function SceneEditor({
 
   /** 标题组里直接套用方案。 */
   const schemePicker = () => {
-    if (mode !== "family" || layoutLocked || !layoutSchemes.length) return null;
+    if (mode !== "family" || layoutLocked) return null;
     const applied = layoutSchemes.find((item) => sceneLayoutSchemeMatches(scene, item, family, board));
     return (
       <div className="min-w-0">
@@ -3048,6 +3286,8 @@ export function SceneEditor({
           value={applied?.id ?? ""}
           display={applied?.name ?? "选择方案套用"}
           options={layoutSchemes.map((item) => ({ id: item.id, label: item.name }))}
+          emptyText="暂无已存方案"
+          emptyTextClassName="text-[9px]"
           onChange={(id) => {
             const item = layoutSchemes.find((entry) => entry.id === id);
             if (item) applyScheme(item);
@@ -3197,10 +3437,10 @@ export function SceneEditor({
           </span>
           <div className="flex shrink-0 items-center gap-3 whitespace-nowrap">
             <div className="flex items-center gap-0.5">
-              <button type="button" aria-label="撤销" title="撤销（Ctrl+Z）" disabled={!canUndoScene} onClick={undoScene} className="flex h-6 items-center gap-1 rounded-[4px] px-1.5 text-[var(--app-text-3)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-35">
+              <button type="button" aria-label="撤销" title="撤销（Ctrl+Z）" disabled={languageLocked || !canUndoScene} onClick={undoScene} className="flex h-6 items-center gap-1 rounded-[4px] px-1.5 text-[var(--app-text-3)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-35">
                 <Undo2 size={11} />撤销
               </button>
-              <button type="button" aria-label="重做" title="重做（Ctrl+Shift+Z）" disabled={!canRedoScene} onClick={redoScene} className="flex h-6 items-center gap-1 rounded-[4px] px-1.5 text-[var(--app-text-3)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-35">
+              <button type="button" aria-label="重做" title="重做（Ctrl+Shift+Z）" disabled={languageLocked || !canRedoScene} onClick={redoScene} className="flex h-6 items-center gap-1 rounded-[4px] px-1.5 text-[var(--app-text-3)] hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-35">
                 <Redo2 size={11} />重做
               </button>
             </div>
@@ -3247,6 +3487,7 @@ export function SceneEditor({
             onPatch={patchPlacement}
             fixedLayout={layoutLocked}
             pinnedIds={pinnedIds}
+            movableWhileFixed={movableWhileFixed}
             onTextRange={(id, start, end) => {
               if (id !== selectedId) selectLayer(id);
               setRange((current) => current && current.id === id && current.start === start && current.end === end ? current : { id, start, end });
@@ -3259,19 +3500,6 @@ export function SceneEditor({
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-[var(--app-line)] px-3 py-2">
           <span className="text-[10px] font-semibold">画板底色</span>
-          <div className="flex gap-1.5">
-            {SCENE_BACKGROUND_PRESETS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                title={`${item.name} ${item.hex}`}
-                aria-label={`底色 ${item.name}`}
-                onClick={() => updateScene((current) => ({ ...current, background: item.hex }))}
-                className={cn("h-6 w-9 rounded-[4px] border", scene.background.toLowerCase() === item.hex.toLowerCase() ? "border-[var(--color-brand)]" : "border-white/15")}
-                style={{ backgroundColor: item.hex }}
-              />
-            ))}
-          </div>
           <BackgroundColorControl
             label="画板底色"
             value={scene.background}
@@ -3399,19 +3627,26 @@ export function SceneEditor({
             </div>
           ) : null}
         >
-          {layoutBlock(<>
-          <div className={cn("mb-3 grid items-end gap-2", layoutSchemes.length && mode === "family" && !layoutLocked ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-1")}>
+          {layoutBlock(
+            <div className={cn("mb-3 grid items-end gap-2", mode === "family" && !layoutLocked ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-1")}>
             {schemePicker()}
             <div className="justify-self-end">
               <div className="mb-1 text-[9px] text-[var(--app-text-4)]">对齐方式</div>
               <Segmented<SceneAlign> size="sm" value={group.align} onChange={(align) => changeAlign(SCENE_GROUP_ID, align)} options={ALIGN_OPTIONS} />
             </div>
-          </div>
+            </div>,
+          )}
           <div className="grid grid-cols-2 gap-2">
-            <ScrubField label="X" ariaLabel="标题组 X 坐标" value={Math.round(group.x * board.w)} min={-board.w} max={board.w * 2} suffix="px" onCommit={(value) => patchPlacement(SCENE_GROUP_ID, { x: value / board.w })} />
-            <ScrubField label="Y" ariaLabel="标题组 Y 坐标" value={Math.round(group.y * board.h)} min={-board.h} max={board.h * 2} suffix="px" onCommit={(value) => patchPlacement(SCENE_GROUP_ID, { y: value / board.h })} />
-            <ScrubField label="整体比例" ariaLabel="标题组整体比例" value={group.scale} decimals={2} min={0.3} max={3} step={0.01} suffix="×" onCommit={(value) => patchPlacement(SCENE_GROUP_ID, { scale: value })} />
-            <ScrubField
+            {layoutBlock(
+              <ScrubField label="X" ariaLabel="标题组 X 坐标" value={Math.round(group.x * board.w)} min={-board.w} max={board.w * 2} suffix="px" onCommit={(value) => patchPlacement(SCENE_GROUP_ID, { x: value / board.w })} />,
+              freeFeedPosition,
+            )}
+            {layoutBlock(
+              <ScrubField label="Y" ariaLabel="标题组 Y 坐标" value={Math.round(group.y * board.h)} min={-board.h} max={board.h * 2} suffix="px" onCommit={(value) => patchPlacement(SCENE_GROUP_ID, { y: value / board.h })} />,
+              freeFeedPosition,
+            )}
+            {layoutBlock(<ScrubField label="整体比例" ariaLabel="标题组整体比例" value={group.scale} decimals={2} min={0.3} max={3} step={0.01} suffix="×" onCommit={(value) => patchPlacement(SCENE_GROUP_ID, { scale: value })} />)}
+            {layoutBlock(<ScrubField
               label="层间距"
               ariaLabel="标题组层间距"
               disabled={stackIds.length < 2}
@@ -3436,39 +3671,38 @@ export function SceneEditor({
                 }
                 return { ...next, familyEdits: { ...next.familyEdits, [family]: edits } };
               })}
-            />
+            />)}
           </div>
-          </>)}
         </Section>
 
-        {COPY_ORDER.map((role) => slotField(role))}
+        {COPY_ORDER
+          .filter((role) => scene.elements.some((el) => el.role === role && layerElementIds.has(el.id)))
+          .map((role) => slotField(role))}
         {scene.elements
           .filter((el) => (
-            el.role === "cta"
-            || el.role === "custom"
-            || ((el.role === "badge" || el.role === "disclaimer") && (hasLayerContent(el) || elementVisible(el)))
+            layerElementIds.has(el.id)
+            && (
+              el.role === "cta"
+              || el.role === "custom"
+              || ((el.role === "badge" || el.role === "disclaimer") && (hasLayerContent(el) || elementVisible(el)))
+            )
           ))
           .map((el) => customField(el))}
         {customElementsPanel()}
 
-        {scene.elements.filter((el) => el.role === "logo").map((el) => <Fragment key={el.id}>{logoPanel(el)}</Fragment>)}
-        {scene.elements.filter((el) => el.role === "visual").map((el) => <Fragment key={el.id}>{visualPanel(el)}</Fragment>)}
+        {scene.elements.filter((el) => el.role === "logo" && layerElementIds.has(el.id)).map((el) => <Fragment key={el.id}>{logoPanel(el)}</Fragment>)}
+        {scene.elements.filter((el) => el.role === "visual" && layerElementIds.has(el.id)).map((el) => <Fragment key={el.id}>{visualPanel(el)}</Fragment>)}
 
         {colorModule()}
 
         {mode === "board" ? (
           <Section title="本画板">
             <div className="space-y-1.5">
-              <button type="button" disabled={!Object.keys(boardPatch).length} onClick={resetBoard} className={cn(GHOST, "flex w-full items-center gap-1.5")}>
+              <button type="button" disabled={!boardHasEdits || languageLocked} onClick={resetBoard} className={cn(GHOST, "flex w-full items-center gap-1.5")}>
                 <RotateCcw size={11} />恢复整板自动值
               </button>
-              {specBoard ? null : (
-                <button type="button" disabled={!Object.keys(boardPatch).length} onClick={syncToFamily} className={cn(GHOST, "flex w-full items-center gap-1.5")}>
-                  <Plus size={11} />同步到{groupName}（{familyBoards.length} 块）
-                </button>
-              )}
             </div>
-            {specBoard && Object.keys(boardPatch).length ? (
+            {specBoard && boardHasEdits ? (
               <p className="mt-2 text-[9px] leading-relaxed text-[var(--warn-text)]">这块画板已偏离规范，写入后请按投放要求复核</p>
             ) : null}
           </Section>

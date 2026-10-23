@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Check, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { sizeKey, type SizeItem } from "@futu/domain";
 import { ALL_SIZES, SIZE_GROUPS, slotKey } from "@futu/specs";
 import { arrowStep } from "@/components/ui/field";
@@ -230,7 +230,7 @@ export function SizePicker() {
         title={external ? label : item.hint ? `${label}，${item.hint}` : label}
         className={cn(
           "flex h-10 min-w-0 items-center rounded-[5px] border px-2.5 text-left outline-none focus-visible:border-[var(--app-text-2)]",
-          on ? "border-[var(--app-line-strong)] bg-[var(--app-surface-2)]" : "border-[var(--app-line)] hover:border-[var(--app-line-strong)] hover:bg-[var(--app-surface-2)]",
+          on ? "border-transparent bg-white/[0.1]" : "border-[var(--app-line)] hover:border-[var(--app-line-strong)] hover:bg-[var(--app-surface-2)]",
         )}
       >
         <span className="flex min-w-0 flex-1 items-center gap-2">
@@ -242,9 +242,6 @@ export function SizePicker() {
             {external ? null : <span className="truncate text-[var(--app-text-3)]">{item.use}</span>}
             {!external && item.variant ? <span className="shrink-0 text-[8px] text-[var(--app-text-4)]">{item.variant}</span> : null}
           </span>
-        </span>
-        <span aria-hidden className={cn("ml-2 grid size-4 shrink-0 place-items-center rounded-[3px] border", on ? "border-[var(--app-text)] bg-[var(--app-text)] text-[var(--app-page)]" : "border-[var(--app-line-strong)]")}>
-          {on ? <Check size={10} /> : null}
         </span>
       </button>
     );
@@ -289,7 +286,7 @@ export function SizePicker() {
         onPointerMove={moveMarquee}
         onPointerUp={endMarquee}
         onPointerCancel={endMarquee}
-        className="relative min-h-0 min-w-0 flex-1 cursor-crosshair select-none overflow-y-auto pl-3"
+        className="relative min-h-0 min-w-0 flex-1 cursor-crosshair select-none overflow-y-auto px-3"
       >
         {marquee ? (
           <div

@@ -36,7 +36,7 @@ import { ALL_SIZES, slotByKey, slotKey, slotTarget } from "@futu/specs";
 import { createDefaultProject } from "./seed";
 import type { FigmaRecognitionResult } from "./figma-recognition";
 
-export const STEPS = ["准备主视觉", "选择资源位", "配置内容与样式", "批量生成并细化"] as const;
+export const STEPS = ["准备主视觉", "选择资源位", "配置内容与版式", "批量生成与输出"] as const;
 export type StepIndex = 0 | 1 | 2 | 3;
 export type EntryMode = "pick" | "blank";
 export type VisualComponentRecognitionSource = {
@@ -111,6 +111,8 @@ type StudioContext = {
   removeSourceLang: (lang: Lang) => void;
   retargetSourceLang: (from: Lang, to: Lang) => void;
   setTargets: (keys: string[], customNames?: Record<string, string>) => void;
+  setTargetBoards: (targets: TargetBoard[]) => void;
+  setCampaign: (campaign: Project["campaign"]) => void;
   patchShared: (patch: Partial<BoardConfig>) => void;
   patchFocus: (patch: Partial<BoardConfig>) => void;
   applySharedToAll: () => void;
@@ -214,6 +216,7 @@ function normalizeProjectTargets(project: Project): Project {
     ? initializeLanguageContent(project, "ja")
     : project;
   const normalizedTargets = initializedProject.targets.flatMap((target) => {
+    if (target.key.startsWith("campaign:")) return [target];
     const catalogItem = slotByKey(target.key)
       ?? ALL_SIZES.find((item) => item.id === target.sizeId)
       ?? slotByKey(sizeKey(target.w, target.h));
@@ -331,8 +334,9 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     update((p) => ({ ...p, content: { ...p.content, ...patch } }));
   };
 
-  /** 场景撤销栈。间隔不足 250ms 的连续修改（如拖动）合并成一步；切换项目时清空。 */
-  const sceneHistory = useRef<{ projectId: string; past: SceneState[]; future: SceneState[]; lastAt: number }>({ projectId: "", past: [], future: [], lastAt: 0 });
+  /** 场景撤销栈同时保存主视觉资源，避免更换图片后只撤参数造成资源与组件样式错位。 */
+  type SceneSnapshot = { scene: SceneState; kv?: AssetRef };
+  const sceneHistory = useRef<{ projectId: string; past: SceneSnapshot[]; future: SceneSnapshot[]; lastAt: number }>({ projectId: "", past: [], future: [], lastAt: 0 });
   const [, setHistoryTick] = useState(0);
   const history = sceneHistory.current;
   if (history.projectId !== project.id) {
@@ -342,11 +346,15 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     history.lastAt = 0;
   }
   const currentScene = () => normalizeSceneModuleNames(project.content.scene ?? createDefaultScene(project.content.copy));
+  const currentSceneSnapshot = (): SceneSnapshot => ({
+    scene: currentScene(),
+    kv: project.content.kv ? { ...project.content.kv } : undefined,
+  });
 
   const updateScene: StudioContext["updateScene"] = (recipe) => {
     const now = Date.now();
     if (now - history.lastAt > 250) {
-      history.past.push(currentScene());
+      history.past.push(currentSceneSnapshot());
       if (history.past.length > 100) history.past.shift();
     }
     history.lastAt = now;
@@ -361,18 +369,18 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const undoScene = () => {
     const previous = history.past.pop();
     if (!previous) return;
-    history.future.push(currentScene());
+    history.future.push(currentSceneSnapshot());
     history.lastAt = 0;
-    update((p) => ({ ...p, content: { ...p.content, scene: previous } }));
+    update((p) => ({ ...p, content: { ...p.content, scene: previous.scene, kv: previous.kv } }));
     setHistoryTick((tick) => tick + 1);
   };
 
   const redoScene = () => {
     const next = history.future.pop();
     if (!next) return;
-    history.past.push(currentScene());
+    history.past.push(currentSceneSnapshot());
     history.lastAt = 0;
-    update((p) => ({ ...p, content: { ...p.content, scene: next } }));
+    update((p) => ({ ...p, content: { ...p.content, scene: next.scene, kv: next.kv } }));
     setHistoryTick((tick) => tick + 1);
   };
 
@@ -573,6 +581,25 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const setTargetBoards: StudioContext["setTargetBoards"] = (targets) => {
+    const unique = [...new Map(targets.map((target) => [target.key, target])).values()];
+    update((project) => ({
+      ...project,
+      targets: unique,
+      overrides: Object.fromEntries(
+        Object.entries(project.overrides).filter(([key]) => unique.some((target) => target.key === key)),
+      ),
+    }));
+    if (unique.length && !unique.some((target) => target.key === focusKey)) {
+      setFocusKey(unique[0]!.key);
+      setDraft(null);
+    }
+  };
+
+  const setCampaign: StudioContext["setCampaign"] = (campaign) => {
+    update((project) => ({ ...project, mode: campaign ? "campaign" : "standard", campaign }));
+  };
+
   const patchShared: StudioContext["patchShared"] = (patch) => {
     update((p) => {
       const current = boardConfigOf(p, focusKey);
@@ -691,6 +718,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     removeSourceLang,
     retargetSourceLang,
     setTargets,
+    setTargetBoards,
+    setCampaign,
     patchShared,
     patchFocus: patchShared,
     applySharedToAll,

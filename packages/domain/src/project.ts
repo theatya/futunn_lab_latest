@@ -20,11 +20,21 @@ export interface TargetBoard {
   use: string;
 }
 
+export interface CampaignProjectConfig {
+  id: string;
+  version: string;
+  scenarioId?: string;
+}
+
 export interface Project {
   id: string;
   name: string;
   createdAt: string;
   updatedAt: string;
+
+  /** 普通延展与专项延展共用同一项目模型；专项规则由 campaign 配置驱动。 */
+  mode?: "standard" | "campaign";
+  campaign?: CampaignProjectConfig;
 
   content: Content;
 

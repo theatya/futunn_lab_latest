@@ -90,6 +90,12 @@ export interface BoardPlan {
   visualComponent?: AssetRef;
   /** 第一阶段确认的母版背景色。 */
   backgroundColor?: string;
+  /** 上传主视觉在当前画板最终解析出的裁切、底色与过渡；第四步单板调整必须随画板写入。 */
+  uploadFeather?: {
+    level: number;
+    color: string;
+    crop?: { zoom: number; x: number; y: number; frame?: { x: number; y: number; w: number; h: number } };
+  };
   subLabel?: string;
   badgeLabel?: string;
   disclaimerLabel?: string;
@@ -135,8 +141,12 @@ export interface FigmaWriteOptions {
   replaceRun?: boolean;
   /** 已在第一步识别的主视觉组件；写入端必须创建其 Instance，而非复制图层。 */
   visualComponent?: AssetRef;
-  /** 上传图片转组件时的边缘过渡：强度 0..3 与过渡到的底色。 */
-  uploadFeather?: { level: number; color: string };
+  /** 上传图片转组件时的固定裁切区域、图片变换和边缘过渡。 */
+  uploadFeather?: {
+    level: number;
+    color: string;
+    crop?: { zoom: number; x: number; y: number; frame?: { x: number; y: number; w: number; h: number } };
+  };
   /** 建新页还是写当前页 */
   page: "new" | "current";
   pageName: string;

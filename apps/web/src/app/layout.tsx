@@ -9,8 +9,8 @@ export const metadata: Metadata = {
   applicationName: "FUTU 延展平台",
   description: "识别 Figma 母版、批量延展资源位与修改文案",
   icons: {
-    icon: "/brand/platform-icon-circle.png?v=1",
-    apple: "/brand/platform-icon-circle.png?v=1",
+    icon: "/brand/platform-favicon.png?v=7",
+    apple: "/brand/platform-icon-transparent.png?v=2",
   },
 };
 

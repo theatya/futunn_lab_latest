@@ -37,7 +37,7 @@ export function StepBar({
     return (
       <nav aria-label="流程步骤" className="relative w-full">
         <div className="absolute left-6 right-6 top-[15px] h-px bg-[var(--app-line)]" />
-        <div ref={fill} className="absolute left-6 top-[15px] h-px w-0 bg-[var(--color-brand)]" />
+        <div ref={fill} className="absolute left-6 top-[15px] h-px w-0 bg-white" />
         <ol className="relative grid grid-cols-3">
           {STEPS.map((name, i) => {
             const done = i < step;
@@ -70,7 +70,7 @@ export function StepBar({
   return (
     <nav aria-label="流程步骤" className="relative">
       <div className="absolute left-[17px] top-4 bottom-4 w-px bg-[var(--app-line)]" />
-      <div ref={fill} className="absolute left-[17px] top-4 w-px h-0 bg-[var(--color-brand)]" />
+      <div ref={fill} className="absolute left-[17px] top-4 w-px h-0 bg-white" />
       <ol className="relative space-y-1">
         {STEPS.map((name, i) => {
           const done = i < step;
@@ -120,8 +120,8 @@ function StepIndexBadge({
       className={cn(
         "grid place-items-center shrink-0 font-semibold rounded-full",
         size === "md" ? "size-7 text-[12px]" : "size-6 text-[11px]",
-        current && (size === "md" ? "bg-[var(--color-brand)] text-white" : "bg-[var(--app-text)] text-[var(--app-bg)]"),
-        done && !current && "bg-[var(--color-brand-soft)] text-[var(--color-brand)]",
+        current && "bg-white text-[#151517]",
+        done && !current && "bg-white/10 text-white/70",
         !current && !done && (size === "md" ? "bg-[var(--app-surface-3)] text-[var(--app-rail-muted)]" : "bg-[var(--app-surface-2)] text-[var(--app-text-3)]"),
       )}
     >

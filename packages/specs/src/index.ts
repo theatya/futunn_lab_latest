@@ -39,7 +39,7 @@ const TEMPLATE_OF: ReadonlyMap<string, string> = (() => {
  * PC 首页轮播（内容区距左 580）、H5 首页轮播 375×600、活动中心（底部信息条、不要 Logo）、
  * 消息推送 edm / FB 分享图（要带市场 Logo）、桌面端底部广告位、官网顶部 banner 1000×160、官网中缝位 1400×160。
  */
-const SPECIAL_IDS = new Set(["w-pc-hero", "w-h5-hero", "a-center", "a-edm", "a-fb", "a-desk", "w-top", "w-mid"]);
+const SPECIAL_IDS = new Set(["w-pc-hero", "w-h5-hero", "a-center", "a-box", "a-edm", "a-fb", "a-desk", "w-top", "w-mid"]);
 /** 站外超扁幅（Partnership 300×50 / 320×50 / 728×90）在站外版式里合成「超扁幅」一族（`strip@ultra`），代表画幅 728×90。 */
 const ULTRA_IDS = new Set(["e-partner-300x50", "e-partner-320x50", "e-partner-728x90"]);
 /** 线下物料按每个资源位独立编辑，不能和站外画幅族共用版式。 */

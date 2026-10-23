@@ -12,6 +12,8 @@ import {
   Info,
   KeyRound,
   Layers3,
+  LayoutTemplate,
+  Lightbulb,
   Link2,
   List,
   Loader2,
@@ -19,7 +21,6 @@ import {
   Pencil,
   Pipette,
   Plus,
-  Sparkles,
   Trash2,
   UserRound,
   X,
@@ -30,12 +31,22 @@ import { motion } from "motion/react";
 import {
   CTA_STYLE_PRESETS,
   LANGS,
+  SCENE_FONTS,
+  SCENE_GROUP_ID,
   SCENE_FAMILY_LABEL,
   badgeStyleOf,
   disclaimerText,
   emptyLangCopy,
   joinTokens,
   logoOf,
+  resolveSceneGroup,
+  resolveScenePlacement,
+  sceneDefaultElement,
+  sceneFontId,
+  sceneFontScript,
+  sceneFontSupports,
+  sceneLanguageBoardView,
+  sceneText,
   sizeKey,
   titleStackOf,
   tokenizeTitle,
@@ -45,6 +56,8 @@ import {
   type Lang,
   type LogoSourceMode,
   type RecipeTypography,
+  type ScenePlacementPatch,
+  type SceneState,
   type TargetBoard,
 } from "@futu/domain";
 import { ALL_SIZES, linkedOf, nativeOf } from "@futu/specs";
@@ -53,6 +66,7 @@ import {
   StudioProvider,
   createBlankStudioSnapshot,
   emptyMasterRecognitionSource,
+  useScene,
   useStudio,
   type MasterRecognitionSource,
   type StudioSnapshot,
@@ -64,7 +78,26 @@ import { BreakPicker } from "@/components/steps/break-picker";
 import { LogoBind } from "@/components/steps/asset-bind";
 import { LogoPresetPreview } from "@/components/logo-preset-preview";
 import { BackgroundColorControl, colorToHex, hexToHsv, hsvToHex } from "@/components/color-control";
-import { SceneBatchStep, SceneConfigStep, ScenePrepareStep, sceneEditGroups } from "@/components/scene/scene-steps";
+import { SceneBatchStep, SceneConfigStep, ScenePrepareStep, sceneEditGroups, sceneRef } from "@/components/scene/scene-steps";
+import { SceneArtboard } from "@/components/scene/scene-artboard";
+import {
+  CAMPAIGN_LANG_LABELS,
+  CAMPAIGN_PACK,
+  CAMPAIGN_SCENARIOS,
+  CAMPAIGN_TAG_ID,
+  CAMPAIGN_TIME_ID,
+  CAMPAIGN_VISUAL_ASPECT,
+  campaignCopies,
+  campaignCorpusPlacements,
+  campaignLangHint,
+  campaignScenarioOf,
+  campaignTarget,
+  campaignTimeText,
+  campaignTimeValue,
+  type CampaignCopyType,
+  type CampaignScenarioDefinition,
+  type CampaignSlotDefinition,
+} from "@/lib/campaigns";
 import { Button, WorkflowSparkle } from "@/components/ui/button";
 import { TextArea, TextField } from "@/components/ui/field";
 import { Slider } from "@/components/ui/slider";
@@ -77,7 +110,8 @@ import type { LayerRole } from "@/lib/recognize";
 
 type Mode = "home" | "extend" | "copy";
 
-const EXTEND_STEPS = ["准备主视觉", "选择资源位", "配置内容与样式", "批量生成并细化"] as const;
+const EXTEND_STEPS = ["准备主视觉", "选择资源位", "配置内容与版式", "批量生成与输出"] as const;
+const CAMPAIGN_STEPS = ["准备主视觉", "选择专项", "配置内容", "批量生成与输出"] as const;
 const COPY_STEPS = ["选择范围", "匹配文案", "编辑与检查", "写回 Figma"] as const;
 
 type TaskType = "extend" | "copy";
@@ -96,6 +130,7 @@ const SIDEBAR_WIDTH_STORE = "futu:platform-sidebar-width";
 const SIDEBAR_WIDTH_DEFAULT = 168;
 const SIDEBAR_WIDTH_MIN = 96;
 const SIDEBAR_WIDTH_MAX = 280;
+const PLATFORM_VERSION = "v1.0";
 
 const ROLE_LABEL = {
   title: "主标题",
@@ -339,6 +374,30 @@ const MATCH_ROWS = [
   ["角标", "Limited time", "18 / 27", "82%"],
 ];
 
+function createCampaignStudioSnapshot(name: string, id: string): StudioSnapshot {
+  const snapshot = createBlankStudioSnapshot(name, id);
+  snapshot.project.content = structuredClone(snapshot.project.content);
+  snapshot.project.mode = "campaign";
+  snapshot.project.campaign = { id: CAMPAIGN_PACK.id, version: CAMPAIGN_PACK.version };
+  snapshot.project.targets = [];
+  snapshot.project.content.langs = ["sc", "tc", "en", "ja"];
+  if (snapshot.project.content.scene) {
+    snapshot.project.content.scene.visualAspect = CAMPAIGN_VISUAL_ASPECT;
+    snapshot.project.content.scene.safeBox = { x: 0, y: 0, w: 1, h: 1 };
+    snapshot.project.content.scene.uploadCrop = { zoom: 1, x: 0.5, y: 0.5, frame: { x: 0, y: 0, w: 1, h: 1 } };
+  }
+  snapshot.step = 0;
+  snapshot.lang = "sc";
+  snapshot.focusKey = "";
+  snapshot.masterSources = { sc: emptyMasterRecognitionSource() };
+  snapshot.activeMasterLang = "sc";
+  return snapshot;
+}
+
+function isCampaignTask(task: WorkspaceTask | undefined) {
+  return task?.type === "extend" && task.studio?.project.mode === "campaign";
+}
+
 function PlatformInner() {
   const studio = useStudio();
   const [mode, setMode] = useState<Mode>("home");
@@ -348,6 +407,7 @@ function PlatformInner() {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [tasksReady, setTasksReady] = useState(false);
   const [namingType, setNamingType] = useState<TaskType | null>(null);
+  const [namingProjectMode, setNamingProjectMode] = useState<"standard" | "campaign">("standard");
   const [taskName, setTaskName] = useState("");
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
@@ -422,9 +482,10 @@ function PlatformInner() {
     setMode("copy");
   };
 
-  const requestNewTask = (type: TaskType) => {
+  const requestNewTask = (type: TaskType, projectMode: "standard" | "campaign" = "standard") => {
     setTaskName("");
     setEditingTaskId(null);
+    setNamingProjectMode(projectMode);
     setNamingType(type);
   };
 
@@ -454,7 +515,9 @@ function PlatformInner() {
     const id = `${namingType}-${Date.now()}`;
     const now = new Date().toISOString();
     if (namingType === "extend") {
-      const snapshot = createBlankStudioSnapshot(name, id);
+      const snapshot = namingProjectMode === "campaign"
+        ? createCampaignStudioSnapshot(name, id)
+        : createBlankStudioSnapshot(name, id);
       const task: WorkspaceTask = { id, name, type: "extend", updatedAt: now, studio: snapshot };
       setTasks((current) => [task, ...current]);
       setActiveTaskId(id);
@@ -475,6 +538,7 @@ function PlatformInner() {
 
   const renameTask = (task: WorkspaceTask) => {
     setEditingTaskId(task.id);
+    setNamingProjectMode(isCampaignTask(task) ? "campaign" : "standard");
     setNamingType(task.type);
     setTaskName(task.name);
   };
@@ -506,6 +570,7 @@ function PlatformInner() {
   };
 
   const activeTask = tasks.find((task) => task.id === activeTaskId);
+  const campaignMode = studio.project.mode === "campaign";
 
   return (
     <div
@@ -519,13 +584,13 @@ function PlatformInner() {
           tasks={tasks}
           activeTaskId={activeTaskId}
           onOpenTask={openTask}
-          onNewTask={requestNewTask}
           onRenameTask={renameTask}
           onDuplicateTask={duplicateTask}
           onDeleteTask={deleteTask}
           onHome={goHome}
           onExtend={() => requestNewTask("extend")}
-          onCopy={() => requestNewTask("copy")}
+          onCampaign={() => requestNewTask("extend", "campaign")}
+          campaignMode={campaignMode}
         />
         <main className="min-w-0 flex-1 bg-[var(--app-workspace-page)]">
           {mode === "home" ? (
@@ -533,20 +598,28 @@ function PlatformInner() {
               tasks={tasks}
               onOpenTask={openTask}
               onExtend={() => requestNewTask("extend")}
-              onCopy={() => requestNewTask("copy")}
+              onCampaign={() => requestNewTask("extend", "campaign")}
             />
           ) : null}
           {mode === "extend" ? (
             <Workspace
               title={activeTask?.name ?? "延展项目"}
-              steps={EXTEND_STEPS}
+              steps={campaignMode ? CAMPAIGN_STEPS : EXTEND_STEPS}
               step={studio.step}
               onStep={(value) => studio.setStep(value as StepIndex)}
               onBack={goHome}
             >
               {studio.step === 0 ? <ScenePrepareStep onNext={() => studio.setStep(1)} /> : null}
-              {studio.step === 1 ? <SceneTargetsStep onBack={() => studio.setStep(0)} onNext={() => studio.setStep(2)} /> : null}
-              {studio.step === 2 ? <SceneConfigStep onBack={() => studio.setStep(1)} onNext={() => studio.setStep(3)} /> : null}
+              {studio.step === 1 ? (
+                campaignMode
+                  ? <CampaignTargetsStep onBack={() => studio.setStep(0)} onNext={() => studio.setStep(2)} />
+                  : <SceneTargetsStep onBack={() => studio.setStep(0)} onNext={() => studio.setStep(2)} />
+              ) : null}
+              {studio.step === 2 ? (
+                campaignMode
+                  ? <CampaignConfigStep onBack={() => studio.setStep(1)} onNext={() => studio.setStep(3)} />
+                  : <SceneConfigStep onBack={() => studio.setStep(1)} onNext={() => studio.setStep(3)} />
+              ) : null}
               {studio.step === 3 ? <SceneBatchStep onBack={() => studio.setStep(2)} /> : null}
             </Workspace>
           ) : null}
@@ -571,6 +644,7 @@ function PlatformInner() {
       {namingType ? (
         <TaskNamingDialog
           type={namingType}
+          projectMode={namingProjectMode}
           editing={Boolean(editingTaskId)}
           value={taskName}
           onChange={setTaskName}
@@ -595,6 +669,7 @@ export function Platform() {
 
 function TaskNamingDialog({
   type,
+  projectMode,
   editing,
   value,
   onChange,
@@ -602,13 +677,16 @@ function TaskNamingDialog({
   onConfirm,
 }: {
   type: TaskType;
+  projectMode: "standard" | "campaign";
   editing: boolean;
   value: string;
   onChange: (value: string) => void;
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  const label = type === "extend" ? "延展项目" : "批量修改项目";
+  const label = type === "extend"
+    ? projectMode === "campaign" ? "专项延展项目" : "通用延展项目"
+    : "批量修改项目";
   return (
     <div className="absolute inset-0 z-[90] grid place-items-center bg-black/65 p-6">
       <section role="dialog" aria-modal="true" aria-label={`命名${label}`} className="w-full max-w-[420px] rounded-[8px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] shadow-[0_24px_80px_rgb(0_0_0/0.55)]">
@@ -626,14 +704,16 @@ function TaskNamingDialog({
               value={value}
               onChange={(event) => onChange(event.target.value)}
               onKeyDown={(event) => event.key === "Enter" && value.trim() && onConfirm()}
-              placeholder={type === "extend" ? "例如：26Q3 入金活动延展" : "例如：26Q3 入金活动文案修改"}
+              placeholder={type === "extend"
+                ? projectMode === "campaign" ? "例如：2026Q2 财报季专项" : "例如：26Q3 入金活动延展"
+                : "例如：26Q3 入金活动文案修改"}
               className="mt-2 h-9 w-full rounded-[5px] border border-[var(--app-line-strong)] bg-[var(--app-field)] px-3 text-[12px] outline-none focus:border-[var(--app-line-strong)]"
             />
           </label>
         </div>
-        <footer className="flex justify-end gap-2 border-t border-[var(--app-line)] px-5 py-3">
-          <Button size="sm" onClick={onClose}>取消</Button>
-          <Button variant="primary" size="sm" disabled={!value.trim()} onClick={onConfirm}>{editing ? "保存" : "创建"}</Button>
+        <footer className="flex justify-end gap-2 px-5 py-3">
+          <Button className="min-w-[64px]" size="sm" onClick={onClose}>取消</Button>
+          <Button className="min-w-[64px]" variant="primary" size="sm" disabled={!value.trim()} onClick={onConfirm}>{editing ? "保存" : "创建"}</Button>
         </footer>
       </section>
     </div>
@@ -649,20 +729,14 @@ function Topbar() {
   }, []);
 
   return (
-    <header className="h-12 border-b border-[var(--app-line)] bg-[var(--app-rail)] px-3 flex items-center">
-      <div className="relative flex min-w-0 items-center gap-1">
-        <img
-          src="/brand/platform-icon-transparent.png?v=1"
-          width={20}
-          height={20}
-          alt=""
-          className="size-5 object-contain"
-        />
-        <div className="flex shrink-0 items-center gap-1 whitespace-nowrap" aria-label="FUTU 延展平台">
-          <img src="/brand/futu-wordmark.svg" width={54} height={14} alt="FUTU" className="h-[14px] w-auto" />
-          <span className="-translate-y-px text-[15px] font-semibold leading-[15px] text-[var(--app-text)]">延展平台</span>
-        </div>
-      </div>
+    <header className="h-12 bg-[var(--app-rail)] px-2.5 flex items-center">
+      <img
+        src="/brand/futu-platform-lockup.svg?v=5"
+        width={124}
+        height={25}
+        alt="FUTU 延展平台"
+        className="h-auto w-[124px] max-w-none translate-y-px shrink-0 object-contain"
+      />
       <div className="flex-1" />
       <button className="top-action">
         <span className={cn("size-1.5 rounded-full", figmaConfigured ? "bg-[var(--color-down)]" : "bg-[var(--app-text-4)]")} />
@@ -731,8 +805,9 @@ function ApiConfigDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (
   );
 }
 
-function taskTypeLabel(type: TaskType) {
-  return type === "extend" ? "延展项目" : "批量修改";
+function taskTypeLabel(task: WorkspaceTask) {
+  if (task.type === "copy") return "批量修改";
+  return isCampaignTask(task) ? "专项延展" : "通用延展";
 }
 
 function taskTime(value: string) {
@@ -756,47 +831,44 @@ function Sidebar({
   tasks,
   activeTaskId,
   onOpenTask,
-  onNewTask,
   onRenameTask,
   onDuplicateTask,
   onDeleteTask,
   onHome,
   onExtend,
-  onCopy,
+  onCampaign,
+  campaignMode,
 }: {
   mode: Mode;
   tasks: WorkspaceTask[];
   activeTaskId: string | null;
   onOpenTask: (task: WorkspaceTask) => void;
-  onNewTask: (type: TaskType) => void;
   onRenameTask: (task: WorkspaceTask) => void;
   onDuplicateTask: (task: WorkspaceTask) => void;
   onDeleteTask: (task: WorkspaceTask) => void;
   onHome: () => void;
   onExtend: () => void;
-  onCopy: () => void;
+  onCampaign: () => void;
+  campaignMode: boolean;
 }) {
   const [recentOpen, setRecentOpen] = useState(true);
-  const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [menuTaskId, setMenuTaskId] = useState<string | null>(null);
   const [width, setWidth] = useState(SIDEBAR_WIDTH_DEFAULT);
   const [resizing, setResizing] = useState(false);
-  const newMenuRef = useRef<HTMLDivElement>(null);
   const taskMenuRef = useRef<HTMLDivElement>(null);
   const asideRef = useRef<HTMLElement>(null);
   const widthRef = useRef(SIDEBAR_WIDTH_DEFAULT);
   const resizeRef = useRef<{ x: number; width: number; scale: number } | null>(null);
 
   useEffect(() => {
-    if (!newMenuOpen && !menuTaskId) return;
+    if (!menuTaskId) return;
     const closeMenus = (event: PointerEvent) => {
       const target = event.target as Node;
-      if (!newMenuRef.current?.contains(target)) setNewMenuOpen(false);
       if (!taskMenuRef.current?.contains(target)) setMenuTaskId(null);
     };
     document.addEventListener("pointerdown", closeMenus);
     return () => document.removeEventListener("pointerdown", closeMenus);
-  }, [menuTaskId, newMenuOpen]);
+  }, [menuTaskId]);
 
   useEffect(() => {
     const storedValue = window.localStorage.getItem(SIDEBAR_WIDTH_STORE);
@@ -831,43 +903,39 @@ function Sidebar({
   const openTaskMenuOutside = width < 156;
 
   return (
-    <aside ref={asideRef} style={{ width }} className="relative flex shrink-0 flex-col bg-[var(--app-primary-nav)] px-2 pb-2 pt-3.5">
+    <aside
+      ref={asideRef}
+      style={{ width }}
+      className="relative flex shrink-0 flex-col bg-[var(--app-primary-nav)] px-1.5 pb-2 pt-4 after:pointer-events-none after:absolute after:-top-12 after:bottom-0 after:right-0 after:w-px after:bg-[var(--app-line)]"
+    >
       <nav className="space-y-0.5">
-        <NavButton active={mode === "home"} icon={<Home size={14} />} onClick={onHome}>
+        <NavButton active={mode === "home"} icon={<Home size={12} />} onClick={onHome}>
           首页
         </NavButton>
-        <NavButton active={mode === "extend"} icon={<Layers3 size={14} />} onClick={onExtend}>
-          新建项目
+        <NavButton active={mode === "extend" && !campaignMode} icon={<Layers3 size={12} />} onClick={onExtend}>
+          通用延展
         </NavButton>
-        <NavButton active={mode === "copy"} icon={<FileText size={14} />} onClick={onCopy}>
+        <NavButton active={mode === "extend" && campaignMode} icon={<CampaignIcon size={12} />} onClick={onCampaign}>
+          专项延展
+        </NavButton>
+        <NavButton unavailable title="批量修改（建设中）" icon={<FileText size={10} strokeWidth={1.6} />}>
           批量修改
+        </NavButton>
+        <NavButton unavailable title="预设模板（建设中）" icon={<LayoutTemplate size={10} strokeWidth={1.6} />}>
+          预设模板
         </NavButton>
       </nav>
 
-      <div className="relative mt-5 flex h-8 items-center px-1">
+      <div className="relative mt-4 flex h-7 items-center px-1">
         <button
           type="button"
           aria-expanded={recentOpen}
           onClick={() => setRecentOpen((value) => !value)}
-          className="flex h-7 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-[4px] px-0.5 text-[11px] font-medium text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text-2)]"
+          className="flex h-6 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-[4px] px-0.5 text-[9px] font-medium text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text-2)]"
         >
           <span className="min-w-0 truncate whitespace-nowrap">最近项目</span>
-          <ChevronDown size={11} className={cn("ml-auto shrink-0 transition-transform", compact && "hidden", !recentOpen && "-rotate-90")} />
+          <ChevronDown size={9} className={cn("ml-auto shrink-0 transition-transform", compact && "hidden", !recentOpen && "-rotate-90")} />
         </button>
-        <button
-          type="button"
-          aria-label="新建项目"
-          onClick={() => setNewMenuOpen((value) => !value)}
-          className={cn("ml-1 grid shrink-0 place-items-center rounded-[4px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]", compact ? "size-6" : "size-7")}
-        >
-          <Plus size={compact ? 12 : 14} />
-        </button>
-        {newMenuOpen ? (
-          <div ref={newMenuRef} className={cn("absolute left-1 top-9 z-40 rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1 shadow-[var(--glass-shadow)]", compact ? "w-[142px]" : "right-1")}>
-            <button onClick={() => { setNewMenuOpen(false); onNewTask("extend"); }} className="w-full rounded-[4px] px-2.5 py-2 text-left text-[10px] hover:bg-[var(--app-surface-2)]">新建延展项目</button>
-            <button onClick={() => { setNewMenuOpen(false); onNewTask("copy"); }} className="w-full rounded-[4px] px-2.5 py-2 text-left text-[10px] hover:bg-[var(--app-surface-2)]">新建批量修改项目</button>
-          </div>
-        ) : null}
       </div>
       {recentOpen ? <div className={cn("relative mt-1 min-h-0 flex-1 space-y-1", menuTaskId ? "overflow-visible" : "overflow-y-auto")}>
         {tasks.map((item) => {
@@ -878,31 +946,31 @@ function Sidebar({
             ref={menuTaskId === item.id ? taskMenuRef : undefined}
             className={cn(
               "group relative flex w-full items-center rounded-[6px] text-left hover:bg-[var(--app-surface-2)]",
-              compact ? "gap-1 p-1" : "gap-2 p-1.5",
+              compact ? "gap-1 p-1" : "gap-1.5 p-1",
               activeTaskId === item.id && mode !== "home" && "bg-[var(--app-surface-2)]",
               menuTaskId === item.id && "z-50",
             )}
           >
             <button onClick={() => onOpenTask(item)} className="absolute inset-0 rounded-[6px]" aria-label={`打开 ${item.name}`} />
-            <div className={cn("pointer-events-none relative shrink-0 overflow-hidden rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface-3)]", compact ? "size-7" : "size-9")}>
+            <div className={cn("pointer-events-none relative shrink-0 overflow-hidden rounded-[4px] border border-[var(--app-line)] bg-[var(--app-surface-3)]", compact ? "size-6" : "size-8")}>
               {thumbnail ? (
                 <img src={thumbnail} alt="" className="size-full object-cover" />
               ) : (
                 <div className="grid size-full place-items-center text-[var(--app-text-3)]">
-                  {item.type === "copy" ? <FileText size={14} /> : <Layers3 size={14} />}
+                  {item.type === "copy" ? <FileText size={11} /> : isCampaignTask(item) ? <CampaignIcon size={11} /> : <Layers3 size={11} />}
                 </div>
               )}
             </div>
             <div className="relative min-w-0 flex-1 pointer-events-none">
-              <div className={cn("truncate text-[11px] font-medium", !compact && "pr-5")}>{item.name}</div>
+              <div className={cn("truncate text-[10px] font-medium", !compact && "pr-5")}>{item.name}</div>
             </div>
             <button
               type="button"
               aria-label={`${item.name} 更多操作`}
               onClick={() => setMenuTaskId((current) => current === item.id ? null : item.id)}
-              className={cn("absolute right-1 top-1/2 z-10 grid -translate-y-1/2 place-items-center rounded-[4px] text-[var(--app-text-3)] opacity-60 hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] hover:opacity-100", compact ? "size-5" : "size-6")}
+              className="absolute right-1 top-1/2 z-10 grid size-5 -translate-y-1/2 place-items-center rounded-[4px] text-[var(--app-text-3)] opacity-60 hover:bg-[var(--app-surface-3)] hover:text-[var(--app-text)] hover:opacity-100"
             >
-              <MoreHorizontal size={compact ? 12 : 14} />
+              <MoreHorizontal size={11} />
             </button>
             {menuTaskId === item.id ? (
               <div className={cn("absolute z-50 w-[142px] rounded-[6px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] p-1 shadow-[var(--glass-shadow)]", openTaskMenuOutside ? "left-full top-0 ml-2" : "right-1 top-10")}>
@@ -918,6 +986,11 @@ function Sidebar({
         })}
         {!tasks.length ? <div className="px-2 py-3 text-[9px] text-[var(--app-text-3)]">暂无项目</div> : null}
       </div> : <div className="flex-1" />}
+      <div className="mt-2 flex h-7 shrink-0 items-center gap-1.5 px-2 text-[9px] text-[var(--app-text)]">
+        <Lightbulb size={10} className="shrink-0" />
+        <span className="min-w-0 truncate font-medium">版本更新记录</span>
+        <span className="ml-auto shrink-0 rounded-[4px] bg-[var(--app-surface-2)] px-1.5 py-0.5 text-[9px] text-[var(--app-text-2)]">{PLATFORM_VERSION}</span>
+      </div>
       <div
         role="separator"
         tabIndex={0}
@@ -990,24 +1063,42 @@ function TaskMenuItem({
   );
 }
 
+function CampaignIcon({ size = 12, strokeWidth = 1.55 }: { size?: number; strokeWidth?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="4.3" y="2.2" width="9.2" height="7.4" rx="1.5" stroke="currentColor" strokeWidth={strokeWidth} />
+      <rect x="2.3" y="5.4" width="9.2" height="8.2" rx="1.5" stroke="currentColor" strokeWidth={strokeWidth} />
+      <path d="M4.4 8.55h5M4.4 10.55h3.2" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function NavButton({
   active,
   icon,
   children,
   onClick,
+  unavailable = false,
+  title,
 }: {
   active?: boolean;
   icon: React.ReactNode;
   children: React.ReactNode;
   onClick?: () => void;
+  unavailable?: boolean;
+  title?: string;
 }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      aria-disabled={unavailable || undefined}
+      title={title}
+      onClick={unavailable ? undefined : onClick}
       className={cn(
-        "flex h-8 w-full min-w-0 items-center gap-2 overflow-hidden rounded-[5px] px-2.5 text-[12px]",
-        active
+        "flex h-7 w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-[5px] px-2 text-[10px]",
+        unavailable
+          ? "cursor-default text-[var(--app-text-2)]"
+          : active
           ? "bg-[var(--app-primary-nav-active)] text-[var(--app-text)]"
           : "text-[var(--app-text-2)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]",
       )}
@@ -1022,12 +1113,12 @@ function HomeScreen({
   tasks,
   onOpenTask,
   onExtend,
-  onCopy,
+  onCampaign,
 }: {
   tasks: WorkspaceTask[];
   onOpenTask: (task: WorkspaceTask) => void;
   onExtend: () => void;
-  onCopy: () => void;
+  onCampaign: () => void;
 }) {
   const [recentLayout, setRecentLayout] = useState<"list" | "grid">("list");
   const [recentQuery, setRecentQuery] = useState("");
@@ -1043,29 +1134,24 @@ function HomeScreen({
   );
 
   return (
-    <div className="h-full overflow-y-auto px-8 py-7 xl:px-12">
+    <div className="h-full overflow-y-auto px-3 py-5 sm:px-6 sm:py-7 lg:px-8 xl:px-12">
       <div className="mx-auto max-w-[1120px]">
-        <div className="flex items-end justify-between">
-          <h1 className="text-[24px] font-semibold tracking-[-0.03em]">选择项目</h1>
+        <button type="button" onClick={onExtend} className="home-create-hero group flex w-full flex-col items-center justify-center rounded-[10px] text-center">
+          <span className="home-create-cta grid h-9 min-w-[64px] place-items-center rounded-[8px]">
+            <Plus size={20} strokeWidth={1.75} />
+          </span>
+          <span className="relative z-[1] mt-2.5 text-[14px] font-medium tracking-[-0.01em] text-[var(--app-text)]">
+            新建通用延展
+          </span>
+        </button>
+
+        <div className="mt-3 grid gap-3 lg:grid-cols-3">
+          <HomeTool title="专项延展" icon={<CampaignIcon size={12} />} onClick={onCampaign} />
+          <ComingSoonTool title="批量修改" icon={<FileText size={10} strokeWidth={1.55} />} />
+          <ComingSoonTool title="预设模板" icon={<LayoutTemplate size={10} strokeWidth={1.55} />} />
         </div>
 
-        <div className="mt-6 grid gap-3 lg:grid-cols-2">
-          <ModeCard
-            title="新建延展项目"
-            icon={<Sparkles size={18} />}
-            action="新建项目"
-            onClick={onExtend}
-          />
-          <ModeCard
-            title="批量修改"
-            icon={<FileText size={18} />}
-            action="开始修改"
-            onClick={onCopy}
-            secondary
-          />
-        </div>
-
-        <div className="mt-10 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-line)] pb-3">
+        <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-line)] pb-3">
           <h2 className="text-[13px] font-medium">最近项目</h2>
           <div className="flex shrink-0 items-center gap-2">
             <div role="group" aria-label="排列方式" className="flex h-7 items-center rounded-[5px] border border-[var(--app-line)] bg-[var(--app-surface)] p-0.5">
@@ -1134,13 +1220,15 @@ function HomeScreen({
                         <img src={thumbnail} alt="" className="size-full object-cover" />
                       ) : item.type === "copy" ? (
                         <FileText size={14} />
+                      ) : isCampaignTask(item) ? (
+                        <CampaignIcon size={14} />
                       ) : (
                         <Layers3 size={14} />
                       )}
                     </div>
                     <span className="truncate text-[12px] font-medium">{item.name}</span>
                   </div>
-                  <span className="self-center text-[11px] text-[var(--app-text-3)]">{taskTypeLabel(item.type)}</span>
+                  <span className="self-center text-[11px] text-[var(--app-text-3)]">{taskTypeLabel(item)}</span>
                   <span className="self-center text-right text-[10px] text-[var(--app-text-4)]">{taskTime(item.updatedAt)}</span>
                 </button>
               );
@@ -1157,12 +1245,14 @@ function HomeScreen({
                       <img src={thumbnail} alt="" className="size-full object-contain" />
                     ) : item.type === "copy" ? (
                       <FileText size={20} />
+                    ) : isCampaignTask(item) ? (
+                      <CampaignIcon size={20} />
                     ) : (
                       <Layers3 size={20} />
                     )}
                   </div>
                   <div className="mt-2 truncate text-[11px] font-medium">{item.name}</div>
-                  <div className="mt-0.5 truncate text-[9px] text-[var(--app-text-4)]">{taskTypeLabel(item.type)} · {taskTime(item.updatedAt)}</div>
+                  <div className="mt-0.5 truncate text-[9px] text-[var(--app-text-4)]">{taskTypeLabel(item)} · {taskTime(item.updatedAt)}</div>
                 </button>
               );
             })}
@@ -1178,31 +1268,48 @@ function HomeScreen({
   );
 }
 
-function ModeCard({
+function HomeTool({
   title,
-  action,
   icon,
   onClick,
-  secondary,
 }: {
   title: string;
-  action: string;
   icon: React.ReactNode;
   onClick: () => void;
-  secondary?: boolean;
 }) {
   return (
-    <section className="group min-h-[178px] border border-[var(--app-line)] bg-[var(--app-surface)] rounded-[7px] p-6 flex flex-col hover:border-[var(--app-line-strong)]">
-      <div className="size-9 rounded-[6px] border border-[var(--app-line)] bg-[var(--app-surface-2)] grid place-items-center text-[var(--app-text-2)]">
-        {icon}
-      </div>
-      <h2 className="mt-4 text-[18px] font-semibold tracking-[-0.02em]">{title}</h2>
-      <div className="mt-auto pt-4">
-        <Button variant={secondary ? "secondary" : "primary"} size="md" onClick={onClick}>
-          {action}
-        </Button>
-      </div>
-    </section>
+    <button
+      type="button"
+      onClick={onClick}
+      className="home-coming-tool flex h-14 w-full items-center rounded-[8px] px-2.5 text-left transition-colors hover:bg-white/[0.055] sm:px-4"
+    >
+      <span className="shrink-0 text-[var(--app-text-2)]">{icon}</span>
+      <span className="ml-1.5 min-w-0 truncate text-[12px] font-medium text-[var(--app-text)] sm:ml-2">{title}</span>
+      <ArrowRight size={11} className="ml-auto shrink-0 text-[var(--app-text-3)]" />
+    </button>
+  );
+}
+
+function ComingSoonTool({
+  title,
+  icon,
+}: {
+  title: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={`${title}，建设中`}
+      aria-disabled="true"
+      className="home-coming-tool flex h-14 w-full cursor-default items-center rounded-[8px] px-2.5 sm:px-4"
+    >
+      <span className="shrink-0 text-[var(--app-text-2)]">{icon}</span>
+      <span className="ml-1.5 min-w-0 truncate text-[12px] font-medium text-[var(--app-text-2)] sm:ml-2">{title}</span>
+      <span className="ml-auto shrink-0 rounded-[5px] border border-white/[0.06] bg-white/[0.12] px-2.5 py-1 text-[10px] font-medium text-[var(--app-text-2)]">
+        建设中
+      </span>
+    </button>
   );
 }
 
@@ -1224,10 +1331,11 @@ function Workspace({
   return (
     <div className="h-full min-h-0 flex flex-col">
       <div className="h-16 shrink-0 border-b border-[var(--app-line)] px-5 flex items-center">
-        <button onClick={onBack} className="mr-3 grid size-7 place-items-center rounded-[5px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]">
-          <ArrowLeft size={14} />
-        </button>
-        <span className="w-[170px] truncate text-[13px] font-medium">{title}</span>
+        <div className="flex w-[170px] items-center">
+          <button onClick={onBack} className="grid size-7 place-items-center rounded-[5px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]">
+            <ArrowLeft size={14} />
+          </button>
+        </div>
         <div className="flex flex-1 justify-center">
           <ol className="flex items-center gap-2">
             {steps.map((name, index) => (
@@ -1246,7 +1354,7 @@ function Workspace({
                     className={cn(
                       "grid size-5 place-items-center rounded-full text-[10px]",
                       index < step || index === step
-                        ? "bg-[var(--color-brand)] text-white"
+                        ? "bg-white text-[#151517]"
                         : "bg-[var(--app-surface-3)]",
                     )}
                   >
@@ -1902,7 +2010,7 @@ function EditExtendFlow({ onNext }: { onNext: () => void }) {
           <p className="mt-2 text-[10px] leading-relaxed text-[var(--app-text-3)]">
             编辑与延展必须连接到已确认的母版图层和主视觉组件关系。当前数据不完整，为避免生成错误画幅，系统不会使用名称重新猜测。
           </p>
-          <Button className="mt-4" variant="workflow" size="lg" onClick={() => setStep(0)}>返回识别画板</Button>
+          <Button className="mt-4" variant="primary" size="lg" onClick={() => setStep(0)}>返回识别画板</Button>
         </div>
       </div>
     );
@@ -2050,6 +2158,811 @@ function EditExtendFlow({ onNext }: { onNext: () => void }) {
   );
 }
 
+function CampaignTargetsStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
+  const {
+    project,
+    setCampaign,
+    setTargetBoards,
+    updateContent,
+    updateScene,
+    setLang,
+  } = useStudio();
+  const [view, setView] = useState<"all" | "selected" | "pack">("all");
+  const [requestOpen, setRequestOpen] = useState(false);
+  useEffect(() => {
+    if (!requestOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRequestOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [requestOpen]);
+  const scenario = campaignScenarioOf(project.campaign?.scenarioId);
+  const selected = new Set(project.targets.map((target) => target.key));
+
+  const applyScenario = (next: CampaignScenarioDefinition, slots: CampaignSlotDefinition[]) => {
+    if (scenario && scenario.id !== next.id && project.targets.length) {
+      const confirmed = window.confirm("切换场景会替换当前已选资源位，是否继续？");
+      if (!confirmed) return false;
+    }
+    const { copy, text, variants } = campaignCopies(project, next);
+    setCampaign({ id: CAMPAIGN_PACK.id, version: CAMPAIGN_PACK.version, scenarioId: next.id });
+    setTargetBoards(slots.map((slot) => campaignTarget(next, slot)));
+    updateContent({ langs: next.languages, copy });
+    setLang(next.languages[0]!);
+    updateScene((current) => {
+      const withoutCampaign = current.elements.filter((element) => element.id !== CAMPAIGN_TAG_ID && element.id !== CAMPAIGN_TIME_ID);
+      const boardOverrides = Object.fromEntries(
+        Object.entries(current.boardOverrides).filter(([key]) => !key.startsWith(`campaign:${CAMPAIGN_PACK.id}:`)),
+      );
+      const languageBoardOverrides: NonNullable<SceneState["languageBoardOverrides"]> = Object.fromEntries(
+        Object.entries(current.languageBoardOverrides ?? {}).map(([lang, boards]) => [
+          lang,
+          Object.fromEntries(Object.entries(boards).filter(([key]) => !key.startsWith(`campaign:${CAMPAIGN_PACK.id}:`))),
+        ]),
+      );
+      const languageBoardStyles = Object.fromEntries(
+        Object.entries(current.languageBoardStyles ?? {}).map(([lang, styles]) => [
+          lang,
+          Object.fromEntries(Object.entries(styles).filter(([key]) => !key.startsWith(`campaign:${CAMPAIGN_PACK.id}:`))),
+        ]),
+      );
+      next.slots.forEach((slot) => {
+        const target = campaignTarget(next, slot);
+        for (const lang of slot.languages ?? next.languages) {
+          const variant = variants[slot.copyType][lang];
+          languageBoardOverrides[lang] = {
+            ...(languageBoardOverrides[lang] ?? {}),
+            [target.key]: campaignCorpusPlacements(next, slot, lang),
+          };
+          languageBoardStyles[lang] = {
+            ...(languageBoardStyles[lang] ?? {}),
+            [target.key]: {
+              ...languageBoardStyles[lang]?.[target.key],
+              elements: {
+                ...languageBoardStyles[lang]?.[target.key]?.elements,
+                title: { texts: { [lang]: variant.title } },
+                subtitle: { texts: { [lang]: variant.sub } },
+                cta: { texts: { [lang]: variant.cta } },
+              },
+            },
+          };
+        }
+      });
+      return {
+        ...current,
+        elements: [
+          ...withoutCampaign,
+          {
+            id: CAMPAIGN_TAG_ID,
+            role: "badge",
+            name: "财报季标签",
+            visible: next.hasEarningsTag,
+            texts: { sc: "", tc: "", en: "", ja: "" },
+          },
+          {
+            id: CAMPAIGN_TIME_ID,
+            role: "custom",
+            name: "财报时间",
+            visible: false,
+            texts: Object.fromEntries(next.languages.map((lang) => [lang, campaignTimeText(lang, text[lang].time)])),
+          },
+        ],
+        badgeStyles: { ...current.badgeStyles, [CAMPAIGN_TAG_ID]: "earnings" },
+        visualAspect: CAMPAIGN_VISUAL_ASPECT,
+        ctaFontUnlocked: true,
+        boardOverrides,
+        languageBoardOverrides,
+        languageBoardStyles,
+      };
+    });
+    return true;
+  };
+
+  const toggleSlot = (item: CampaignScenarioDefinition, slot: CampaignSlotDefinition) => {
+    const target = campaignTarget(item, slot);
+    if (scenario?.id !== item.id) {
+      applyScenario(item, [slot]);
+      return;
+    }
+    setTargetBoards(
+      selected.has(target.key)
+        ? project.targets.filter((entry) => entry.key !== target.key)
+        : [...project.targets, target],
+    );
+  };
+
+  const visibleScenarios = view === "all"
+    ? CAMPAIGN_SCENARIOS
+    : view === "selected"
+      ? CAMPAIGN_SCENARIOS.filter((item) => item.slots.some((slot) => selected.has(campaignTarget(item, slot).key)))
+      : CAMPAIGN_SCENARIOS;
+
+  const selectedCountOf = (item: CampaignScenarioDefinition) =>
+    item.slots.filter((slot) => selected.has(campaignTarget(item, slot).key)).length;
+  const selectScenario = (item: CampaignScenarioDefinition) => applyScenario(item, item.slots);
+  const clearScenario = (item: CampaignScenarioDefinition) => {
+    if (scenario?.id === item.id) setTargetBoards([]);
+  };
+
+  const navItem = (id: typeof view, label: string) => (
+    <button
+      key={id}
+      type="button"
+      onClick={() => setView(id)}
+      className={cn(
+        "flex w-full items-center rounded-[4px] px-2 py-2 text-left text-[10px] hover:bg-[var(--app-surface-2)]",
+        view === id ? "bg-[var(--app-surface-2)] text-[var(--app-text)]" : "text-[var(--app-text-3)]",
+      )}
+    >
+      <span className="truncate">{label}</span>
+    </button>
+  );
+
+  return (
+    <div className="relative flex h-full min-h-0 flex-col">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_250px] gap-3">
+        <div className="flex min-h-0 min-w-0">
+          <aside className="flex min-h-0 w-[176px] shrink-0 flex-col border-r border-[var(--app-line)] py-3 pr-2">
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {navItem("all", "全部")}
+              {navItem("selected", "已选")}
+              <div className="my-2 h-px bg-[var(--app-line-soft)]" />
+              {navItem("pack", CAMPAIGN_PACK.name)}
+              <button
+                type="button"
+                onClick={() => setRequestOpen(true)}
+                className="mt-1 flex w-full items-center gap-1 rounded-[4px] px-2 py-2 text-left text-[10px] text-[var(--app-text-2)] hover:bg-[var(--app-surface-2)] hover:text-[var(--app-text)]"
+              >
+                <Plus size={10} className="shrink-0" />
+                <span>新增专项</span>
+              </button>
+            </div>
+          </aside>
+          <section className="relative min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pt-2">
+            {visibleScenarios.length ? visibleScenarios.map((item) => {
+              const selectedCount = selectedCountOf(item);
+              return (
+              <div key={item.id} className="mb-4">
+                <div className="sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-page)] pb-1.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-baseline gap-1.5">
+                      <span className="truncate text-[10px] font-medium text-[var(--app-text)]">{item.name}</span>
+                      <span className="shrink-0 text-[8px] text-[var(--app-text-4)]">{campaignLangHint(item.languages)}</span>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2.5 text-[10px]">
+                    <button
+                      type="button"
+                      disabled={selectedCount === item.slots.length && scenario?.id === item.id}
+                      onClick={() => selectScenario(item)}
+                      className="rounded-[3px] text-[var(--app-text-2)] outline-none hover:text-[var(--app-text)] focus-visible:text-[var(--app-text)] disabled:opacity-40"
+                    >
+                      全选
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!selectedCount}
+                      onClick={() => clearScenario(item)}
+                      className="rounded-[3px] text-[var(--app-text-2)] outline-none hover:text-[var(--app-text)] focus-visible:text-[var(--app-text)] disabled:opacity-40"
+                    >
+                      清空
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] items-start gap-1.5">
+                  {item.slots.map((slot) => {
+                    const target = campaignTarget(item, slot);
+                    const on = selected.has(target.key);
+                    return (
+                      <button
+                        key={slot.id}
+                        type="button"
+                        aria-pressed={on}
+                        aria-label={on ? `取消选择 ${slot.name}` : `选择 ${slot.name}`}
+                        onClick={() => toggleSlot(item, slot)}
+                        className={cn(
+                          "flex h-10 min-w-0 items-center rounded-[5px] border px-2.5 text-left outline-none focus-visible:border-[var(--app-text-2)]",
+                          on ? "border-transparent bg-white/[0.1]" : "border-[var(--app-line)] hover:border-[var(--app-line-strong)] hover:bg-[var(--app-surface-2)]",
+                        )}
+                      >
+                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                          <span className="grid h-5 w-7 shrink-0 place-items-center">
+                            <span className="max-h-5 max-w-7 border border-[var(--app-line-strong)] bg-[var(--app-surface-3)]" style={{ aspectRatio: `${slot.w}/${slot.h}`, width: slot.w >= slot.h ? 26 : undefined, height: slot.h > slot.w ? 20 : undefined }} />
+                          </span>
+                          <span className="flex min-w-0 items-baseline gap-1.5 truncate text-[10px]">
+                            <span className="shrink-0 font-medium tabular-nums text-[var(--app-text-2)]">{slot.w} × {slot.h}</span>
+                            <span className="truncate text-[var(--app-text-3)]">{slot.name}</span>
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              );
+            }) : (
+              <div className="grid h-40 place-items-center text-[10px] text-[var(--app-text-4)]">还没有选择画幅</div>
+            )}
+          </section>
+        </div>
+        <aside className="flex min-h-0 flex-col border-l border-[var(--app-line)] pl-4">
+          <div className="text-[11px] font-semibold">本次专项</div>
+          <div className="mt-1 text-[9px] text-[var(--app-text-4)]">已选择 {project.targets.length} 个画幅</div>
+          <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+            {scenario ? (
+              <div className="mb-3">
+                <div className="flex justify-between gap-2 text-[10px]">
+                  <span className="min-w-0 truncate">{CAMPAIGN_PACK.name} · {scenario.name}</span>
+                  <span className="shrink-0 text-[var(--app-text-4)]">{project.targets.length}</span>
+                </div>
+                <div className="mt-1 text-[9px] text-[var(--app-text-4)]">{scenario.languages.map((lang) => CAMPAIGN_LANG_LABELS[lang]).join("、")}</div>
+                <div className="mt-0.5 text-[9px] leading-relaxed text-[var(--app-text-4)]">{project.targets.map((item) => `${item.use ?? ""} ${item.w}×${item.h}`.trim()).join("、")}</div>
+              </div>
+            ) : (
+              <div className="text-[9px] text-[var(--app-text-4)]">选择资源位后显示本次范围</div>
+            )}
+          </div>
+        </aside>
+      </div>
+      <div className="mt-3 flex shrink-0 justify-end gap-2">
+        <Button size="lg" onClick={onBack}>上一步</Button>
+        <Button variant="workflow" size="lg" className="min-w-[96px]" disabled={!project.targets.length} onClick={onNext}>下一步</Button>
+      </div>
+      {requestOpen ? (
+        <div className="absolute inset-0 z-[80] grid place-items-center bg-black/65 p-6">
+          <section role="dialog" aria-modal="true" aria-labelledby="campaign-request-title" className="w-full max-w-[440px] rounded-[8px] border border-[var(--app-line-strong)] bg-[var(--app-surface)] shadow-[0_24px_80px_rgb(0_0_0/0.55)]">
+            <header className="flex items-center justify-between border-b border-[var(--app-line)] px-5 py-4">
+              <h2 id="campaign-request-title" className="text-[14px] font-semibold">新增专项</h2>
+              <button type="button" aria-label="关闭" onClick={() => setRequestOpen(false)} className="grid size-7 place-items-center rounded-[5px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)]">
+                <X size={15} />
+              </button>
+            </header>
+            <p className="px-5 py-5 text-[12px] leading-6 text-[var(--app-text-2)]">
+              专项由管理员统一配置。如需新增，请联系
+              <span className="whitespace-nowrap">
+                管理员
+                <span className="ml-1 font-medium text-[var(--app-text)]">@theahuang</span>
+              </span>
+            </p>
+            <footer className="flex justify-end px-5 py-3">
+              <Button className="min-w-[64px]" variant="primary" size="sm" onClick={() => setRequestOpen(false)}>知道了</Button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const CAMPAIGN_COPY_LABELS: Record<CampaignCopyType, string> = {
+  earnings: "财报通用素材",
+  live: "业绩直播",
+  hk: "HK 个股 Banner",
+  options: "个股业绩期权营销",
+};
+
+function campaignSlotOfTarget(scenario: CampaignScenarioDefinition, target: TargetBoard) {
+  return scenario.slots.find((slot) => campaignTarget(scenario, slot).key === target.key);
+}
+
+function CampaignPreviewCard({
+  scene,
+  target,
+  slot,
+  lang,
+  kvUrl,
+  selected,
+  onSelect,
+  onPatch,
+}: {
+  scene: SceneState;
+  target: TargetBoard;
+  slot: CampaignSlotDefinition;
+  lang: Lang;
+  kvUrl?: string;
+  selected: boolean;
+  onSelect: () => void;
+  onPatch: (targetKey: string, id: string, patch: ScenePlacementPatch) => void;
+}) {
+  const [selectedLayer, setSelectedLayer] = useState<string | null>(SCENE_GROUP_ID);
+  const ref = sceneRef(target);
+  const resolved = sceneLanguageBoardView(scene, lang, ref);
+  const fit = useFitBoard(target.w, target.h, 18, 44);
+  const width = Math.min(340, fit.width);
+  const linkedSelection = selected && target.w === 1080 && target.h === 225
+    ? selectedLayer === SCENE_GROUP_ID
+      ? new Set([CAMPAIGN_TAG_ID])
+      : selectedLayer === CAMPAIGN_TAG_ID
+        ? new Set([SCENE_GROUP_ID])
+        : undefined
+    : undefined;
+  const selectedName = selectedLayer === SCENE_GROUP_ID
+    ? "标题组"
+    : resolved.elements.find((item) => item.id === selectedLayer)?.name ?? "元素";
+  const patchLayer = (id: string, patch: ScenePlacementPatch) => {
+    onPatch(target.key, id, patch);
+    if (target.w !== 1080 || target.h !== 225 || (id !== SCENE_GROUP_ID && id !== CAMPAIGN_TAG_ID) || (patch.x === undefined && patch.y === undefined)) return;
+    const group = resolveSceneGroup(resolved, ref);
+    const tagElement = resolved.elements.find((item) => item.id === CAMPAIGN_TAG_ID);
+    if (!tagElement) return;
+    const tag = resolveScenePlacement(resolved, ref, tagElement);
+    if (id === SCENE_GROUP_ID) {
+      onPatch(target.key, CAMPAIGN_TAG_ID, {
+        ...(patch.x === undefined ? {} : { x: tag.x + patch.x - group.x }),
+        ...(patch.y === undefined ? {} : { y: tag.y + patch.y - group.y }),
+      });
+    } else {
+      onPatch(target.key, SCENE_GROUP_ID, {
+        ...(patch.x === undefined ? {} : { x: group.x + patch.x - tag.x }),
+        ...(patch.y === undefined ? {} : { y: group.y + patch.y - tag.y }),
+      });
+    }
+  };
+  return (
+    <article
+      className={cn(
+        "min-w-0 overflow-hidden rounded-[6px] border bg-[var(--app-surface-2)] transition-colors",
+        selected ? "border-[var(--app-line-strong)] ring-1 ring-inset ring-white/10" : "border-[var(--app-line)] hover:border-[var(--app-line-strong)]",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex h-8 w-full min-w-0 items-center justify-between gap-2 border-b border-[var(--app-line)] px-2.5 text-left outline-none focus-visible:bg-white/[0.04]"
+      >
+        <span className="min-w-0 truncate text-[9px] text-[var(--app-text-2)]">{slot.name}</span>
+        <span className="shrink-0 text-[8px] tabular-nums text-[var(--app-text-4)]">{target.w} × {target.h}</span>
+      </button>
+      <div ref={fit.ref} className="grid h-[220px] min-w-0 place-items-center overflow-hidden bg-[#111317] p-2" onPointerDown={onSelect}>
+        <SceneArtboard
+          scene={resolved}
+          board={ref}
+          lang={lang}
+          kvUrl={kvUrl}
+          width={width}
+          selectedId={selected ? selectedLayer : null}
+          selectedIds={linkedSelection}
+          onSelect={(id) => {
+            onSelect();
+            setSelectedLayer(id);
+          }}
+          onPatch={patchLayer}
+          outlines={selected}
+        />
+      </div>
+      <div className="flex h-7 items-center justify-between px-2.5 text-[8px]">
+        <span className="text-[var(--app-text-4)]">{CAMPAIGN_COPY_LABELS[slot.copyType]}</span>
+        <span className="text-[var(--app-text-3)]">{selected ? `${selectedName} · 可移动 / 缩放` : "点击选择"}</span>
+      </div>
+    </article>
+  );
+}
+
+function CampaignConfigStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
+  const { project, lang, setLang, setCampaign, updateCopy } = useStudio();
+  const { scene, updateScene, undoScene, redoScene, canUndoScene, canRedoScene } = useScene();
+  const scenario = campaignScenarioOf(project.campaign?.scenarioId);
+  const selectedItems = useMemo(() => scenario
+    ? project.targets.flatMap((target) => {
+      const slot = campaignSlotOfTarget(scenario, target);
+      return slot ? [{ target, slot }] : [];
+    })
+    : [], [project.targets, scenario]);
+  const copyTypes = useMemo(
+    () => [...new Set(selectedItems.map((item) => item.slot.copyType))],
+    [selectedItems],
+  );
+  const [copyType, setCopyType] = useState<CampaignCopyType>(copyTypes[0] ?? "earnings");
+  const [selectedKey, setSelectedKey] = useState(project.targets[0]?.key ?? "");
+  const corpusSeedRef = useRef("");
+  const groupItems = useMemo(
+    () => selectedItems.filter((item) => item.slot.copyType === copyType),
+    [copyType, selectedItems],
+  );
+
+  useEffect(() => {
+    if (!copyTypes.includes(copyType)) setCopyType(copyTypes[0] ?? "earnings");
+  }, [copyType, copyTypes]);
+  useEffect(() => {
+    if (!project.targets.some((target) => target.key === selectedKey)) setSelectedKey(project.targets[0]?.key ?? "");
+  }, [project.targets, selectedKey]);
+  useEffect(() => {
+    if (groupItems.length && !groupItems.some((item) => item.target.key === selectedKey)) setSelectedKey(groupItems[0]!.target.key);
+  }, [groupItems, selectedKey]);
+  const corpusSeedKey = scenario
+    ? `${project.campaign?.version ?? "legacy"}:${scenario.id}:${selectedItems.map(({ target }) => target.key).sort().join("|")}`
+    : "";
+  useEffect(() => {
+    if (!scenario || corpusSeedRef.current === corpusSeedKey) return;
+    corpusSeedRef.current = corpusSeedKey;
+    const migrateAll = project.campaign?.version !== CAMPAIGN_PACK.version;
+    updateScene((current) => {
+      let changed = current.visualAspect !== CAMPAIGN_VISUAL_ASPECT || !current.ctaFontUnlocked;
+      const languageBoardOverrides: NonNullable<SceneState["languageBoardOverrides"]> = { ...(current.languageBoardOverrides ?? {}) };
+      for (const { target, slot } of selectedItems) {
+        for (const item of slot.languages ?? scenario.languages) {
+          const langBoards = { ...(languageBoardOverrides[item] ?? {}) };
+          if (migrateAll || !langBoards[target.key] || !Object.keys(langBoards[target.key] ?? {}).length) {
+            langBoards[target.key] = campaignCorpusPlacements(scenario, slot, item);
+            languageBoardOverrides[item] = langBoards;
+            changed = true;
+          }
+        }
+      }
+      const elements = migrateAll
+        ? current.elements.map((element) => element.id === CAMPAIGN_TIME_ID
+          ? {
+            ...element,
+            texts: Object.fromEntries(scenario.languages.map((item) => [
+              item,
+              campaignTimeText(item, campaignTimeValue(item, sceneText(element, item))),
+            ])),
+          }
+          : element)
+        : current.elements;
+      return changed ? { ...current, elements, visualAspect: CAMPAIGN_VISUAL_ASPECT, ctaFontUnlocked: true, languageBoardOverrides } : current;
+    });
+    if (migrateAll) setCampaign({ id: CAMPAIGN_PACK.id, version: CAMPAIGN_PACK.version, scenarioId: scenario.id });
+    // 进入配置页或资源位集合变化时只迁移一次；updateScene 的引用会随项目快照更新。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [corpusSeedKey]);
+
+  if (!scenario || !selectedItems.length) {
+    return (
+      <div className="grid h-full place-items-center">
+        <div className="text-center">
+          <div className="text-[13px] font-semibold">还没有选择专项资源位</div>
+          <Button className="mt-4" variant="primary" size="lg" onClick={onBack}>返回选择专项</Button>
+        </div>
+      </div>
+    );
+  }
+
+  const groupLanguages = scenario.languages.filter((item) => groupItems.some(({ slot }) => (slot.languages ?? scenario.languages).includes(item)));
+  const activeLang = groupLanguages.includes(lang) ? lang : groupLanguages[0]!;
+  const sample = groupItems[0] ?? selectedItems[0]!;
+  const sampleRef = sceneRef(sample.target);
+  const sampleScene = sceneLanguageBoardView(scene, activeLang, sampleRef);
+  const elementText = (id: string) => {
+    const element = sampleScene.elements.find((item) => item.id === id);
+    return element ? sceneText(element, activeLang) : "";
+  };
+  const visibleItems = selectedItems.filter(({ slot }) => (slot.languages ?? scenario.languages).includes(activeLang));
+  const selectedItem = selectedItems.find((item) => item.target.key === selectedKey) ?? visibleItems[0] ?? selectedItems[0]!;
+  const selectedRef = sceneRef(selectedItem.target);
+  const selectedGroup = resolveSceneGroup(sceneLanguageBoardView(scene, activeLang, selectedRef), selectedRef);
+  const hasEarningsTime = groupItems.some((item) => item.slot.earningsTime);
+  const fontElement = sampleScene.elements.find((item) => item.id === "title");
+  const fontOptions = SCENE_FONTS.filter((font) => sceneFontSupports(font, sceneFontScript(activeLang)));
+  const selectedFont = fontElement ? sceneFontId(sampleScene, fontElement, activeLang) : fontOptions[0]?.id;
+  const customElements = scene.elements.filter((item) => item.role === "custom" && item.id !== "campaign-earnings-time");
+  const earningsTimeElement = scene.elements.find((item) => item.id === CAMPAIGN_TIME_ID);
+
+  const patchGroupText = (id: "title" | "subtitle" | "cta", value: string) => {
+    const field = id === "title" ? "title" : id === "subtitle" ? "sub" : "ctaLong";
+    updateCopy(activeLang, id === "cta" ? { ctaLong: value, ctaShort: value } : { [field]: value });
+    updateScene((current) => {
+      const allStyles = { ...(current.languageBoardStyles ?? {}) };
+      const langStyles = { ...(allStyles[activeLang] ?? {}) };
+      for (const { target } of groupItems) {
+        const boardStyle = langStyles[target.key] ?? {};
+        langStyles[target.key] = {
+          ...boardStyle,
+          elements: {
+            ...boardStyle.elements,
+            [id]: {
+              ...boardStyle.elements?.[id],
+              texts: { ...boardStyle.elements?.[id]?.texts, [activeLang]: value },
+            },
+          },
+        };
+      }
+      return { ...current, languageBoardStyles: { ...allStyles, [activeLang]: langStyles } };
+    });
+  };
+
+  const patchSelected = (targetKey: string, id: string, patch: ScenePlacementPatch) => {
+    updateScene((current) => ({
+      ...current,
+      languageBoardOverrides: {
+        ...current.languageBoardOverrides,
+        [activeLang]: {
+          ...current.languageBoardOverrides?.[activeLang],
+          [targetKey]: {
+            ...current.languageBoardOverrides?.[activeLang]?.[targetKey],
+            [id]: { ...current.languageBoardOverrides?.[activeLang]?.[targetKey]?.[id], ...patch },
+          },
+        },
+      },
+    }));
+  };
+
+  const resetSelectedPosition = () => {
+    updateScene((current) => {
+      const targetKey = selectedItem.target.key;
+      return {
+        ...current,
+        languageBoardOverrides: {
+          ...current.languageBoardOverrides,
+          [activeLang]: {
+            ...current.languageBoardOverrides?.[activeLang],
+            [targetKey]: {
+              ...current.languageBoardOverrides?.[activeLang]?.[targetKey],
+              ...campaignCorpusPlacements(scenario, selectedItem.slot, activeLang),
+            },
+          },
+        },
+      };
+    });
+  };
+
+  const setCampaignFont = (fontId: string) => updateScene((current) => ({
+    ...current,
+    languageFonts: {
+      ...current.languageFonts,
+      [activeLang]: {
+        ...current.languageFonts?.[activeLang],
+        title: fontId,
+        subtitle: fontId,
+        kicker: fontId,
+      },
+    },
+  }));
+
+  const setHighlightColor = (color: string) => {
+    const textLength = Array.from(elementText("title")).length;
+    updateScene((current) => ({
+      ...current,
+      customSolid: color,
+      highlights: {
+        ...current.highlights,
+        title: {
+          ...current.highlights.title,
+          [activeLang]: textLength ? [{ start: 0, end: textLength, preset: "custom-solid" }] : [],
+        },
+      },
+    }));
+  };
+
+  const addElement = () => updateScene((current) => {
+    const number = current.nextModuleNumber ?? (current.elements.filter((item) => item.role === "custom").length + 1);
+    const base = sceneDefaultElement("custom", number);
+    const element = {
+      ...base,
+      texts: Object.fromEntries(scenario.languages.map((item) => [item, base.texts[item] ?? "自定义文案"])),
+    };
+    const languageVisibility = { ...current.languageVisibility };
+    for (const item of scenario.languages) {
+      languageVisibility[item] = {
+        ...languageVisibility[item],
+        "*": { ...languageVisibility[item]?.["*"], [element.id]: true },
+      };
+    }
+    return { ...current, nextModuleNumber: number + 1, elements: [...current.elements, element], languageVisibility };
+  });
+
+  const nudgeSelected = (dx: number, dy: number) => patchSelected(selectedItem.target.key, SCENE_GROUP_ID, {
+    x: Math.max(0.02, Math.min(0.98, selectedGroup.x + dx)),
+    y: Math.max(0.02, Math.min(0.98, selectedGroup.y + dy)),
+  });
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_318px] overflow-hidden rounded-[6px] border border-[var(--app-line)]">
+        <section className="flex min-h-0 min-w-0 flex-col bg-[var(--app-workspace-page)]">
+          <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--app-line)] px-3 py-2">
+            <div>
+              <div className="text-[10px] font-medium text-[var(--app-text)]">全部素材预览</div>
+              <div className="mt-0.5 text-[8px] text-[var(--app-text-4)]">点击画面中的元素，可逐项移动和缩放；1080 × 225 的标签与文案组联动</div>
+            </div>
+            <div className="flex items-center gap-1">
+              {scenario.languages.map((item) => {
+                const available = selectedItems.some(({ slot }) => (slot.languages ?? scenario.languages).includes(item));
+                return (
+                  <button
+                    key={item}
+                    type="button"
+                    disabled={!available}
+                    aria-pressed={activeLang === item}
+                    onClick={() => {
+                      const nextType = copyTypes.find((type) => selectedItems.some(({ slot }) => slot.copyType === type && (slot.languages ?? scenario.languages).includes(item)));
+                      if (nextType) setCopyType(nextType);
+                      setLang(item);
+                    }}
+                    className={cn(
+                      "h-6 rounded-[4px] px-2 text-[9px] outline-none disabled:cursor-not-allowed disabled:opacity-30",
+                      activeLang === item ? "bg-white/[0.12] text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:bg-white/[0.06]",
+                    )}
+                  >
+                    {CAMPAIGN_LANG_LABELS[item]}
+                  </button>
+                );
+              })}
+            </div>
+          </header>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="grid grid-cols-1 items-start gap-2 md:grid-cols-2 min-[1800px]:grid-cols-3">
+              {visibleItems.map(({ target, slot }) => (
+                <CampaignPreviewCard
+                  key={target.key}
+                  scene={scene}
+                  target={target}
+                  slot={slot}
+                  lang={activeLang}
+                  kvUrl={project.content.kv?.previewUrl}
+                  selected={selectedItem.target.key === target.key}
+                  onSelect={() => {
+                    setSelectedKey(target.key);
+                    setCopyType(slot.copyType);
+                  }}
+                  onPatch={patchSelected}
+                />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <aside className="flex min-h-0 flex-col border-l border-[var(--app-line)] bg-[var(--app-surface)]">
+          <div className="flex shrink-0 items-center justify-between border-b border-[var(--app-line)] px-3 py-2">
+            <div>
+              <div className="text-[10px] font-medium">配置参数</div>
+              <div className="mt-0.5 max-w-[200px] truncate text-[8px] text-[var(--app-text-4)]">{selectedItem.slot.name} · {CAMPAIGN_LANG_LABELS[activeLang]}</div>
+            </div>
+            <div className="flex items-center gap-1 text-[8px]">
+              <button type="button" disabled={!canUndoScene} onClick={undoScene} className="h-6 rounded-[4px] px-1.5 text-[8px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] disabled:opacity-30">撤销</button>
+              <button type="button" disabled={!canRedoScene} onClick={redoScene} className="h-6 rounded-[4px] px-1.5 text-[8px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)] disabled:opacity-30">重做</button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+            {copyTypes.length > 1 ? (
+              <div className="sticky top-0 z-10 -mx-3 flex gap-1 border-b border-[var(--app-line)] bg-[var(--app-surface)] px-3 py-2">
+                {copyTypes.map((item) => (
+                  <button key={item} type="button" onClick={() => setCopyType(item)} className={cn("h-6 rounded-[4px] px-2 text-[9px]", copyType === item ? "bg-white/[0.1] text-[var(--app-text)]" : "text-[var(--app-text-3)] hover:bg-white/[0.05]")}>
+                    {CAMPAIGN_COPY_LABELS[item]}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            <section className="border-b border-[var(--app-line)] py-3">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-[9px] font-medium text-[var(--app-text-2)]">文案组件（{campaignLangHint(groupLanguages)}）</h3>
+                <span className="text-[8px] text-[var(--app-text-4)]">自动生成左对齐 / 居中版本</span>
+              </div>
+              <div className="mb-2 flex gap-1">
+                {scenario.languages.map((item) => {
+                  const available = groupLanguages.includes(item);
+                  return (
+                    <button key={item} type="button" disabled={!available} onClick={() => setLang(item)} className={cn("h-5 rounded-[3px] px-1.5 text-[8px] disabled:opacity-25", activeLang === item ? "bg-white/[0.12] text-[var(--app-text)]" : "text-[var(--app-text-4)] hover:bg-white/[0.05]")}>
+                      {CAMPAIGN_LANG_LABELS[item]}
+                    </button>
+                  );
+                })}
+              </div>
+              <label className="block">
+                <span className="text-[8px] text-[var(--app-text-4)]">主标题</span>
+                <textarea value={elementText("title")} onChange={(event) => patchGroupText("title", event.target.value)} rows={2} className="mt-1 w-full resize-none rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 py-1.5 text-[10px] leading-4 outline-none focus:border-[var(--app-line-strong)]" />
+              </label>
+              <label className="mt-2 block">
+                <span className="text-[8px] text-[var(--app-text-4)]">副标题</span>
+                <textarea value={elementText("subtitle")} onChange={(event) => patchGroupText("subtitle", event.target.value)} rows={2} className="mt-1 w-full resize-none rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 py-1.5 text-[10px] leading-4 outline-none focus:border-[var(--app-line-strong)]" />
+              </label>
+              <label className="mt-2 block">
+                <span className="text-[8px] text-[var(--app-text-4)]">CTA 文案</span>
+                <input value={elementText("cta")} onChange={(event) => patchGroupText("cta", event.target.value)} className="mt-1 h-7 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 text-[10px] outline-none focus:border-[var(--app-line-strong)]" />
+              </label>
+            </section>
+
+            <section className="border-b border-[var(--app-line)] py-3">
+              <h3 className="mb-2 text-[9px] font-medium text-[var(--app-text-2)]">字体与高亮</h3>
+              <label className="flex items-center gap-2">
+                <span className="w-12 shrink-0 text-[8px] text-[var(--app-text-4)]">字体</span>
+                <select value={selectedFont} onChange={(event) => setCampaignFont(event.target.value)} className="h-7 min-w-0 flex-1 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 text-[9px] outline-none">
+                  {fontOptions.map((font) => <option key={font.id} value={font.id}>{font.group} · {font.label}</option>)}
+                </select>
+              </label>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="w-12 shrink-0 text-[8px] text-[var(--app-text-4)]">高亮色</span>
+                <BackgroundColorControl label="主标题高亮色" value={scene.customSolid ?? "#FF6900"} onChange={setHighlightColor} />
+                <span className="text-[8px] text-[var(--app-text-4)]">应用到主标题</span>
+              </div>
+            </section>
+
+            <section className="border-b border-[var(--app-line)] py-3">
+              <h3 className="mb-2 text-[9px] font-medium text-[var(--app-text-2)]">CTA 样式</h3>
+              <div className="grid grid-cols-2 gap-1.5">
+                {CTA_STYLE_PRESETS.map((preset) => (
+                  <button key={preset.id} type="button" aria-pressed={scene.ctaPreset === preset.id} onClick={() => updateScene((current) => ({ ...current, ctaPreset: preset.id }))} className={cn("h-8 truncate rounded-[4px] border px-2 text-[8px]", scene.ctaPreset === preset.id ? "border-[var(--app-line-strong)] bg-white/[0.08] text-[var(--app-text)]" : "border-[var(--app-line)] text-[var(--app-text-3)] hover:bg-white/[0.04]")}>
+                    {preset.name}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            {hasEarningsTime ? (
+              <section className="border-b border-[var(--app-line)] py-3">
+                <h3 className="mb-2 text-[9px] font-medium text-[var(--app-text-2)]">财报时间</h3>
+                <input
+                  value={earningsTimeElement ? campaignTimeValue(activeLang, sceneText(earningsTimeElement, activeLang)) : ""}
+                  onChange={(event) => updateScene((current) => ({
+                    ...current,
+                    elements: current.elements.map((item) => item.id === CAMPAIGN_TIME_ID ? { ...item, texts: { ...item.texts, [activeLang]: campaignTimeText(activeLang, event.target.value) } } : item),
+                  }))}
+                  className="h-7 w-full rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 text-[10px] outline-none focus:border-[var(--app-line-strong)]"
+                />
+                <p className="mt-1 text-[8px] leading-4 text-[var(--app-text-4)]">仅同步到需要财报时间的素材；业绩直播素材不显示。</p>
+              </section>
+            ) : null}
+
+            <section className="border-b border-[var(--app-line)] py-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-[9px] font-medium text-[var(--app-text-2)]">财报季专用角标</h3>
+                  <p className="mt-1 text-[8px] text-[var(--app-text-4)]">{scenario.hasEarningsTag ? "已按语料初始化，可在画面中移动和缩放" : "该专项不使用财报季角标"}</p>
+                </div>
+                <span className="rounded-full bg-white/[0.06] px-2 py-1 text-[8px] text-[var(--app-text-3)]">{scenario.hasEarningsTag ? "已启用" : "不适用"}</span>
+              </div>
+            </section>
+
+            <section className="py-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-[9px] font-medium text-[var(--app-text-2)]">位置与元素</h3>
+                  <p className="mt-1 max-w-[190px] truncate text-[8px] text-[var(--app-text-4)]">当前：{selectedItem.slot.name}</p>
+                </div>
+                <button type="button" onClick={resetSelectedPosition} className="h-6 rounded-[4px] px-2 text-[8px] text-[var(--app-text-3)] hover:bg-[var(--app-surface-2)]">恢复推荐位置</button>
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-[4px] bg-[var(--app-surface-2)] px-2 py-1.5">
+                <span className="text-[8px] text-[var(--app-text-4)]">微调标题组</span>
+                <div className="flex gap-1">
+                  {[
+                    { label: "左移标题组", text: "←", dx: -0.01, dy: 0 },
+                    { label: "上移标题组", text: "↑", dx: 0, dy: -0.01 },
+                    { label: "下移标题组", text: "↓", dx: 0, dy: 0.01 },
+                    { label: "右移标题组", text: "→", dx: 0.01, dy: 0 },
+                  ].map((item) => (
+                    <button key={item.label} type="button" aria-label={item.label} onClick={() => nudgeSelected(item.dx, item.dy)} className="grid size-6 place-items-center rounded-[3px] text-[10px] text-[var(--app-text-3)] hover:bg-white/[0.08] hover:text-[var(--app-text)]">
+                      {item.text}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button type="button" onClick={addElement} className="mt-2 flex h-7 w-full items-center justify-center gap-1 rounded-[4px] border border-dashed border-[var(--app-line-strong)] text-[9px] text-[var(--app-text-3)] hover:bg-white/[0.04] hover:text-[var(--app-text)]">
+                <Plus size={10} /> 添加元素
+              </button>
+              <p className="mt-1 text-[8px] leading-4 text-[var(--app-text-4)]">新增元素同步到全部素材，位置可在每个素材中单独调整。</p>
+              {customElements.map((element) => (
+                <div key={element.id} className="mt-1.5 flex items-center gap-1.5">
+                  <input
+                    value={sceneText(element, activeLang)}
+                    aria-label={`${element.name}文案`}
+                    onChange={(event) => updateScene((current) => ({
+                      ...current,
+                      elements: current.elements.map((item) => item.id === element.id ? { ...item, texts: { ...item.texts, [activeLang]: event.target.value } } : item),
+                    }))}
+                    className="h-7 min-w-0 flex-1 rounded-[4px] border border-[var(--app-line)] bg-[var(--app-field)] px-2 text-[9px] outline-none"
+                  />
+                  <button type="button" aria-label={`删除${element.name}`} onClick={() => updateScene((current) => ({ ...current, elements: current.elements.filter((item) => item.id !== element.id) }))} className="grid size-7 place-items-center rounded-[4px] text-[var(--app-text-4)] hover:bg-white/[0.05] hover:text-[var(--app-text)]">
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              ))}
+            </section>
+          </div>
+        </aside>
+      </div>
+      <div className="mt-3 flex shrink-0 items-center justify-between gap-2">
+        <div className="text-[8px] text-[var(--app-text-4)]">已选择 {project.targets.length} 个资源位 · 当前预览 {visibleItems.length} 个素材</div>
+        <div className="flex gap-2">
+          <Button size="lg" onClick={onBack}>上一步</Button>
+          <Button variant="workflow" size="lg" className="min-w-[96px]" onClick={onNext}>批量生成</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SceneTargetsStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
   const { project } = useStudio();
   const families = sceneEditGroups(project.targets);
@@ -2097,7 +3010,7 @@ function SceneTargetsStep({ onBack, onNext }: { onBack: () => void; onNext: () =
       </div>
       <div className="mt-3 flex shrink-0 justify-end gap-2">
         <Button size="lg" onClick={onBack}>上一步</Button>
-        <Button variant="workflow" size="lg" disabled={!project.targets.length} onClick={onNext}>下一步：配置内容与样式</Button>
+        <Button variant="workflow" size="lg" className="min-w-[96px]" disabled={!project.targets.length} onClick={onNext}>下一步</Button>
       </div>
     </div>
   );

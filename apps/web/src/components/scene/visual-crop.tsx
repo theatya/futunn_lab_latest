@@ -1,11 +1,12 @@
 "use client";
 
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { SceneBox } from "@futu/domain";
+import type { SceneBox, SceneUploadCrop } from "@futu/domain";
+import { UPLOAD_COMPONENT_HEIGHT, UPLOAD_COMPONENT_WIDTH, UPLOAD_FEATHER_HOLDS, UPLOAD_FEATHER_RATIOS, uploadCropLayout } from "@/lib/upload-visual";
 
 const MAX_W = 264;
 const MAX_H = 180;
-const CORNERS = [
+export const CROP_CORNERS = [
   { id: "nw", x: 0, y: 0, sign: -1, cursor: "nwse-resize" },
   { id: "ne", x: 1, y: 0, sign: 1, cursor: "nesw-resize" },
   { id: "sw", x: 0, y: 1, sign: -1, cursor: "nesw-resize" },
@@ -23,12 +24,21 @@ export function VisualCrop({
   kvUrl,
   box,
   board,
+  upload,
   onChange,
 }: {
   kvUrl?: string;
   /** 主视觉在画板上的外框（画板像素）。 */
   box: SceneBox;
   board: { w: number; h: number };
+  /** 上传图片在第一步形成的完整主视觉组件样式。 */
+  upload?: {
+    imageAspect: number;
+    componentAspect: number;
+    crop?: SceneUploadCrop;
+    background: string;
+    feather: number;
+  };
   /** 新的主视觉外框；由调用方换算成位置与比例。 */
   onChange: (next: SceneBox) => void;
 }) {
@@ -51,6 +61,18 @@ export function VisualCrop({
   const height = box.h * k;
   const image = { left: (box.x - minX) * k, top: (box.y - minY) * k, width, height };
   const crop = { left: -minX * k, top: -minY * k, width: board.w * k, height: board.h * k };
+  const uploadLayout = upload ? uploadCropLayout(upload.imageAspect, upload.crop, upload.componentAspect) : null;
+  const cropFrame = uploadLayout?.frame;
+  const imageBox = uploadLayout?.image;
+  const feather = upload ? UPLOAD_FEATHER_RATIOS[upload.feather] ?? 0 : 0;
+  const featherHold = upload ? (UPLOAD_FEATHER_HOLDS[upload.feather] ?? 0) * 100 : 0;
+  const componentHeight = UPLOAD_COMPONENT_HEIGHT;
+  const componentWidth = componentHeight * (upload?.componentAspect ?? (UPLOAD_COMPONENT_WIDTH / UPLOAD_COMPONENT_HEIGHT));
+  const focusWidth = cropFrame ? cropFrame.w * componentWidth : 0;
+  const focusHeight = cropFrame ? cropFrame.h * componentHeight : 0;
+  const featherSize = Math.min(focusWidth, focusHeight) * feather;
+  const featherX = focusWidth > 0 ? (featherSize / focusWidth) * 100 : 0;
+  const featherY = focusHeight > 0 ? (featherSize / focusHeight) * 100 : 0;
 
   const begin = (event: ReactPointerEvent<HTMLElement>, kind: Drag["kind"], sign = 1) => {
     event.stopPropagation();
@@ -88,8 +110,36 @@ export function VisualCrop({
   return (
     <div className="grid place-items-center rounded-[4px] bg-[#0b0c0e] p-2">
       <div ref={stage} className="relative overflow-hidden" style={{ width: spanW * k, height: spanH * k }}>
-        <div className="pointer-events-none absolute" style={image}>
-          {kvUrl ? (
+        <div className="pointer-events-none absolute overflow-hidden" style={{ ...image, background: upload?.background }}>
+          {kvUrl && upload && cropFrame && imageBox ? (
+            <div
+              className="absolute overflow-hidden"
+              style={{ left: `${cropFrame.x * 100}%`, top: `${cropFrame.y * 100}%`, width: `${cropFrame.w * 100}%`, height: `${cropFrame.h * 100}%` }}
+            >
+              <img
+                src={kvUrl}
+                alt=""
+                draggable={false}
+                className="absolute select-none"
+                style={{
+                  left: `${((imageBox.x - cropFrame.x) / cropFrame.w) * 100}%`,
+                  top: `${((imageBox.y - cropFrame.y) / cropFrame.h) * 100}%`,
+                  width: `${(imageBox.w / cropFrame.w) * 100}%`,
+                  height: `${(imageBox.h / cropFrame.h) * 100}%`,
+                  maxWidth: "none",
+                  maxHeight: "none",
+                }}
+              />
+              {feather > 0 ? (
+                <div className="absolute inset-0">
+                  <span className="absolute inset-y-0 left-0" style={{ width: `${featherX}%`, backgroundImage: `linear-gradient(to right, ${upload.background} 0%, ${upload.background} ${featherHold}%, transparent 100%)` }} />
+                  <span className="absolute inset-y-0 right-0" style={{ width: `${featherX}%`, backgroundImage: `linear-gradient(to left, ${upload.background} 0%, ${upload.background} ${featherHold}%, transparent 100%)` }} />
+                  <span className="absolute inset-x-0 top-0" style={{ height: `${featherY}%`, backgroundImage: `linear-gradient(to bottom, ${upload.background} 0%, ${upload.background} ${featherHold}%, transparent 100%)` }} />
+                  <span className="absolute inset-x-0 bottom-0" style={{ height: `${featherY}%`, backgroundImage: `linear-gradient(to top, ${upload.background} 0%, ${upload.background} ${featherHold}%, transparent 100%)` }} />
+                </div>
+              ) : null}
+            </div>
+          ) : kvUrl ? (
             <img src={kvUrl} alt="" draggable={false} className="block size-full select-none" />
           ) : (
             <div className="grid size-full place-items-center border border-dashed border-white/25 text-[9px] text-white/45">主视觉组件</div>
@@ -102,10 +152,10 @@ export function VisualCrop({
           onPointerMove={move}
           onPointerUp={end}
           onPointerCancel={end}
-          className="absolute cursor-move border border-[var(--color-brand)] shadow-[0_0_0_9999px_rgb(0_0_0/0.55)]"
+          className="absolute cursor-move border border-white/85 shadow-[0_0_0_9999px_rgb(0_0_0/0.55)]"
           style={crop}
         >
-          {CORNERS.map((corner) => (
+          {CROP_CORNERS.map((corner) => (
             <span
               key={corner.id}
               role="presentation"
@@ -113,7 +163,7 @@ export function VisualCrop({
               onPointerMove={move}
               onPointerUp={end}
               onPointerCancel={end}
-              className="absolute size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-[2px] border border-[var(--color-brand)] bg-white"
+              className="absolute size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-[2px] border border-white bg-white"
               style={{ left: `${corner.x * 100}%`, top: `${corner.y * 100}%`, cursor: corner.cursor }}
             />
           ))}

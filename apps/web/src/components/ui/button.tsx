@@ -8,7 +8,7 @@ type Size = "sm" | "md" | "lg";
 
 const VARIANT: Record<Variant, string> = {
   primary:
-    "bg-[var(--color-brand)] text-[var(--app-on-brand)] hover:bg-[var(--color-brand-hover)] active:bg-[var(--color-brand-press)]",
+    "border border-white/85 bg-white text-[#151517] shadow-[0_4px_12px_rgb(0_0_0/0.18),inset_0_1px_0_rgb(255_255_255/0.9)] hover:bg-[#f0f0f2] active:bg-[#dedee1]",
   workflow:
     "bg-gradient-to-r from-[#ff7a00] to-[#ff4d00] text-white shadow-[0_6px_18px_rgb(255_91_0/0.18)] hover:brightness-110 active:brightness-95",
   secondary:

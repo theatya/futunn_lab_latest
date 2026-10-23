@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import {
   SCENE_GROUP_ID,
   SCENE_OCCLUSION,
@@ -25,9 +25,8 @@ import {
   type SizeLinked,
 } from "@futu/domain";
 import { LogoPresetPreview } from "@/components/logo-preset-preview";
+import { UPLOAD_FEATHER_HOLDS, UPLOAD_FEATHER_RATIOS, uploadCropLayout } from "@/lib/upload-visual";
 import { cn } from "@/lib/utils";
-
-const FEATHER_RATIO = [0, 0.08, 0.14, 0.2];
 
 type DragState = {
   /** 写入的目标：标题组成员拖动时写到标题组。 */
@@ -233,6 +232,7 @@ export function SceneArtboard({
   onTextChange,
   fixedLayout = false,
   pinnedIds,
+  movableWhileFixed,
 }: {
   scene: SceneState;
   board: SceneBoardRef;
@@ -260,6 +260,8 @@ export function SceneArtboard({
   fixedLayout?: boolean;
   /** 位置按规范锁定的图层（如未解除锁定的规范 CTA）：能选中，不能拖。 */
   pinnedIds?: ReadonlySet<string>;
+  /** 保留规范锁定时仍允许挪位的例外图层；标题组成员以 SCENE_GROUP_ID 判断。 */
+  movableWhileFixed?: ReadonlySet<string>;
 }) {
   const k = width / board.w;
   const height = board.h * k;
@@ -276,7 +278,19 @@ export function SceneArtboard({
     } : null;
   });
   const interactive = Boolean(onPatch);
-  const movable = (id: string) => interactive && !pinnedIds?.has(id) && (!fixedLayout || scene.elements.find((item) => item.id === id)?.role === "visual");
+  const movable = (id: string) => {
+    const el = scene.elements.find((item) => item.id === id);
+    const fixedException = movableWhileFixed?.has(id)
+      || (Boolean(el && isSceneGroupRole(el.role)) && movableWhileFixed?.has(SCENE_GROUP_ID));
+    return interactive
+      && !pinnedIds?.has(id)
+      && (!fixedLayout || el?.role === "visual" || Boolean(fixedException));
+  };
+  /** 规范例外只开放挪位；标题子层仍归标题组，不能显示一个实际无效的单层缩放手柄。 */
+  const scalable = (id: string) => {
+    const el = scene.elements.find((item) => item.id === id);
+    return movable(id) && !(fixedLayout && Boolean(el && isSceneGroupRole(el.role)));
+  };
   const occlusion = SCENE_OCCLUSION[board.key];
   const groupIds = new Set(output.group?.stackIds ?? []);
   const groupActive = selectedId === SCENE_GROUP_ID || (selectedId ? groupIds.has(selectedId) : false);
@@ -322,6 +336,7 @@ export function SceneArtboard({
 
   const begin = (event: ReactPointerEvent<HTMLElement>, id: string, kind: DragState["kind"]) => {
     if (!interactive) return;
+    event.preventDefault();
     event.stopPropagation();
     setEditingId(null);
     if (event.shiftKey || event.ctrlKey || event.metaKey) {
@@ -470,7 +485,7 @@ export function SceneArtboard({
       onPointerMove={move}
       onPointerUp={end}
       onPointerCancel={end}
-      className="absolute -bottom-1 -right-1 size-2 cursor-nwse-resize rounded-[1px] border border-[var(--color-brand)] bg-white"
+      className="absolute -bottom-1 -right-1 size-2 cursor-nwse-resize rounded-[1px] border border-white bg-white"
     />
   );
   /** 宽度手柄放在锚点对侧：右锚点的 CTA 往左拉变宽，居中的两边同时变。 */
@@ -486,7 +501,7 @@ export function SceneArtboard({
       onPointerUp={end}
       onPointerCancel={end}
       className={cn(
-        "absolute top-1/2 h-3 w-1.5 -translate-y-1/2 cursor-ew-resize rounded-[1px] border border-[var(--color-brand)] bg-white",
+        "absolute top-1/2 h-3 w-1.5 -translate-y-1/2 cursor-ew-resize rounded-[1px] border border-white bg-white",
         layer.align === "right" ? "-left-1" : "-right-1",
       )}
     />
@@ -500,7 +515,7 @@ export function SceneArtboard({
       onPointerMove={move}
       onPointerUp={end}
       onPointerCancel={end}
-      className="absolute bottom-[-3px] left-1/2 h-1.5 w-3 -translate-x-1/2 cursor-ns-resize rounded-[1px] border border-[var(--color-brand)] bg-white"
+      className="absolute bottom-[-3px] left-1/2 h-1.5 w-3 -translate-x-1/2 cursor-ns-resize rounded-[1px] border border-white bg-white"
     />
   );
 
@@ -520,29 +535,70 @@ export function SceneArtboard({
         const flagged = outlines && issueIds?.has(layer.id);
         const editing = editingId === layer.id;
         const frame = cn(
-          movable(layer.id) && !editing && "cursor-move",
-          selected || selectedIds?.has(layer.id) ? "outline outline-1 outline-[var(--color-brand)]" : flagged ? "outline outline-1 outline-dashed outline-[var(--color-warn)]" : interactive && outlines && "hover:outline hover:outline-1 hover:outline-[var(--color-brand-line)]",
+          movable(layer.id) && !editing && "touch-none cursor-move",
+          selected || selectedIds?.has(layer.id) ? "outline outline-1 outline-white/85" : flagged ? "outline outline-1 outline-dashed outline-[var(--color-warn)]" : interactive && outlines && "hover:outline hover:outline-1 hover:outline-white/35",
         );
-        const handle = selected && movable(layer.id) && !editing ? handleFor(layer.id) : null;
+        const handle = selected && scalable(layer.id) && !editing ? handleFor(layer.id) : null;
         const pointer = {
           onPointerDown: (event: ReactPointerEvent<HTMLElement>) => begin(event, layer.id, "move"),
           onPointerMove: move,
           onPointerUp: end,
           onPointerCancel: end,
+          onDragStart: (event: ReactDragEvent<HTMLElement>) => event.preventDefault(),
         };
 
         if (layer.role === "visual") {
-          const feather = scene.visualMode === "upload" ? FEATHER_RATIO[scene.feather] ?? 0 : 0;
-          const edge = Math.min(layer.box.w, layer.box.h) * feather * k;
+          const upload = scene.visualMode === "upload";
+          const uploadAspect = scene.upload && scene.upload.height > 0 ? scene.upload.width / scene.upload.height : 1;
+          const uploadLayout = uploadCropLayout(uploadAspect, scene.uploadCrop, scene.visualAspect);
+          const imageBox = uploadLayout.image;
+          const cropFrame = uploadLayout.frame;
+          const feather = upload ? UPLOAD_FEATHER_RATIOS[scene.feather] ?? 0 : 0;
+          const featherHold = (UPLOAD_FEATHER_HOLDS[scene.feather] ?? 0) * 100;
+          const edge = Math.min(layer.box.w * cropFrame.w, layer.box.h * cropFrame.h) * feather * k;
           return (
             <div
               key={layer.id}
               data-scene-layer
               {...pointer}
               className={cn("absolute", frame)}
-              style={{ left: layer.box.x * k, top: layer.box.y * k, width: layer.box.w * k, height: layer.box.h * k }}
+              style={{
+                left: layer.box.x * k,
+                top: layer.box.y * k,
+                width: layer.box.w * k,
+                height: layer.box.h * k,
+                background: upload ? output.background : undefined,
+              }}
             >
-              {kvUrl ? (
+              {kvUrl && upload ? (
+                <div
+                  className="pointer-events-none absolute overflow-hidden"
+                  style={{ left: `${cropFrame.x * 100}%`, top: `${cropFrame.y * 100}%`, width: `${cropFrame.w * 100}%`, height: `${cropFrame.h * 100}%` }}
+                >
+                  <img
+                    src={kvUrl}
+                    alt=""
+                    draggable={false}
+                    className="absolute"
+                    style={{
+                      left: `${((imageBox.x - cropFrame.x) / cropFrame.w) * 100}%`,
+                      top: `${((imageBox.y - cropFrame.y) / cropFrame.h) * 100}%`,
+                      width: `${(imageBox.w / cropFrame.w) * 100}%`,
+                      height: `${(imageBox.h / cropFrame.h) * 100}%`,
+                      maxWidth: "none",
+                      maxHeight: "none",
+                    }}
+                  />
+                  {edge > 0 ? (
+                    <div className="absolute inset-0">
+                      <span className="absolute inset-y-0 left-0" style={{ width: edge, backgroundImage: `linear-gradient(to right, ${output.background} 0%, ${output.background} ${featherHold}%, transparent 100%)` }} />
+                      <span className="absolute inset-y-0 right-0" style={{ width: edge, backgroundImage: `linear-gradient(to left, ${output.background} 0%, ${output.background} ${featherHold}%, transparent 100%)` }} />
+                      <span className="absolute inset-x-0 top-0" style={{ height: edge, backgroundImage: `linear-gradient(to bottom, ${output.background} 0%, ${output.background} ${featherHold}%, transparent 100%)` }} />
+                      <span className="absolute inset-x-0 bottom-0" style={{ height: edge, backgroundImage: `linear-gradient(to top, ${output.background} 0%, ${output.background} ${featherHold}%, transparent 100%)` }} />
+                    </div>
+                  ) : null}
+                </div>
+              ) : kvUrl ? (
                 <img src={kvUrl} alt="" draggable={false} className="pointer-events-none block size-full" />
               ) : (
                 <div className="grid size-full place-items-center border border-dashed border-white/25 text-[9px] text-white/45">主视觉组件</div>
@@ -553,7 +609,7 @@ export function SceneArtboard({
                   <span className="absolute inset-y-0 right-0" style={{ width: output.edgeFade * k, backgroundImage: `linear-gradient(to left, ${output.background}, transparent)` }} />
                 </div>
               ) : null}
-              {edge > 0 ? (
+              {!upload && edge > 0 ? (
                 <div className="pointer-events-none absolute inset-0">
                   <span className="absolute inset-y-0 left-0" style={{ width: edge, backgroundImage: `linear-gradient(to right, ${output.background}, transparent)` }} />
                   <span className="absolute inset-y-0 right-0" style={{ width: edge, backgroundImage: `linear-gradient(to left, ${output.background}, transparent)` }} />
@@ -772,7 +828,7 @@ export function SceneArtboard({
           <div
             key={`${layer.id}-editor`}
             onPointerDown={(event) => event.stopPropagation()}
-            className="absolute outline outline-1 outline-dashed outline-[var(--color-brand)]"
+            className="absolute outline outline-1 outline-dashed outline-white/85"
             style={{ ...position, caretColor: "#FFFFFF" }}
           >
             <FrozenEditable label={`编辑${layer.name}`} api={editApi}>
@@ -816,7 +872,7 @@ export function SceneArtboard({
       {output.group && groupActive && interactive && (outlines || selectedId === SCENE_GROUP_ID) ? (
         <div
           data-scene-layer
-          className="pointer-events-none absolute outline outline-1 outline-dashed outline-[var(--color-brand-line)]"
+          className="pointer-events-none absolute outline outline-1 outline-dashed outline-white/35"
           style={{
             left: output.group.frame.x * k - 3,
             top: output.group.frame.y * k - 3,
@@ -839,7 +895,7 @@ export function SceneArtboard({
 
       {selectionBox && interactive ? (
         <div
-          className="pointer-events-none absolute outline outline-1 outline-dashed outline-[var(--app-text-3)]"
+          className="pointer-events-none absolute outline outline-1 outline-dashed outline-white/85"
           style={{ left: selectionBox.x * k - 4, top: selectionBox.y * k - 4, width: selectionBox.w * k + 8, height: selectionBox.h * k + 8 }}
         />
       ) : null}

@@ -13,7 +13,7 @@ export interface DropdownOption {
 }
 
 /** 下拉选择，视觉参照 Figma 字体面板：深色浮层 + 勾选当前项；可选搜索与分组。 */
-export function Dropdown({ label, value, options, onChange, searchable = false, size = "md", display, className }: {
+export function Dropdown({ label, value, options, onChange, searchable = false, size = "md", display, emptyText = "没有匹配项", emptyTextClassName, className }: {
   label: string;
   value: string;
   options: readonly DropdownOption[];
@@ -22,6 +22,9 @@ export function Dropdown({ label, value, options, onChange, searchable = false, 
   size?: "md" | "sm" | "xs";
   /** 触发按钮上显示的文字，默认用当前项的 label。 */
   display?: string;
+  /** 无可选项或搜索无结果时显示的提示。 */
+  emptyText?: string;
+  emptyTextClassName?: string;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -116,7 +119,7 @@ export function Dropdown({ label, value, options, onChange, searchable = false, 
                 </Fragment>
               );
             })}
-            {list.length ? null : <div className="px-2 py-2 text-[10px] text-white/45">没有匹配项</div>}
+            {list.length ? null : <div className={cn("px-2 py-2 text-[10px] text-white/45", emptyTextClassName)}>{emptyText}</div>}
           </div>
         </div>
       ) : null}

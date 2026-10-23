@@ -103,7 +103,6 @@ function StudioInner() {
                 block
                 disabled={step === 2}
                 onClick={() => setStep((step + 1) as 0 | 1 | 2)}
-                className="bg-[var(--color-brand)] text-white hover:bg-[var(--color-brand-hover)]"
               >
                 下一步
               </Button>
